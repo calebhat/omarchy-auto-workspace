@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Match Auto Workspace profiles to currently connected Hyprland monitors.
+
+Identities prefer EDID serial, then description (make+model+serial), and only
+then the Hyprland connector name (DP-1 / DVI-I-1), which is unstable on docks.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from typing import Any
+
+
+def live_is_real(m: dict[str, Any]) -> bool:
+    if not m or m.get("disabled"):
+        return False
+    name = str(m.get("name") or "")
+    if "HEADLESS" in name:
+        return False
+    return True
+
+
+def short_label(m: dict[str, Any]) -> str:
+    desc = str(m.get("description") or "").strip()
+    if desc:
+        if desc.lower().startswith("hp inc. "):
+            desc = desc[8:]
+        return desc[:48]
+    make = str(m.get("make") or "").strip()
+    model = str(m.get("model") or "").strip()
+    if make and model:
+        return f"{make} {model}"[:48]
+    return str(m.get("label") or m.get("name") or "Monitor")[:48]
+
+
+def same_monitor(saved: dict[str, Any], live: dict[str, Any]) -> bool:
+    ss = str(saved.get("serial") or "").strip()
+    ls = str(live.get("serial") or "").strip()
+    if ss and ls and ss == ls:
+        return True
+    sd = str(saved.get("description") or "").strip()
+    ld = str(live.get("description") or "").strip()
+    if sd and ld and sd == ld:
+        return True
+    if not ss and not sd:
+        sn = str(saved.get("name") or "").strip()
+        ln = str(live.get("name") or "").strip()
+        return bool(sn and sn == ln)
+    return False
+
+
+def monitor_by_id(cfg: dict[str, Any], mid: str) -> dict[str, Any] | None:
+    for m in cfg.get("monitors") or []:
+        if m.get("id") == mid:
+            return m
+    return None
+
+
+def find_live(saved: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for live in live_list:
+        if live_is_real(live) and same_monitor(saved, live):
+            return live
+    return None
+
+
+def profile_match(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
+    live = [m for m in live_list if live_is_real(m)]
+    required = list(profile.get("monitors") or [])
+    missing: list[str] = []
+    extra: list[str] = []
+    for mid in required:
+        saved = monitor_by_id(cfg, mid)
+        if not saved or not find_live(saved, live):
+            missing.append(mid)
+    for live_m in live:
+        claimed = False
+        for mid in required:
+            saved = monitor_by_id(cfg, mid)
+            if saved and same_monitor(saved, live_m):
+                claimed = True
+                break
+        if not claimed:
+            extra.append(short_label(live_m))
+    all_present = not missing and bool(required)
+    exact = all_present and not extra
+    mode = "all-present" if profile.get("matchMode") == "all-present" else "exact"
+    matches = all_present if mode == "all-present" else exact
+    if not required:
+        matches = len(live) <= 1
+        exact = matches
+        all_present = matches
+    reason = "exact" if exact and matches else "all-present" if matches else "missing" if missing else "extra"
+    return {
+        "matches": matches,
+        "exact": exact,
+        "allPresent": all_present,
+        "missing": missing,
+        "extra": extra,
+        "matchedCount": len(required) - len(missing),
+        "requiredCount": len(required),
+        "reason": reason,
+    }
+
+
+def best_profile(cfg: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any] | None:
+    exact: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    present: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for profile in cfg.get("profiles") or []:
+        info = profile_match(cfg, profile, live_list)
+        if info["exact"]:
+            exact.append((profile, info))
+        elif info["allPresent"]:
+            present.append((profile, info))
+    exact.sort(key=lambda pair: pair[1]["requiredCount"], reverse=True)
+    present.sort(key=lambda pair: pair[1]["requiredCount"], reverse=True)
+    if exact:
+        return exact[0][0]
+    if present:
+        return present[0][0]
+    return None
+
+
+def workspace_bindings(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    mapping = profile.get("workspaceMonitors") or {}
+    for ws, mid in mapping.items():
+        saved = monitor_by_id(cfg, str(mid))
+        if not saved:
+            continue
+        hit = find_live(saved, live_list)
+        if hit and hit.get("name"):
+            out[str(ws)] = str(hit["name"])
+    return out
+
+
+def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
+    live = [m for m in live_list if live_is_real(m)]
+    matched = best_profile(cfg, live)
+    profiles = []
+    for profile in cfg.get("profiles") or []:
+        info = profile_match(cfg, profile, live)
+        profiles.append({
+            "id": profile.get("id"),
+            "name": profile.get("name"),
+            "matches": info["matches"],
+            "reason": info["reason"],
+            "missing": info["missing"],
+            "extra": info["extra"],
+        })
+    bindings = workspace_bindings(cfg, matched, live) if matched else {}
+    return {
+        "live": [
+            {
+                "name": m.get("name"),
+                "description": m.get("description") or "",
+                "serial": m.get("serial") or "",
+                "make": m.get("make") or "",
+                "model": m.get("model") or "",
+                "label": short_label(m),
+                "width": m.get("width"),
+                "height": m.get("height"),
+                "x": m.get("x"),
+                "y": m.get("y"),
+            }
+            for m in live
+        ],
+        "matchedProfileId": (matched or {}).get("id"),
+        "matchedProfileName": (matched or {}).get("name"),
+        "bindings": bindings,
+        "profiles": profiles,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Match Auto Workspace profiles to live monitors")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--live-json", default="")
+    parser.add_argument("--profile-id", default="")
+    parser.add_argument("--print-id", action="store_true")
+    parser.add_argument("--bindings", action="store_true")
+    parser.add_argument("--status", action="store_true")
+    args = parser.parse_args()
+    with open(args.config, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    if args.live_json:
+        with open(args.live_json, encoding="utf-8") as fh:
+            live = json.load(fh)
+    else:
+        live = json.load(sys.stdin)
+    if not isinstance(live, list):
+        print("live monitors JSON must be an array", file=sys.stderr)
+        return 1
+    if args.status:
+        json.dump(live_status(cfg, live), sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+    matched = None
+    if args.profile_id:
+        matched = next((p for p in (cfg.get("profiles") or []) if p.get("id") == args.profile_id), None)
+    else:
+        matched = best_profile(cfg, live)
+    if args.print_id:
+        print((matched or {}).get("id") or "")
+        return 0 if matched else 2
+    if args.bindings:
+        if not matched:
+            json.dump({}, sys.stdout)
+            sys.stdout.write("\n")
+            return 2
+        json.dump(workspace_bindings(cfg, matched, live), sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+    json.dump({"profile": matched, "status": live_status(cfg, live)}, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    return 0 if matched else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
