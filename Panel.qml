@@ -800,7 +800,7 @@ Panel {
                         Text {
                             visible: !root.showMonitorPicker && root.monitorOptions.length === 1
                             Layout.fillWidth: true
-                            text: "All workspaces → " + root.monitorOptions[0].label
+                            text: root.monitorOptions.length ? ("All workspaces → " + root.monitorOptions[0].label) : ""
                             color: root.dim
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
