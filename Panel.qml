@@ -133,6 +133,18 @@ Panel {
     }
     function setWorkspaceMonitor(monitorId) {
         var cfg = root.currentConfig()
+        if (monitorId && !Model.monitorById(cfg, monitorId)) {
+            var live = root.liveMonitors || []
+            for (var n = 0; n < live.length; n++) {
+                var tmp = Model.normalizeMonitor(live[n])
+                if (tmp && tmp.id === monitorId) {
+                    var up = Model.upsertLiveMonitor(cfg, live[n])
+                    cfg = up.config
+                    monitorId = up.id
+                    break
+                }
+            }
+        }
         var pid = cfg.settings.activeProfileId
         for (var i = 0; i < cfg.profiles.length; i++) {
             if (cfg.profiles[i].id !== pid) continue
