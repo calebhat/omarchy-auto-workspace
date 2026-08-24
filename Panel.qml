@@ -297,7 +297,8 @@ Panel {
     function assignmentForExec(execStr) {
         var ws = formWorkspace
         for (var i = 0; i < assignments.length; i++) {
-            if (assignments[i].workspace === ws && (assignments[i].exec === execStr || assignments[i].command === execStr))
+            if (assignments[i].workspace !== ws) continue
+            if (Model.sameAppExec(assignments[i].exec, execStr) || Model.sameAppExec(assignments[i].command, execStr))
                 return assignments[i]
         }
         return null
@@ -374,14 +375,16 @@ Panel {
     }
     function isInList(list, exec) {
         if (!list) return false
-        for (var i = 0; i < list.length; i++) if (list[i].exec === exec || list[i].command === exec) return true
+        for (var i = 0; i < list.length; i++) {
+            if (Model.sameAppExec(list[i].exec, exec) || Model.sameAppExec(list[i].command, exec)) return true
+        }
         return false
     }
     function toggleInWorkspace(exec, name) {
         var ws = root.formWorkspace
         for (var i = 0; i < root.assignments.length; i++) {
             var a = root.assignments[i]
-            if (a.workspace === ws && (a.exec === exec || a.command === exec)) {
+            if (a.workspace === ws && (Model.sameAppExec(a.exec, exec) || Model.sameAppExec(a.command, exec))) {
                 root.removeAssignment(a.id)
                 root.statusText = "Removed " + a.name + " from WS" + ws; clearStatusTimer.restart()
                 return
@@ -1559,6 +1562,11 @@ Panel {
 
             Button {
                 visible: app ? root.isInList(root.addedApps, app.exec) : false
+                Layout.preferredWidth: Style.space(36)
+                Layout.minimumWidth: Style.space(36)
+                Layout.maximumWidth: Style.space(40)
+                Layout.fillWidth: false
+                Layout.alignment: Qt.AlignVCenter
                 text: app && root.isAppLocked(app.exec) ? "🔒" : "🔓"
                 tooltipText: app && root.isAppLocked(app.exec)
                     ? "Unlock this app’s size — other windows can resize it"

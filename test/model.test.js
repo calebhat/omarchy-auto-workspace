@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePrefs, assignmentIsLocked, normalizeAssignment }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePrefs, assignmentIsLocked, normalizeAssignment, sameAppExec, canonicalExec }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -187,5 +187,8 @@ if (prefCfg.profiles[0].workspacePrefs["99"]) throw new Error("invalid ws pref d
 const lockedApp = m.normalizeAssignment({ workspace: 2, name: "Herdr", exec: "herdr", lockPlace: true })
 if (!lockedApp.lockPlace) throw new Error("per-app lock")
 if (!m.assignmentIsLocked(lockedApp, prefCfg.profiles[0])) throw new Error("effective lock")
+const wrap = 'sh -c if echo "%u" | grep -q "^mailto:"; then exec omarchy-launch-webapp "https://outlook.office.com/mail/deeplink/compose?to=x"; else exec omarchy-launch-webapp "https://outlook.office.com/mail/"; fi'
+if (!m.sameAppExec(wrap, "omarchy-launch-webapp 'https://outlook.office.com/mail/'")) throw new Error("outlook exec match")
+if (m.canonicalExec(wrap).indexOf("outlook.office.com/mail") < 0) throw new Error("canonical outlook exec")
 
 console.log("model.test.js ok")

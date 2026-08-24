@@ -751,8 +751,8 @@ function normalizeAssignment(a) {
         id: String(a.id || makeId()),
         workspace: ws,
         name: String(a.name || a.command || "App").slice(0, 80),
-        command: String(a.command || a.exec || "").slice(0, 500),
-        exec: String(a.exec || a.command || "").slice(0, 500),
+        command: canonicalExec(String(a.command || a.exec || "")).slice(0, 500),
+        exec: canonicalExec(String(a.exec || a.command || "")).slice(0, 500),
         type: type,
         enabled: a.enabled !== false,
         onlyOnBoot: onlyOnBoot,
@@ -1139,6 +1139,39 @@ function upsertLiveMonitor(cfg, live) {
     }
     out.monitors = out.monitors.concat([mon])
     return { config: out, id: mon.id }
+}
+
+function extractWebappUrl(s) {
+    var m = String(s || "").match(/https:\/\/[^\s\"']+/g)
+    if (!m || !m.length) return ""
+    var i
+    for (i = 0; i < m.length; i++) if (m[i].indexOf("deeplink") < 0) return m[i]
+    return m[m.length - 1]
+}
+
+function canonicalExec(s) {
+    var t = String(s || "").trim()
+    if (!t) return ""
+    var url = extractWebappUrl(t)
+    if (t.indexOf("omarchy-launch-webapp") >= 0 && url) return "omarchy-launch-webapp '" + url + "'"
+    return t
+}
+
+function execBasename(s) {
+    var t = canonicalExec(s)
+    var first = t.split(/\s+/)[0] || ""
+    return first.split("/").pop().toLowerCase()
+}
+
+function sameAppExec(a, b) {
+    var ca = canonicalExec(a), cb = canonicalExec(b)
+    if (ca && cb && ca === cb) return true
+    var ua = extractWebappUrl(a), ub = extractWebappUrl(b)
+    if (ua && ub && ua === ub) return true
+    var ba = execBasename(a), bb = execBasename(b)
+    if (!ba || !bb) return false
+    if (ba === "sh" || ba === "bash" || bb === "sh" || bb === "bash") return ua && ub && ua === ub
+    return ba === bb
 }
 
 function execForAssignment(a) {
