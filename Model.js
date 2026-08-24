@@ -96,7 +96,7 @@ function normalizeGeom(g) {
 }
 
 function autoLayoutRects(count, layout, columnWidth) {
-    var gap = 0.012
+    var gap = 0
     var rects = []
     if (!(count > 0)) return rects
     function push(x, y, w, h) { rects.push(normalizeGeom({ x: x, y: y, w: w, h: h })) }
@@ -149,6 +149,174 @@ function workspaceUsesCustomLayout(apps) {
     var list = apps || []
     for (var i = 0; i < list.length; i++) if (assignmentHasGeom(list[i])) return true
     return false
+}
+
+var GEOM_EPS = 0.03
+var GEOM_MIN = 0.12
+
+function geomRight(g) { return Number(g.x) + Number(g.w) }
+function geomBottom(g) { return Number(g.y) + Number(g.h) }
+
+function rangeOverlap(a0, a1, b0, b1) {
+    return Math.min(a1, b1) - Math.max(a0, b0) > GEOM_EPS
+}
+
+function geomsOverlap(a, b) {
+    if (!a || !b) return false
+    return rangeOverlap(a.x, geomRight(a), b.x, geomRight(b)) &&
+           rangeOverlap(a.y, geomBottom(a), b.y, geomBottom(b))
+}
+
+function layoutHasOverlap(geoms) {
+    var list = geoms || []
+    for (var i = 0; i < list.length; i++) {
+        for (var j = i + 1; j < list.length; j++) {
+            if (geomsOverlap(list[i], list[j])) return true
+        }
+    }
+    return false
+}
+
+function packedGeomsForApps(apps, layout, columnWidth) {
+    var list = apps || []
+    var n = list.length
+    var packLayout = layout === "scrolling" ? "dwindle" : (layout || "dwindle")
+    var autos = autoLayoutRects(n, packLayout, columnWidth)
+    var geoms = []
+    var anyCustom = false
+    for (var i = 0; i < n; i++) {
+        var g = normalizeGeom(list[i] && list[i].geom)
+        if (g) {
+            anyCustom = true
+            geoms.push(g)
+        } else {
+            geoms.push(autos[i] || normalizeGeom({ x: 0, y: 0, w: 1, h: 1 }))
+        }
+    }
+    var use = (!anyCustom || layoutHasOverlap(geoms)) ? autos : geoms
+    var out = []
+    for (var k = 0; k < n; k++) {
+        var item = clone(use[k] || { x: 0, y: 0, w: 1, h: 1 })
+        if (list[k] && list[k].id) item.id = list[k].id
+        out.push(item)
+    }
+    return out
+}
+
+function listSplits(geoms) {
+    var list = geoms || []
+    var v = {}
+    var h = {}
+    function bucket(map, pos, side, idx) {
+        var p = round4(pos)
+        var k = null
+        for (var existing in map) {
+            if (Math.abs(map[existing].pos - p) < GEOM_EPS) { k = existing; break }
+        }
+        if (!k) {
+            k = String(p)
+            map[k] = { pos: p, left: [], right: [], top: [], bottom: [] }
+        }
+        map[k][side].push(idx)
+    }
+    for (var i = 0; i < list.length; i++) {
+        var g = list[i]
+        if (!g) continue
+        if (g.x > GEOM_EPS) bucket(v, g.x, "right", i)
+        if (geomRight(g) < 1 - GEOM_EPS) bucket(v, geomRight(g), "left", i)
+        if (g.y > GEOM_EPS) bucket(h, g.y, "bottom", i)
+        if (geomBottom(g) < 1 - GEOM_EPS) bucket(h, geomBottom(g), "top", i)
+    }
+    var splits = []
+    function spanY(ids) {
+        var y0 = 0, y1 = 1, first = true
+        for (var i = 0; i < ids.length; i++) {
+            var g = list[ids[i]]
+            if (!g) continue
+            if (first) { y0 = g.y; y1 = geomBottom(g); first = false }
+            else { y0 = Math.min(y0, g.y); y1 = Math.max(y1, geomBottom(g)) }
+        }
+        return { s0: y0, s1: y1 }
+    }
+    function spanX(ids) {
+        var x0 = 0, x1 = 1, first = true
+        for (var i = 0; i < ids.length; i++) {
+            var g = list[ids[i]]
+            if (!g) continue
+            if (first) { x0 = g.x; x1 = geomRight(g); first = false }
+            else { x0 = Math.min(x0, g.x); x1 = Math.max(x1, geomRight(g)) }
+        }
+        return { s0: x0, s1: x1 }
+    }
+    for (var vk in v) {
+        var vb = v[vk]
+        if (vb.left.length && vb.right.length) {
+            var ys = spanY(vb.left.concat(vb.right))
+            splits.push({ axis: "v", pos: vb.pos, aIds: vb.left, bIds: vb.right, s0: ys.s0, s1: ys.s1 })
+        }
+    }
+    for (var hk in h) {
+        var hb = h[hk]
+        if (hb.top.length && hb.bottom.length) {
+            var xs = spanX(hb.top.concat(hb.bottom))
+            splits.push({ axis: "h", pos: hb.pos, aIds: hb.top, bIds: hb.bottom, s0: xs.s0, s1: xs.s1 })
+        }
+    }
+    return splits
+}
+
+function nudgeSplit(geoms, split, delta) {
+    if (!split || !geoms || !geoms.length) return geoms
+    var next = clone(geoms)
+    var minD = -1
+    var maxD = 1
+    var i, g
+    var aIds = split.aIds || []
+    var bIds = split.bIds || []
+    if (split.axis === "v") {
+        for (i = 0; i < aIds.length; i++) {
+            g = next[aIds[i]]
+            if (g) minD = Math.max(minD, -(g.w - GEOM_MIN))
+        }
+        for (i = 0; i < bIds.length; i++) {
+            g = next[bIds[i]]
+            if (g) maxD = Math.min(maxD, g.w - GEOM_MIN)
+        }
+        delta = Math.max(minD, Math.min(maxD, Number(delta) || 0))
+        for (i = 0; i < aIds.length; i++) {
+            g = next[aIds[i]]
+            if (g) g.w = round4(g.w + delta)
+        }
+        for (i = 0; i < bIds.length; i++) {
+            g = next[bIds[i]]
+            if (g) {
+                g.x = round4(g.x + delta)
+                g.w = round4(g.w - delta)
+            }
+        }
+    } else {
+        for (i = 0; i < aIds.length; i++) {
+            g = next[aIds[i]]
+            if (g) minD = Math.max(minD, -(g.h - GEOM_MIN))
+        }
+        for (i = 0; i < bIds.length; i++) {
+            g = next[bIds[i]]
+            if (g) maxD = Math.min(maxD, g.h - GEOM_MIN)
+        }
+        delta = Math.max(minD, Math.min(maxD, Number(delta) || 0))
+        for (i = 0; i < aIds.length; i++) {
+            g = next[aIds[i]]
+            if (g) g.h = round4(g.h + delta)
+        }
+        for (i = 0; i < bIds.length; i++) {
+            g = next[bIds[i]]
+            if (g) {
+                g.y = round4(g.y + delta)
+                g.h = round4(g.h - delta)
+            }
+        }
+    }
+    return next
 }
 
 function normalizeAssignment(a) {

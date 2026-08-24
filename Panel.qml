@@ -749,7 +749,7 @@ Panel {
                         spacing: Style.space(10)
 
                         PanelSectionHeader {
-                            text: "PREVIEW · drag tiles · " + root.activeProfile.name
+                            text: "PREVIEW · drag splitters · " + root.activeProfile.name
                             foreground: root.foreground
                             fontFamily: root.fontFamily
                         }
@@ -776,10 +776,10 @@ Panel {
                                 var opts = root.monitorOptions
                                 for (var i = 0; i < opts.length; i++) if (opts[i].value === root.workspaceMonitorId) mon = opts[i].label
                                 var line = mon && root.workspaceMonitorId ? ("WS " + root.formWorkspace + " → " + mon + ". ") : ("WS " + root.formWorkspace + " has no monitor pin. ")
-                                if (Model.workspaceUsesCustomLayout(root.addedApps))
-                                    line += "Custom sizes: drag a window to move, drag an edge/corner to resize."
-                                else if (root.addedApps.length > 0)
-                                    line += "Drag a window in the preview to pin size and position (floats on apply)."
+                                if (root.addedApps.length > 1)
+                                    line += "Drag the bar between windows to resize both. They stay tiled (no overlap). Reset restores the default split."
+                                else if (root.addedApps.length === 1)
+                                    line += "Add another app to split this workspace."
                                 return line
                             }
                             color: root.dim

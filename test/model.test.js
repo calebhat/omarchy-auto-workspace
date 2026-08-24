@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -58,5 +58,23 @@ const withGeom = m.sanitizeConfig({
 })
 if (!m.workspaceUsesCustomLayout(withGeom.profiles[0].assignments)) throw new Error("custom layout flag")
 if (!withGeom.profiles[0].assignments[0].geom) throw new Error("persist geom")
+
+const overlap = [{ x: 0, y: 0, w: 0.7, h: 1 }, { x: 0.5, y: 0, w: 0.5, h: 1 }]
+if (!m.layoutHasOverlap(overlap)) throw new Error("detect overlap")
+const apps = [
+  { id: "a", geom: overlap[0] },
+  { id: "b", geom: overlap[1] }
+]
+const packed = m.packedGeomsForApps(apps, "dwindle", 0.49)
+if (m.layoutHasOverlap(packed)) throw new Error("repair overlap")
+if (packed[0].id !== "a" || packed[1].id !== "b") throw new Error("keep ids")
+const tiled = m.autoLayoutRects(2, "dwindle", 0.49)
+const splits = m.listSplits(tiled)
+if (!splits.length || splits[0].axis !== "v") throw new Error("vertical split for 2 panes")
+const nudged = m.nudgeSplit(tiled, splits[0], 0.1)
+if (m.layoutHasOverlap(nudged)) throw new Error("nudge overlap")
+if (Math.abs((nudged[0].x + nudged[0].w) - nudged[1].x) > 0.02) throw new Error("shared edge after nudge")
+const tooFar = m.nudgeSplit(tiled, splits[0], 0.9)
+if (tooFar[1].w < 0.12 - 1e-6) throw new Error("min size on right")
 
 console.log("model.test.js ok")
