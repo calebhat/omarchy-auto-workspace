@@ -20,11 +20,13 @@ Item {
     property real columnWidth: 0.49
     property bool dragging: false
     property var liveGeoms: []
+    // Frozen while dragging — rebuilding this Repeater mid-drag destroys the
+    // MouseArea and the grab dies after a few pixels.
+    property var splitModel: []
 
     readonly property real screenAspect: screenW > 0 && screenH > 0 ? screenH / screenW : 0.5625
     readonly property var appLibrary: root.bar && root.bar.shell ? root.bar.shell.appLibrary : null
     readonly property bool customLayout: Model.workspaceUsesCustomLayout(assignedApps)
-    readonly property var splitters: Model.listSplits(liveGeoms)
     readonly property string layoutLabel: {
         if (customLayout) return "tiled · drag the splitters"
         if (hyprLayout === "scrolling") return "scrolling • " + Math.round(columnWidth * 100) + "% columns"
@@ -69,9 +71,15 @@ Item {
         return out
     }
 
+    function refreshSplits() {
+        if (root.dragging) return
+        splitModel = Model.listSplits(liveGeoms)
+    }
+
     function rebuild(force) {
         if (root.dragging && !force) return
         liveGeoms = packedFromApps()
+        refreshSplits()
     }
 
     function commitLive() {
@@ -214,20 +222,27 @@ Item {
 
                 Repeater {
                     id: splitRepeater
-                    model: root.splitters
+                    model: root.splitModel
                     delegate: MouseArea {
                         required property var modelData
                         z: 20
                         readonly property bool vertical: modelData && modelData.axis === "v"
-                        x: vertical ? modelData.pos * tilesContainer.width - 5 : modelData.s0 * tilesContainer.width
-                        y: vertical ? modelData.s0 * tilesContainer.height : modelData.pos * tilesContainer.height - 5
-                        width: vertical ? 10 : Math.max(12, (modelData.s1 - modelData.s0) * tilesContainer.width)
-                        height: vertical ? Math.max(12, (modelData.s1 - modelData.s0) * tilesContainer.height) : 10
+                        readonly property real livePos: {
+                            var ids = (modelData && modelData.aIds) || []
+                            var g = ids.length ? root.liveGeoms[ids[0]] : null
+                            if (!g) return modelData ? modelData.pos : 0
+                            return vertical ? (g.x + g.w) : (g.y + g.h)
+                        }
+                        x: vertical ? livePos * tilesContainer.width - 6 : modelData.s0 * tilesContainer.width
+                        y: vertical ? modelData.s0 * tilesContainer.height : livePos * tilesContainer.height - 6
+                        width: vertical ? 12 : Math.max(12, (modelData.s1 - modelData.s0) * tilesContainer.width)
+                        height: vertical ? Math.max(12, (modelData.s1 - modelData.s0) * tilesContainer.height) : 12
                         cursorShape: vertical ? Qt.SizeHorCursor : Qt.SizeVerCursor
                         hoverEnabled: true
                         preventStealing: true
                         property real grab: 0
                         property var startGeoms: []
+                        property var startSplit: null
                         property bool moved: false
 
                         Rectangle {
@@ -243,23 +258,25 @@ Item {
                             var p = mapToItem(tilesContainer, mouse.x, mouse.y)
                             grab = vertical ? p.x : p.y
                             startGeoms = JSON.parse(JSON.stringify(root.liveGeoms))
+                            startSplit = JSON.parse(JSON.stringify(modelData))
                             moved = false
                             root.dragging = true
                             mouse.accepted = true
                         }
                         onPositionChanged: function(mouse) {
-                            if (!pressed) return
+                            if (!pressed || !startSplit) return
                             var p = mapToItem(tilesContainer, mouse.x, mouse.y)
                             var now = vertical ? p.x : p.y
                             var span = vertical ? Math.max(1, tilesContainer.width) : Math.max(1, tilesContainer.height)
                             var delta = (now - grab) / span
                             if (Math.abs(delta) > 0.002) moved = true
-                            root.liveGeoms = Model.nudgeSplit(startGeoms, modelData, delta)
+                            root.liveGeoms = Model.nudgeSplit(startGeoms, startSplit, delta)
                         }
                         onReleased: {
                             if (moved) root.commitLive()
                             root.dragging = false
                             moved = false
+                            root.refreshSplits()
                         }
                     }
                 }
