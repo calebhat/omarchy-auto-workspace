@@ -228,12 +228,29 @@ def match_client(assignment: dict[str, Any], clients: list[dict[str, Any]], used
         score = 0
         if "herdr" in exec_cmd.lower() and "herdr" in cls:
             score += 12
-        if "shophawk-panel" in exec_cmd.lower() and "shophawk" in title:
+        if "shophawk-panel" in exec_cmd.lower() and "shophawk" in title and "herdr" not in cls:
             score += 12
-        if base and base not in {"uwsm-app", "omarchy-launch-tui", "omarchy-launch-or-focus-tui"}:
-            if base in cls or base in initial or base in title:
+        host = ""
+        if "https://" in exec_cmd:
+            try:
+                host = exec_cmd.split("https://", 1)[1].split("/")[0].lower().removeprefix("www.")
+            except Exception:
+                host = ""
+        site_app = bool(
+            cls.startswith("brave-") and "." in cls
+            or cls.startswith("chrome-") and "." in cls
+            or cls.startswith("chromium-") and "." in cls
+        )
+        if host:
+            if host in cls or host in title:
+                score += 16
+        elif base in {"brave", "brave-browser", "chromium", "google-chrome", "chrome"}:
+            if cls in {"brave-browser", "brave", "chromium", "google-chrome", "chromium-browser"} and not site_app:
+                score += 10
+        elif base and base not in {"uwsm-app", "omarchy-launch-tui", "omarchy-launch-or-focus-tui", "sh", "bash"}:
+            if base == cls or base in cls or base in initial:
                 score += 6
-        if name and name in title:
+        if name and name in title and not (base in {"brave", "chromium"} and site_app):
             score += 4
         if score > best_score:
             best_score = score

@@ -123,6 +123,14 @@ restore_unpinned_workspaces() {
   [[ -n $snap && $snap != "[]" && $snap != "null" ]] || return 0
   local enabled
   enabled=$(hyprctl -j monitors 2>/dev/null | jq -r '.[] | select(.disabled != true) | .name' 2>/dev/null)
+  # Drop leftover persistent pins from a previous profile (Hyprland keeps them).
+  local n
+  for n in $(seq 1 10); do
+    if printf '%s' "$pinned_json" | jq -e --arg ws "$n" 'has($ws)' >/dev/null 2>&1; then
+      continue
+    fi
+    hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", persistent = false })' "$n")" >/dev/null 2>&1 || true
+  done
   printf '%s' "$snap" | jq -c '.[]' 2>/dev/null | while IFS= read -r item; do
     [[ -n $item ]] || continue
     local ws mon
@@ -134,6 +142,7 @@ restore_unpinned_workspaces() {
     fi
     printf '%s\n' "$enabled" | grep -qx -- "$mon" || continue
     echo "keep workspace $ws on $mon"
+    hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s", persistent = false })' "$ws" "$mon")" >/dev/null 2>&1 || true
     move_workspace_to_monitor "$ws" "$mon"
   done
 }
@@ -459,6 +468,8 @@ default_only_on_boot_for_type() {
 
 find_existing_addr() {
   local exec_cmd=$1 name=$2 clients_json=$3
+  local target_ws=${4:-}
+  local used=${5:-}
   local needle=""
   needle=$(printf '%s' "$exec_cmd" | awk '{print $1}' | xargs basename 2>/dev/null)
   needle=$(basename "$needle" 2>/dev/null || echo "$needle")
@@ -474,16 +485,33 @@ find_existing_addr() {
     host="${BASH_REMATCH[1],,}"
     host="${host#www.}"
   fi
-  printf '%s' "$clients_json" | jq -r --arg n "$needle" --arg appid "$app_id" --arg name "${name,,}" --arg exec "${exec_cmd,,}" --arg host "$host" '
-    def hay: ((.class // "") + " " + (.initialClass // "") + " " + (.title // "") | ascii_downcase);
+  printf '%s' "$clients_json" | jq -r --arg n "$needle" --arg appid "$app_id" --arg name "${name,,}" --arg exec "${exec_cmd,,}" --arg host "$host" --arg ws "$target_ws" --arg used "$used" '
+    def cls: ((.class // "") | ascii_downcase);
+    def hay: (cls + " " + ((.initialClass // "") | ascii_downcase) + " " + ((.title // "") | ascii_downcase));
+    def is_site_app: cls | test("^(brave|chrome|chromium|google-chrome)-[a-z0-9].*\\.");
+    def browser_main: cls == "brave-browser" or cls == "brave" or cls == "chromium" or cls == "google-chrome" or cls == "chromium-browser";
     def hit:
-      ($appid != "" and (hay | contains($appid))) or
-      ($host != "" and (hay | contains($host))) or
-      ($n != "" and $n != "." and (hay | contains($n))) or
-      ($name != "" and (hay | contains($name))) or
-      (($exec | contains("herdr")) and (hay | contains("herdr"))) or
-      (($exec | contains("shophawk-panel")) and (hay | contains("shophawk")));
-    [.[] | select(hit) | .address][0] // empty
+      if $host != "" then
+        (hay | contains($host))
+      elif ($n == "brave" or $n == "brave-browser" or $n == "chromium" or $n == "chrome" or $n == "google-chrome") then
+        browser_main and (is_site_app | not)
+      elif ($exec | contains("herdr")) then
+        hay | contains("herdr")
+      elif ($exec | contains("shophawk-panel")) then
+        hay | contains("shophawk") and (hay | contains("herdr") | not)
+      elif $appid != "" then
+        hay | contains($appid)
+      elif $n != "" and $n != "." then
+        (cls == $n) or (hay | contains($n))
+      elif $name != "" then
+        hay | contains($name)
+      else
+        false
+      end;
+    def used_set: ($used | split(" ") | map(select(length>0)));
+    [.[] | select((.address as $a | (used_set | index($a) | not)) and hit)]
+    | sort_by(if ($ws != "" and ((.workspace.id|tostring) == $ws or .workspace.name == $ws)) then 0 else 1 end)
+    | .[0].address // empty
   ' 2>/dev/null
 }
 
@@ -505,8 +533,10 @@ launch_profile_assignments() {
   [[ -f $last_boot_file ]] && last_boot=$(cat "$last_boot_file" 2>/dev/null || echo "")
   stagger=$(jq -r '.settings.staggerMs // 80' "$CONFIG_FILE")
   silent=$(jq -r '.settings.silent // true' "$CONFIG_FILE")
-  local clients_json
+  local clients_json used_addrs=""
   clients_json=$(hyprctl clients -j 2>/dev/null || echo "[]")
+  local pinned_ws
+  pinned_ws=$(jq -c --arg id "$profile_id" '([.profiles[] | select(.id==$id) | .workspaceMonitors][0] // {})' "$CONFIG_FILE" 2>/dev/null || echo "{}")
 
   local boot_log="$STATE_DIR/launch-$boot_id.log"
   : > "$boot_log" 2>/dev/null || true
@@ -529,6 +559,18 @@ launch_profile_assignments() {
       echo "skip invalid item: $item" >&2
       continue
     fi
+    local pin
+    pin=$(printf '%s' "$pinned_ws" | jq -r --arg ws "$ws" '.[$ws] // empty')
+    if [[ -n $pin ]]; then
+      local pin_off
+      pin_off=$(jq -r --arg id "$profile_id" --arg pin "$pin" '
+        [.profiles[] | select(.id==$id) | .disabledMonitors[]?] | index($pin) | if . == null then "no" else "yes" end
+      ' "$CONFIG_FILE" 2>/dev/null)
+      if [[ $pin_off == "yes" ]]; then
+        echo "skip $name on ws $ws — target display is off"
+        continue
+      fi
+    fi
 
     local item_only
     item_only=$(echo "$item" | jq -r 'if has("onlyOnBoot") then .onlyOnBoot else empty end')
@@ -544,10 +586,11 @@ launch_profile_assignments() {
     fi
 
     local existing
-    existing=$(find_existing_addr "$exec_cmd" "$name" "$clients_json")
+    existing=$(find_existing_addr "$exec_cmd" "$name" "$clients_json" "$ws" "$used_addrs")
     if [[ -n $existing ]]; then
       echo "reuse $name ($existing) → ws $ws"
       move_window_to_ws "$existing" "$ws"
+      used_addrs+="$existing "
       clients_json=$(hyprctl clients -j 2>/dev/null || echo "[]")
       continue
     fi
