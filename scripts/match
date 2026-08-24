@@ -322,6 +322,11 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
     pins = workspace_bindings(cfg, profile, live_list)
     prefs = profile.get("workspacePrefs") or {}
     ws_ids = set(str(k) for k in pins.keys()) | set(str(k) for k in prefs.keys())
+    for a in profile.get("assignments") or []:
+        if a.get("lockPlace") is True:
+            ws_ids.add(str(a.get("workspace") or ""))
+    ws_ids.discard("")
+    ws_ids.discard("None")
     applied = []
     for ws in sorted(ws_ids, key=lambda s: int(s) if s.isdigit() else 99):
         pref = prefs.get(ws) or {}
