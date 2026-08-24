@@ -93,15 +93,49 @@ notify() {
   fi
 }
 
+move_workspace_to_monitor() {
+  local ws=$1 name=$2
+  [[ $ws =~ ^[0-9]+$ ]] || return 0
+  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || return 0
+  [[ $name != *HEADLESS* ]] || return 0
+  hyprctl eval "$(printf 'hl.dispatch(hl.dsp.workspace.move({workspace="%s", monitor="%s"}))' "$ws" "$name")" >/dev/null 2>&1 || true
+}
+
 bind_workspace_to_monitor() {
   local ws=$1 name=$2
   [[ $ws =~ ^[0-9]+$ ]] || return 0
   [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || return 0
   [[ $name != *HEADLESS* ]] || return 0
-  # Hyprland 0.56: `hyprctl keyword` is rejected. Persistent bind is a Lua rule.
+  # Persistent rule only for workspaces the profile actually pins.
   hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s", persistent = true })' "$ws" "$name")" >/dev/null 2>&1 || true
-  hyprctl eval "$(printf 'hl.dispatch(hl.dsp.workspace.move({workspace="%s", monitor="%s"}))' "$ws" "$name")" >/dev/null 2>&1 || true
+  move_workspace_to_monitor "$ws" "$name"
   echo "bound workspace $ws → $name"
+}
+
+snapshot_workspaces() {
+  hyprctl -j workspaces 2>/dev/null | jq -c '[.[] | select(.id != null) | {id: (.id|tostring), monitor: (.monitor // "")}]' 2>/dev/null || echo "[]"
+}
+
+# After monitor enable/disable/move, put unpinned workspaces back where they were.
+restore_unpinned_workspaces() {
+  local snap=$1
+  local pinned_json=${2:-{}}
+  [[ -n $snap && $snap != "[]" && $snap != "null" ]] || return 0
+  local enabled
+  enabled=$(hyprctl -j monitors 2>/dev/null | jq -r '.[] | select(.disabled != true) | .name' 2>/dev/null)
+  printf '%s' "$snap" | jq -c '.[]' 2>/dev/null | while IFS= read -r item; do
+    [[ -n $item ]] || continue
+    local ws mon
+    ws=$(printf '%s' "$item" | jq -r '.id // empty')
+    mon=$(printf '%s' "$item" | jq -r '.monitor // empty')
+    [[ -n $ws && -n $mon ]] || continue
+    if printf '%s' "$pinned_json" | jq -e --arg ws "$ws" 'has($ws)' >/dev/null 2>&1; then
+      continue
+    fi
+    printf '%s\n' "$enabled" | grep -qx -- "$mon" || continue
+    echo "keep workspace $ws on $mon"
+    move_workspace_to_monitor "$ws" "$mon"
+  done
 }
 
 # geom JSON {x,y,w,h} is 0–1 of the workspace's *layout* area (backend pixels / scale).
@@ -589,6 +623,8 @@ cmd_apply() {
   fi
 
   echo "applying profile $profile_name ($profile_id)"
+  local ws_snap
+  ws_snap=$(snapshot_workspaces)
   apply_profile_outputs "$profile_id"
   status_json=$(cmd_live_status)
   if [[ -n $requested_id ]]; then
@@ -596,7 +632,9 @@ cmd_apply() {
   else
     bindings=$(printf '%s' "$status_json" | jq -c '.bindings // {}')
   fi
+  restore_unpinned_workspaces "$ws_snap" "$bindings"
   apply_bindings "$bindings"
+  restore_unpinned_workspaces "$ws_snap" "$bindings"
   # Hotkey still bypasses "once per boot", but never relaunches a window
   # that is already on the workspace (duplicate Apply was stacking apps).
   local launch_force=$force
