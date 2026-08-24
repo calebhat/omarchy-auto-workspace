@@ -318,6 +318,44 @@ def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[st
     }
 
 
+def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
+    pins = workspace_bindings(cfg, profile, live_list)
+    prefs = profile.get("workspacePrefs") or {}
+    ws_ids = set(str(k) for k in pins.keys()) | set(str(k) for k in prefs.keys())
+    applied = []
+    for ws in sorted(ws_ids, key=lambda s: int(s) if s.isdigit() else 99):
+        pref = prefs.get(ws) or {}
+        layout = pref.get("layout") if pref.get("layout") in ("dwindle", "scrolling", "master") else ""
+        vis = int(pref.get("visibleCount") or 2)
+        if vis < 2:
+            vis = 2
+        if vis > 4:
+            vis = 4
+        lock = pref.get("lockSizes") is True
+        extras = pref.get("extras") if pref.get("extras") == "block" else "around"
+        if lock and extras == "around" and layout != "scrolling":
+            layout = "scrolling"
+        mon = pins.get(ws) or ""
+        mon = safe_connector(mon) or ""
+        parts = [f'workspace = "{ws}"', "persistent = true"]
+        if mon:
+            parts.append(f'monitor = "{mon}"')
+        if layout:
+            parts.append(f'layout = "{layout}"')
+        if layout == "scrolling":
+            col = round(1.0 / vis, 4)
+            parts.append(f"layout_opts = {{ column_width = {col} }}")
+        lua = "hl.workspace_rule({ " + ", ".join(parts) + " })"
+        subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if mon:
+            subprocess.run(
+                ["hyprctl", "eval", f'hl.dispatch(hl.dsp.workspace.move({{workspace="{ws}", monitor="{mon}"}}))'],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        applied.append({"workspace": ws, "layout": layout or "dwindle", "monitor": mon, "visibleCount": vis, "lockSizes": lock, "extras": extras})
+    return {"ok": True, "workspaces": applied}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Match Auto Workspace profiles to live monitors")
     parser.add_argument("--config", required=True)
@@ -327,6 +365,7 @@ def main() -> int:
     parser.add_argument("--bindings", action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--apply-outputs", action="store_true")
+    parser.add_argument("--apply-ws-prefs", action="store_true")
     args = parser.parse_args()
     with open(args.config, encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -352,6 +391,16 @@ def main() -> int:
             sys.stdout.write("\n")
             return 2
         json.dump(apply_outputs(cfg, prof, live), sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+    if args.apply_ws_prefs:
+        pid = args.profile_id
+        prof = next((p for p in (cfg.get("profiles") or []) if p.get("id") == pid), None)
+        if not prof:
+            json.dump({"ok": False}, sys.stdout)
+            sys.stdout.write("\n")
+            return 2
+        json.dump(apply_ws_prefs(cfg, prof, live), sys.stdout)
         sys.stdout.write("\n")
         return 0
     matched = None

@@ -285,8 +285,24 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
         used.add(hit["address"])
         by_ws.setdefault(ws, []).append({"addr": hit["address"], "geom": geom, "name": a.get("name")})
     results = []
+    prefs = profile.get("workspacePrefs") or {}
     for ws, windows in by_ws.items():
-        results.append(apply_many({"workspace": ws, "windows": windows}))
+        result = apply_many({"workspace": ws, "windows": windows})
+        pref = prefs.get(str(ws)) or {}
+        if pref.get("lockSizes") is True:
+            for it in result.get("windows") or []:
+                addr = it.get("addr")
+                box = it.get("actual") or {}
+                w = int(box.get("w") or 0)
+                h = int(box.get("h") or 0)
+                if addr and w > 0 and h > 0:
+                    hypr_eval(
+                        f'hl.dispatch(hl.dsp.window.set_prop({{ window="address:{addr}", prop="min_size", value="{w} {h}" }}))'
+                    )
+                    hypr_eval(
+                        f'hl.dispatch(hl.dsp.window.set_prop({{ window="address:{addr}", prop="max_size", value="{w} {h}" }}))'
+                    )
+        results.append(result)
     return {"ok": True, "workspaces": results}
 
 

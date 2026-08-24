@@ -81,6 +81,14 @@ Item {
     }
 
     Process {
+        id: extrasWatch
+        command: ["python3", root.home + "/.config/omarchy/plugins/" + root.pluginId + "/scripts/watch"]
+        running: true
+        stdout: SplitParser { onRead: function(d){ root.log("extras " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[auto-workspace extras] " + d) } }
+    }
+
+    Process {
         id: manualLaunchProc
         stdout: SplitParser { onRead: function(d){ console.log("[auto-workspace manual] " + d) } }
         stderr: SplitParser { onRead: function(d){ console.warn("[auto-workspace manual err] " + d) } }

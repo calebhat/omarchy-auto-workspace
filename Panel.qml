@@ -94,6 +94,7 @@ Panel {
     readonly property var transferToProfileOptions: transferMode === "move"
         ? [{ value: activeProfileId, label: activeProfile.name }]
         : root.profileOptions
+    readonly property var currentWsPref: Model.workspacePref(activeProfile, formWorkspace)
     readonly property string workspaceMonitorId: {
         var map = activeProfile.workspaceMonitors || {}
         return String(map[String(formWorkspace)] || "")
@@ -292,6 +293,21 @@ Panel {
     function updateFormPreview() {
         if (formType === "webapp" && (formCommand.indexOf("http://") === 0 || formCommand.indexOf("https://") === 0)) formExecPreview = "omarchy-launch-webapp '" + formCommand + "'"
         else formExecPreview = formCommand
+    }
+    function setWorkspacePref(field, value) {
+        var cfg = root.currentConfig()
+        var pid = cfg.settings.activeProfileId
+        var ws = String(formWorkspace)
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== pid) continue
+            var prefs = cfg.profiles[i].workspacePrefs || {}
+            var pref = Model.normalizeWorkspacePref(prefs[ws])
+            pref[field] = value
+            prefs[ws] = Model.normalizeWorkspacePref(pref)
+            cfg.profiles[i].workspacePrefs = prefs
+        }
+        config = cfg
+        saveConfig()
     }
     function persistFormWorkspace() {
         persistWsTimer.restart()
@@ -897,6 +913,62 @@ Panel {
                             font.pixelSize: Style.font.caption - 1
                         }
 
+                        Dropdown {
+                            Layout.fillWidth: true
+                            label: "Layout"
+                            foreground: root.foreground
+                            value: root.currentWsPref.layout
+                            options: [
+                                { value: "dwindle", label: "Dwindle" },
+                                { value: "scrolling", label: "Scrolling" },
+                                { value: "master", label: "Master" }
+                            ]
+                            onChanged: function(v) { if (v !== root.currentWsPref.layout) root.setWorkspacePref("layout", v) }
+                        }
+                        RowLayout {
+                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.lockSizes
+                            Layout.fillWidth: true
+                            spacing: Style.space(6)
+                            Text {
+                                text: "Visible"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                            }
+                            Repeater {
+                                model: [2, 3, 4]
+                                delegate: Button {
+                                    required property int modelData
+                                    text: String(modelData)
+                                    selected: root.currentWsPref.visibleCount === modelData
+                                    onClicked: root.setWorkspacePref("visibleCount", modelData)
+                                    Layout.preferredHeight: Style.space(28)
+                                }
+                            }
+                        }
+                        Toggle {
+                            Layout.fillWidth: true
+                            label: "Lock assigned sizes"
+                            description: root.currentWsPref.lockSizes
+                                ? "New windows won't resize these panes."
+                                : "Opening windows may resize the split."
+                            checked: root.currentWsPref.lockSizes === true
+                            foreground: root.foreground
+                            onClicked: root.setWorkspacePref("lockSizes", !(root.currentWsPref.lockSizes === true))
+                        }
+                        Dropdown {
+                            visible: root.currentWsPref.lockSizes === true
+                            Layout.fillWidth: true
+                            label: "Extra windows"
+                            foreground: root.foreground
+                            value: root.currentWsPref.extras
+                            options: [
+                                { value: "around", label: "Open around (scrolling)" },
+                                { value: "block", label: "Don't keep extras here" }
+                            ]
+                            onChanged: function(v) { if (v !== root.currentWsPref.extras) root.setWorkspacePref("extras", v) }
+                        }
+
                         Button {
                             Layout.fillWidth: true
                             text: "Move / copy workspace"
@@ -1002,8 +1074,8 @@ Panel {
                             appList: root.appList
                             screenW: panel.screenW
                             screenH: panel.screenH
-                            hyprLayout: root.hyprLayout
-                            columnWidth: root.hyprColumnWidth
+                            hyprLayout: root.currentWsPref.layout
+                            columnWidth: 1 / Math.max(2, root.currentWsPref.visibleCount)
                             onLayoutChanged: function(tiles) { root.applyPreviewLayout(tiles) }
                             onLayoutCleared: root.resetPreviewLayout()
                         }

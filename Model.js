@@ -31,8 +31,43 @@ function defaultProfile() {
         workspaceMonitors: {},
         disabledMonitors: [],
         monitorLayout: {},
+        workspacePrefs: {},
         assignments: []
     }
+}
+
+function normalizeWorkspacePref(p) {
+    if (!p || typeof p !== "object") {
+        return { layout: "dwindle", visibleCount: 2, lockSizes: false, extras: "around" }
+    }
+    var layout = p.layout
+    if (layout !== "scrolling" && layout !== "master") layout = "dwindle"
+    var vis = parseInt(p.visibleCount, 10)
+    if (!(vis >= 2 && vis <= 4)) vis = 2
+    var extras = p.extras === "block" ? "block" : "around"
+    return {
+        layout: layout,
+        visibleCount: vis,
+        lockSizes: p.lockSizes === true,
+        extras: extras
+    }
+}
+
+function normalizeWorkspacePrefs(raw) {
+    var out = {}
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out
+    var keys = Object.keys(raw)
+    for (var i = 0; i < keys.length; i++) {
+        var ws = parseInt(keys[i], 10)
+        if (!(ws >= 1 && ws <= 10)) continue
+        out[String(ws)] = normalizeWorkspacePref(raw[keys[i]])
+    }
+    return out
+}
+
+function workspacePref(profile, ws) {
+    var map = (profile && profile.workspacePrefs) || {}
+    return normalizeWorkspacePref(map[String(ws)])
 }
 
 function normalizeMonitorLayout(raw) {
@@ -796,6 +831,7 @@ function normalizeProfile(p, monitorIds) {
             return off
         })(),
         monitorLayout: normalizeMonitorLayout(p.monitorLayout),
+        workspacePrefs: normalizeWorkspacePrefs(p.workspacePrefs),
         assignments: assignments
     }
 }
@@ -1037,6 +1073,9 @@ function copyWorkspace(cfg, fromId, fromWs, toId, toWs) {
         copies.push(normalizeAssignment(item))
     }
     to.assignments = kept.concat(copies)
+    if (!to.workspacePrefs) to.workspacePrefs = {}
+    if ((from.workspacePrefs || {})[String(srcWs)])
+        to.workspacePrefs[String(dstWs)] = clone(normalizeWorkspacePref(from.workspacePrefs[String(srcWs)]))
     if (!to.workspaceMonitors) to.workspaceMonitors = {}
     var pin = (from.workspaceMonitors || {})[String(srcWs)]
     if (pin && (to.monitors || []).indexOf(pin) >= 0) to.workspaceMonitors[String(dstWs)] = pin
@@ -1062,6 +1101,14 @@ function moveWorkspace(cfg, profileId, fromWs, toWs) {
         next.push(normalizeAssignment(item))
     }
     prof.assignments = next
+    var prefs = prof.workspacePrefs || {}
+    var prefFrom = prefs[String(srcWs)]
+    var prefTo = prefs[String(dstWs)]
+    if (prefFrom) prefs[String(dstWs)] = prefFrom
+    else delete prefs[String(dstWs)]
+    if (prefTo) prefs[String(srcWs)] = prefTo
+    else delete prefs[String(srcWs)]
+    prof.workspacePrefs = prefs
     var pins = prof.workspaceMonitors || {}
     var pFrom = pins[String(srcWs)]
     var pTo = pins[String(dstWs)]

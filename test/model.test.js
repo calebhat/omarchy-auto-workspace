@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePrefs }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -175,5 +175,14 @@ const wide = m.placeMonitorNoOverlap(
 )
 if (wide.y !== -900) throw new Error("ultrawide sits on top edge")
 if (wide.x !== 0) throw new Error("ultrawide spans both side-by-side, x=" + wide.x)
+
+const prefCfg = m.sanitizeConfig({
+  version: 2,
+  profiles: [{ id: "p", name: "P", workspacePrefs: { "2": { layout: "scrolling", visibleCount: 3, lockSizes: true, extras: "block" }, "99": { layout: "nope" } } }]
+})
+const pref = prefCfg.profiles[0].workspacePrefs["2"]
+if (pref.layout !== "scrolling" || pref.visibleCount !== 3 || pref.lockSizes !== true || pref.extras !== "block")
+  throw new Error("workspace prefs")
+if (prefCfg.profiles[0].workspacePrefs["99"]) throw new Error("invalid ws pref dropped")
 
 console.log("model.test.js ok")

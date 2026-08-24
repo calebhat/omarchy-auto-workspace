@@ -677,6 +677,7 @@ cmd_apply() {
   fi
   restore_unpinned_workspaces "$ws_snap" "$bindings"
   apply_bindings "$bindings"
+  live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --apply-ws-prefs >/dev/null || true
   restore_unpinned_workspaces "$ws_snap" "$bindings"
   # Hotkey still bypasses "once per boot", but never relaunches a window
   # that is already on the workspace (duplicate Apply was stacking apps).
@@ -704,6 +705,7 @@ case "${1:-}" in
   --force-launch-all) cmd_launch_all "true" ;;
   --apply-matching) cmd_apply hotkey "" true ;;
   --apply-profile) cmd_apply hotkey "${2:-}" true ;;
+  --watch-extras) exec python3 "$PLUGIN_DIR/scripts/watch" ;;
   --default-config) default_config ;;
   --help|-h|"") cat <<'HELP'
 auto-workspace.sh — helper for io.github.calebhat.auto-workspace
@@ -718,6 +720,7 @@ auto-workspace.sh — helper for io.github.calebhat.auto-workspace
   --force-launch-all           launch matching profile regardless of boot flag
   --apply-matching             detect layout, bind workspaces, launch apps
   --apply-profile <id>         bind + launch a specific profile
+  --watch-extras               send extra windows away when extras=block
   --default-config             print default config
 HELP
   ;;
