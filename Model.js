@@ -30,8 +30,101 @@ function defaultProfile() {
         monitors: [],
         workspaceMonitors: {},
         disabledMonitors: [],
+        monitorLayout: {},
         assignments: []
     }
+}
+
+function normalizeMonitorLayout(raw) {
+    var out = {}
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out
+    var keys = Object.keys(raw)
+    for (var i = 0; i < keys.length; i++) {
+        var id = String(keys[i] || "").slice(0, 40)
+        var p = raw[keys[i]]
+        if (!id || !p || typeof p !== "object") continue
+        var x = parseInt(p.x, 10)
+        var y = parseInt(p.y, 10)
+        if (isNaN(x)) x = 0
+        if (isNaN(y)) y = 0
+        out[id] = {
+            x: Math.max(-20000, Math.min(20000, x)),
+            y: Math.max(-20000, Math.min(20000, y))
+        }
+    }
+    return out
+}
+
+function snapLayoutRect(dragged, others, thresh) {
+    if (!dragged) return dragged
+    var t = thresh > 0 ? thresh : 48
+    var x = dragged.x, y = dragged.y
+    var w = dragged.w, h = dragged.h
+    var bestX = x, bestY = y, dx = t + 1, dy = t + 1
+    function considerX(v) {
+        var d = Math.abs(x - v)
+        if (d < dx && d <= t) { dx = d; bestX = v }
+    }
+    function considerY(v) {
+        var d = Math.abs(y - v)
+        if (d < dy && d <= t) { dy = d; bestY = v }
+    }
+    considerX(0)
+    considerY(0)
+    var list = others || []
+    for (var i = 0; i < list.length; i++) {
+        var o = list[i]
+        if (!o) continue
+        considerX(o.x)
+        considerX(o.x + o.w)
+        considerX(o.x - w)
+        considerX(o.x + o.w - w)
+        considerY(o.y)
+        considerY(o.y + o.h)
+        considerY(o.y - h)
+        considerY(o.y + o.h - h)
+    }
+    return { x: bestX, y: bestY, w: w, h: h, id: dragged.id }
+}
+
+function liveLogicalSize(live) {
+    var scale = Number(live && live.scale) || 1
+    if (scale <= 0) scale = 1
+    var w = Number(live && live.width) || 1920
+    var h = Number(live && live.height) || 1080
+    return { w: Math.max(200, Math.round(w / scale)), h: Math.max(200, Math.round(h / scale)) }
+}
+
+function monitorLayoutTiles(cfg, profile, liveList) {
+    var tiles = []
+    if (!profile) return tiles
+    var off = {}
+    var dis = profile.disabledMonitors || []
+    for (var d = 0; d < dis.length; d++) off[String(dis[d])] = true
+    var layout = profile.monitorLayout || {}
+    var ids = profile.monitors || []
+    var live = liveList || []
+    for (var i = 0; i < ids.length; i++) {
+        var id = ids[i]
+        var saved = monitorById(cfg, id)
+        var hit = findLive(saved, live)
+        var size = hit ? liveLogicalSize(hit) : { w: 1920, h: 1080 }
+        var pos = layout[id]
+        var x = pos ? pos.x : (hit ? Number(hit.x) || 0 : i * (size.w + 32))
+        var y = pos ? pos.y : (hit ? Number(hit.y) || 0 : 0)
+        var mlabel = saved ? saved.label : id
+        tiles.push({
+            id: id,
+            label: mlabel,
+            x: x,
+            y: y,
+            w: size.w,
+            h: size.h,
+            off: !!off[id],
+            connected: !!hit
+        })
+    }
+    return tiles
 }
 
 function clone(o) { return JSON.parse(JSON.stringify(o)) }
@@ -445,6 +538,7 @@ function normalizeProfile(p, monitorIds) {
             if (off.length >= mons.length) off = off.slice(0, mons.length - 1)
             return off
         })(),
+        monitorLayout: normalizeMonitorLayout(p.monitorLayout),
         assignments: assignments
     }
 }

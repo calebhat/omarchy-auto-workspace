@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -123,5 +123,12 @@ const oneScreen = m.sanitizeConfig({
 })
 if ((oneScreen.profiles[0].disabledMonitors || []).length !== 0)
   throw new Error("cannot disable the only display in a profile")
+
+const snapped = m.snapLayoutRect(
+  { id: "a", x: 1905, y: 3, w: 1920, h: 1080 },
+  [{ id: "b", x: 0, y: 0, w: 1920, h: 1080 }],
+  48
+)
+if (snapped.x !== 1920 || snapped.y !== 0) throw new Error("snap to neighbor edge")
 
 console.log("model.test.js ok")

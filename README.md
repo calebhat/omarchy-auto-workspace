@@ -40,6 +40,7 @@ omarchy plugin disable tenzin.auto-workspace
    workspaces to monitors, then launch that profile’s apps. On the
    Profiles tab, toggle a display off (for example the laptop panel on
    the dock profile) so Apply disables it. At least one display must stay on.
+   Arrangement is a drag canvas for monitor positions; edges snap.
 5. **Apply matching profile at login** is off by default.
 
 Desk example: workspace 1 on the left external, 2–5 on the right external,

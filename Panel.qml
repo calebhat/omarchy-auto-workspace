@@ -47,6 +47,7 @@ Panel {
     property var liveStatus: ({ live: [], profiles: [], matchedProfileId: "", bindings: {} })
     property var liveMonitors: []
     property bool applyBusy: false
+    property string profilesPage: "list"
     onFormTypeChanged: { updateFormPreview(); updateAutofillName() }
 
     property string hyprLayout: "dwindle"
@@ -363,6 +364,12 @@ Panel {
         prof.name = live.length <= 1 ? "Laptop" : ("Desk " + live.length + " monitors")
         prof.monitors = ids
         prof.matchMode = "exact"
+        var layout = {}
+        for (var j = 0; j < live.length; j++) {
+            if (!ids[j]) continue
+            layout[ids[j]] = { x: Number(live[j].x) || 0, y: Number(live[j].y) || 0 }
+        }
+        prof.monitorLayout = Model.normalizeMonitorLayout(layout)
         cfg.profiles = cfg.profiles.concat([prof])
         cfg.settings.activeProfileId = prof.id
         config = cfg
@@ -405,6 +412,40 @@ Panel {
         config = cfg
         saveConfig()
         statusText = off ? "Display off for this profile" : "Display on for this profile"
+        clearStatusTimer.restart()
+    }
+    function setMonitorLayout(positions) {
+        var cfg = root.currentConfig()
+        var pid = cfg.settings.activeProfileId
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== pid) continue
+            cfg.profiles[i].monitorLayout = Model.normalizeMonitorLayout(positions)
+        }
+        config = cfg
+        saveConfig()
+        statusText = "Saved display arrangement"
+        clearStatusTimer.restart()
+    }
+    function captureLiveMonitorLayout() {
+        var cfg = root.currentConfig()
+        var pid = cfg.settings.activeProfileId
+        var prof = Model.profileById(cfg, pid)
+        if (!prof) return
+        var layout = {}
+        var live = root.liveMonitors || []
+        var ids = prof.monitors || []
+        for (var i = 0; i < ids.length; i++) {
+            var saved = Model.monitorById(cfg, ids[i])
+            var hit = Model.findLive(saved, live)
+            if (!hit) continue
+            layout[ids[i]] = { x: Number(hit.x) || 0, y: Number(hit.y) || 0 }
+        }
+        for (var p = 0; p < cfg.profiles.length; p++) {
+            if (cfg.profiles[p].id === pid) cfg.profiles[p].monitorLayout = Model.normalizeMonitorLayout(layout)
+        }
+        config = cfg
+        saveConfig()
+        statusText = "Captured current arrangement"
         clearStatusTimer.restart()
     }
     function setMatchMode(id, mode) {
@@ -999,7 +1040,19 @@ Panel {
                         onClicked: root.setApplyOnBoot(!(root.config.settings && root.config.settings.applyOnBoot === true))
                     }
 
+                    ButtonGroup {
+                        Layout.fillWidth: true
+                        foreground: root.foreground
+                        options: [
+                            { value: "list", label: "Profiles" },
+                            { value: "layout", label: "Arrangement" }
+                        ]
+                        value: root.profilesPage
+                        onChanged: function(v) { root.profilesPage = v; liveProc.running = true }
+                    }
+
                     RowLayout {
+                        visible: root.profilesPage === "list"
                         Layout.fillWidth: true
                         spacing: Style.space(8)
                         Button { text: "Save current monitors as profile"; onClicked: root.addProfileFromLive() }
@@ -1007,6 +1060,7 @@ Panel {
                     }
 
                     Text {
+                        visible: root.profilesPage === "list"
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
                         text: {
@@ -1022,6 +1076,7 @@ Panel {
                     }
 
                     ScrollView {
+                        visible: root.profilesPage === "list"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
@@ -1125,6 +1180,33 @@ Panel {
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    ColumnLayout {
+                        visible: root.profilesPage === "layout"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        spacing: Style.space(8)
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: "Arrange displays for “" + root.activeProfile.name + "”. Drag a screen; edges snap. Apply matching uses this layout."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Button { text: "Use current arrangement"; onClicked: root.captureLiveMonitorLayout() }
+                            Button { text: "Apply this profile"; onClicked: root.applyProfile(root.activeProfileId) }
+                        }
+                        MonitorLayout {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.minimumHeight: Style.space(220)
+                            tiles: Model.monitorLayoutTiles(root.config, root.activeProfile, root.liveMonitors)
+                            onLayoutChanged: function(positions) { root.setMonitorLayout(positions) }
                         }
                     }
                 }

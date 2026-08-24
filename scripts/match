@@ -179,6 +179,26 @@ def disable_monitor(m: dict[str, Any]) -> None:
         _keyword_monitor(f"{name},disable")
 
 
+def place_monitor(m: dict[str, Any], x: int, y: int) -> None:
+    name = safe_connector(str(m.get("name") or ""))
+    if not name:
+        return
+    w = int(m.get("width") or 0)
+    h = int(m.get("height") or 0)
+    refresh = float(m.get("refreshRate") or 60)
+    scale = m.get("scale") or 1
+    if w <= 0 or h <= 0:
+        return
+    hz = f"{refresh:.2f}".rstrip("0").rstrip(".")
+    pos = f"{int(x)}x{int(y)}"
+    lua = (
+        f'hl.monitor({{ output = "{name}", mode = "{w}x{h}@{hz}", '
+        f'position = "{pos}", scale = {scale} }})'
+    )
+    subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _keyword_monitor(f"{name},{w}x{h}@{hz},{pos},{scale}")
+
+
 def disable_plan(enabled_names: list[str], disable_names: list[str]) -> list[str]:
     """Never power off the last enabled output."""
     remaining = {n for n in enabled_names if n}
@@ -236,6 +256,25 @@ def apply_outputs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[
         changed.append(f"off:{name}")
         if name in enabled_names:
             enabled_names.remove(name)
+    layout = profile.get("monitorLayout") or {}
+    if layout:
+        try:
+            live_now = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors", "all"], text=True))
+        except Exception:
+            live_now = live_list
+        for mid, pos in layout.items():
+            if str(mid) in disabled_ids:
+                continue
+            saved = monitor_by_id(cfg, str(mid))
+            if not saved:
+                continue
+            hit = find_live(saved, live_now, enabled_only=True)
+            if not hit:
+                continue
+            x = int((pos or {}).get("x") or 0)
+            y = int((pos or {}).get("y") or 0)
+            place_monitor(hit, x, y)
+            changed.append(f"pos:{hit.get('name')}@{x}x{y}")
     return {"changed": changed}
 
 
@@ -266,6 +305,7 @@ def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[st
                 "disabled": bool(m.get("disabled")),
                 "width": m.get("width"),
                 "height": m.get("height"),
+                "scale": m.get("scale") or 1,
                 "x": m.get("x"),
                 "y": m.get("y"),
             }
