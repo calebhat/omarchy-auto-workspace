@@ -77,6 +77,80 @@ function normalizeMonitor(m) {
     }
 }
 
+function round4(n) {
+    return Math.round(Number(n) * 10000) / 10000
+}
+
+function normalizeGeom(g) {
+    if (!g || typeof g !== "object") return null
+    var x = Number(g.x), y = Number(g.y), w = Number(g.w), h = Number(g.h)
+    if (isNaN(x) || isNaN(y) || isNaN(w) || isNaN(h)) return null
+    w = Math.max(0.12, Math.min(1, w))
+    h = Math.max(0.12, Math.min(1, h))
+    x = Math.max(0, Math.min(1 - w, x))
+    y = Math.max(0, Math.min(1 - h, y))
+    var out = { x: round4(x), y: round4(y), w: round4(w), h: round4(h) }
+    var z = parseInt(g.z, 10)
+    if (!isNaN(z)) out.z = z
+    return out
+}
+
+function autoLayoutRects(count, layout, columnWidth) {
+    var gap = 0.012
+    var rects = []
+    if (!(count > 0)) return rects
+    function push(x, y, w, h) { rects.push(normalizeGeom({ x: x, y: y, w: w, h: h })) }
+    if (layout === "scrolling") {
+        var cw = columnWidth > 0.1 && columnWidth < 1 ? columnWidth : 0.49
+        for (var i = 0; i < count; i++) push(i * (cw + gap), 0, cw, 1)
+        return rects
+    }
+    if (layout === "master") {
+        if (count === 1) { push(0, 0, 1, 1); return rects }
+        var mw = 0.55
+        push(0, 0, mw - gap / 2, 1)
+        var stackN = count - 1
+        var sh = (1 - gap * (stackN - 1)) / stackN
+        for (var j = 0; j < stackN; j++) push(mw + gap / 2, j * (sh + gap), 1 - mw - gap / 2, sh)
+        return rects
+    }
+    if (count === 1) { push(0, 0, 1, 1); return rects }
+    if (count === 2) { push(0, 0, 0.5 - gap / 2, 1); push(0.5 + gap / 2, 0, 0.5 - gap / 2, 1); return rects }
+    if (count === 3) {
+        push(0, 0, 0.5 - gap / 2, 1)
+        push(0.5 + gap / 2, 0, 0.5 - gap / 2, 0.5 - gap / 2)
+        push(0.5 + gap / 2, 0.5 + gap / 2, 0.5 - gap / 2, 0.5 - gap / 2)
+        return rects
+    }
+    if (count === 4) {
+        push(0, 0, 0.5 - gap / 2, 0.5 - gap / 2)
+        push(0.5 + gap / 2, 0, 0.5 - gap / 2, 0.5 - gap / 2)
+        push(0, 0.5 + gap / 2, 0.5 - gap / 2, 0.5 - gap / 2)
+        push(0.5 + gap / 2, 0.5 + gap / 2, 0.5 - gap / 2, 0.5 - gap / 2)
+        return rects
+    }
+    var cols = count <= 6 ? 3 : 4
+    var rows = Math.ceil(count / cols)
+    var tw = (1 - gap * (cols - 1)) / cols
+    var th = (1 - gap * (rows - 1)) / rows
+    for (var k = 0; k < count; k++) {
+        var col = k % cols
+        var row = Math.floor(k / cols)
+        push(col * (tw + gap), row * (th + gap), tw, th)
+    }
+    return rects
+}
+
+function assignmentHasGeom(a) {
+    return !!(a && normalizeGeom(a.geom))
+}
+
+function workspaceUsesCustomLayout(apps) {
+    var list = apps || []
+    for (var i = 0; i < list.length; i++) if (assignmentHasGeom(list[i])) return true
+    return false
+}
+
 function normalizeAssignment(a) {
     var ws = parseInt(a.workspace, 10)
     if (!(ws >= 1 && ws <= 10) && String(a.workspace).indexOf("special:") !== 0) ws = 1
@@ -89,7 +163,7 @@ function normalizeAssignment(a) {
     } else if (a.onlyOnBoot === 0 || a.onlyOnBoot === "0" || a.onlyOnBoot === "false") {
         onlyOnBoot = false
     }
-    return {
+    var out = {
         id: String(a.id || makeId()),
         workspace: ws,
         name: String(a.name || a.command || "App").slice(0, 80),
@@ -99,6 +173,9 @@ function normalizeAssignment(a) {
         enabled: a.enabled !== false,
         onlyOnBoot: onlyOnBoot
     }
+    var geom = normalizeGeom(a.geom)
+    if (geom) out.geom = geom
+    return out
 }
 
 function normalizeExtraApp(a) {

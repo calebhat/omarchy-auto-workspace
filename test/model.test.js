@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -45,5 +45,18 @@ if (m.sameMonitor(left, { description: "HP Inc. HP E24 G5 CNK436070F", name: "DV
   throw new Error("do not match the other HP by connector name")
 if (m.displayNameForExec("omarchy-launch-or-focus-tui --app-id=org.omarchy.herdr herdr --session shophawk") !== "ShopHawk Herdr")
   throw new Error("herdr display name")
+
+const g = m.normalizeGeom({ x: -0.2, y: 0.9, w: 0.5, h: 0.5 })
+if (!g || g.x < 0 || g.x + g.w > 1.0001) throw new Error("geom clamp x")
+if (g.h < 0.12) throw new Error("geom min h")
+if (m.normalizeGeom(null) !== null) throw new Error("geom null")
+const two = m.autoLayoutRects(2, "dwindle", 0.49)
+if (two.length !== 2 || two[0].w < 0.4 || two[1].x < 0.4) throw new Error("dwindle 2-split")
+const withGeom = m.sanitizeConfig({
+  version: 2,
+  profiles: [{ id: "p", name: "P", assignments: [{ workspace: 1, name: "A", exec: "foot", geom: { x: 0, y: 0, w: 0.4, h: 1 } }] }]
+})
+if (!m.workspaceUsesCustomLayout(withGeom.profiles[0].assignments)) throw new Error("custom layout flag")
+if (!withGeom.profiles[0].assignments[0].geom) throw new Error("persist geom")
 
 console.log("model.test.js ok")

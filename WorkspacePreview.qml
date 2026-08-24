@@ -3,38 +3,39 @@ import QtQuick.Layouts
 import Quickshell
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
-// Mock preview of a workspace's tiling. Shows assigned apps as tiles in a
-// dwindle-like split, miniaturized to the user's screen aspect.
+// Mini monitor preview. Assigned apps start in a tiling mock; drag a tile
+// or its edges to pin a custom floating layout (fractions of the workspace).
 Item {
     id: root
     property int workspace: 1
-    property var assignedApps: [] // assignments filtered for this WS
-    property var appList: [] // installed apps with iconPath, for icon lookup
+    property var assignedApps: []
+    property var appList: []
     property bool isExpanded: false
     property int screenW: 0
     property int screenH: 0
     property var bar: null
-    // Actual Hyprland layout — fed from Panel via hyprctl getoption. Preview branches per layout.
     property string hyprLayout: "dwindle"
-    property real columnWidth: 0.49 // scrolling:column_width
+    property real columnWidth: 0.49
+    property bool dragging: false
+    property int frontZ: 10
+
     readonly property real screenAspect: screenW > 0 && screenH > 0 ? screenH / screenW : 0.5625
     readonly property var appLibrary: root.bar && root.bar.shell ? root.bar.shell.appLibrary : null
+    readonly property bool customLayout: Model.workspaceUsesCustomLayout(assignedApps)
     readonly property string layoutLabel: {
+        if (customLayout) return "custom · drag tiles / edges"
         if (hyprLayout === "scrolling") return "scrolling • " + Math.round(columnWidth * 100) + "% columns"
         if (hyprLayout === "master") return "master"
         if (hyprLayout === "dwindle") return "dwindle"
         return hyprLayout
     }
 
-    function iconPathFor(exec) {
-        for (var i = 0; i < appList.length; i++)
-            if (appList[i].exec === exec || appList[i].command === exec) return appList[i].iconPath || ""
-        return ""
-    }
+    signal layoutChanged(var tiles)
+    signal layoutCleared()
+
     function iconSourceFor(exec) {
-        // Local iconPath from list-apps, otherwise reuse the shell's AppLibrary
-        // (same lookup the Omarchy menu uses: themed plus fallback icon).
         for (var i = 0; i < appList.length; i++) {
             if (appList[i].exec === exec || appList[i].command === exec) {
                 var a = appList[i]
@@ -43,18 +44,43 @@ Item {
                 if (root.appLibrary && typeof root.appLibrary.iconSource === "function") return root.appLibrary.iconSource(icon)
                 if (icon !== "" && icon.charAt(0) === "/") return "file://" + icon
                 var themed = ""
-                try { themed = Quickshell.iconPath(icon, true) } catch(e) { themed = "" }
+                try { themed = Quickshell.iconPath(icon, true) } catch (e) { themed = "" }
                 if (themed && themed.length > 0) return themed
-                try { return Quickshell.iconPath("application-x-executable", true) } catch(e) { return "" }
+                try { return Quickshell.iconPath("application-x-executable", true) } catch (e) { return "" }
             }
         }
-        // Exec not in appList (e.g. custom command): try icon by basename, else generic
         var base = String(exec || "").split(" ")[0].split("/").pop()
         if (root.appLibrary && typeof root.appLibrary.iconSource === "function") return root.appLibrary.iconSource(base)
         var fb = ""
-        try { fb = Quickshell.iconPath(base, true) } catch(e) { fb = "" }
+        try { fb = Quickshell.iconPath(base, true) } catch (e) { fb = "" }
         if (fb && fb.length > 0 && fb.indexOf("image://icon/application-x-executable") === -1) return fb
-        try { return Quickshell.iconPath("application-x-executable", true) } catch(e) { return "" }
+        try { return Quickshell.iconPath("application-x-executable", true) } catch (e) { return "" }
+    }
+
+    function rectsForCount(n) {
+        return Model.autoLayoutRects(n, root.hyprLayout, root.columnWidth)
+    }
+
+    function geomForApp(app, idx, total) {
+        var g = Model.normalizeGeom(app && app.geom)
+        if (g) return g
+        var autos = rectsForCount(total)
+        return autos[idx] || Model.normalizeGeom({ x: 0, y: 0, w: 1, h: 1 })
+    }
+
+    function commitTiles() {
+        var out = []
+        for (var i = 0; i < tileRepeater.count; i++) {
+            var item = tileRepeater.itemAt(i)
+            if (!item || !item.app) continue
+            var g = item.fracGeom()
+            if (g) {
+                g.id = item.app.id
+                g.z = i
+                out.push(g)
+            }
+        }
+        if (out.length) root.layoutChanged(out)
     }
 
     implicitWidth: 320
@@ -87,15 +113,20 @@ Item {
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption - 2
                 elide: Text.ElideRight
+                Layout.fillWidth: true
             }
-            Item { Layout.fillWidth: true }
+            Button {
+                visible: root.customLayout
+                text: "Reset"
+                tooltipText: "Clear pinned sizes and go back to tiling"
+                verticalPadding: Style.space(2)
+                horizontalPadding: Style.space(8)
+                onClicked: root.layoutCleared()
+            }
         }
 
-        // Spacers center the mini screen vertically in whatever room the
-        // column gives it, instead of stretching the aspect ratio.
         Item { Layout.fillHeight: true; Layout.minimumHeight: 0 }
 
-        // Preview box - dwindle mock, miniaturized to match the user's screen aspect
         Rectangle {
             id: previewBox
             Layout.fillWidth: true
@@ -109,7 +140,6 @@ Item {
             border.color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.12)
             clip: true
 
-            // Empty state
             Text {
                 visible: root.assignedApps.length === 0
                 anchors.centerIn: parent
@@ -120,188 +150,218 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
             }
 
-            // Tiles — geometry branches on hyprLayout so preview matches actual Hyprland.
-            // scrolling = horizontal columns (niri-like, column_width ~0.49), dwindle = binary split, master = master/stack.
             Item {
                 id: tilesContainer
                 anchors.fill: parent
                 anchors.margins: 6
                 visible: root.assignedApps.length > 0
-                property int count: root.assignedApps.length
-                // helpers for non-scrolling layouts
-                function rectForDwindle(idx, total, parentW, parentH) {
-                    if (total === 1) return Qt.rect(0, 0, parentW, parentH)
-                    if (total === 2) {
-                        if (idx === 0) return Qt.rect(0, 0, parentW * 0.5 - 2, parentH)
-                        return Qt.rect(parentW * 0.5 + 2, 0, parentW * 0.5 - 2, parentH)
-                    }
-                    if (total === 3) {
-                        if (idx === 0) return Qt.rect(0, 0, parentW * 0.5 - 2, parentH)
-                        if (idx === 1) return Qt.rect(parentW * 0.5 + 2, 0, parentW * 0.5 - 2, parentH * 0.5 - 2)
-                        return Qt.rect(parentW * 0.5 + 2, parentH * 0.5 + 2, parentW * 0.5 - 2, parentH * 0.5 - 2)
-                    }
-                    if (total === 4) {
-                        if (idx === 0) return Qt.rect(0, 0, parentW * 0.5 - 2, parentH * 0.5 - 2)
-                        if (idx === 1) return Qt.rect(parentW * 0.5 + 2, 0, parentW * 0.5 - 2, parentH * 0.5 - 2)
-                        if (idx === 2) return Qt.rect(0, parentH * 0.5 + 2, parentW * 0.5 - 2, parentH * 0.5 - 2)
-                        return Qt.rect(parentW * 0.5 + 2, parentH * 0.5 + 2, parentW * 0.5 - 2, parentH * 0.5 - 2)
-                    }
-                    var cols = total <= 6 ? 3 : 4
-                    var rows = Math.ceil(total / cols)
-                    var w = (parentW - (cols - 1) * 4) / cols
-                    var h = (parentH - (rows - 1) * 4) / rows
-                    var col = idx % cols
-                    var row = Math.floor(idx / cols)
-                    return Qt.rect(col * (w + 4), row * (h + 4), w, h)
-                }
-                function rectForMaster(idx, total, parentW, parentH) {
-                    if (total === 1) return Qt.rect(0, 0, parentW, parentH)
-                    // left master ~55% (matches Hyprland master default), right stack splits vertically
-                    var masterW = parentW * 0.55 - 2
-                    var stackW = parentW * 0.45 - 2
-                    if (idx === 0) return Qt.rect(0, 0, masterW, parentH)
-                    var stackN = total - 1
-                    var h = (parentH - (stackN - 1) * 4) / stackN
-                    return Qt.rect(masterW + 4, (idx - 1) * (h + 4), stackW, h)
-                }
 
-                // Scrolling: horizontal strip of columns clipped to previewBox; overflow fades
-                Item {
-                    id: scrollingStrip
-                    visible: root.hyprLayout === "scrolling" && tilesContainer.count > 0
-                    anchors.fill: parent
-                    clip: true
-                    property real colW: Math.max(28, tilesContainer.width * root.columnWidth)
-                    property real gap: 4
-                    property real contentW: tilesContainer.count * colW + (tilesContainer.count - 1) * gap
-                    property bool overflows: contentW > tilesContainer.width + 1
-                    Repeater {
-                        model: root.hyprLayout === "scrolling" ? root.assignedApps : []
-                        delegate: Rectangle {
-                            required property var modelData
-                            required property int index
-                            x: index * (scrollingStrip.colW + scrollingStrip.gap)
-                            y: 0
-                            width: scrollingStrip.colW
-                            height: scrollingStrip.height
-                            radius: 6
-                            color: modelData.enabled ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.18) : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.06)
-                            border.width: 1
-                            border.color: modelData.enabled ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.45) : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.15)
-                            // fade trailing edge when overflow → hints scroll
-                            opacity: scrollingStrip.overflows && index >= 2 ? 0.55 : 1.0
-                            clip: true
-                            ColumnLayout {
-                                anchors.fill: parent
-                                anchors.margins: 4
-                                spacing: 1
-                                Item {
-                                    Layout.fillWidth: true
-                                    Layout.fillHeight: true
-                                    ColumnLayout {
-                                        anchors.centerIn: parent
-                                        spacing: 2
-                                        Image {
-                                            Layout.alignment: Qt.AlignHCenter
-                                            Layout.preferredWidth: 16
-                                            Layout.preferredHeight: 16
-                                            visible: source !== ""
-                                            source: root.iconSourceFor(modelData.exec || modelData.command)
-                                            fillMode: Image.PreserveAspectFit
-                                            asynchronous: true
-                                            cache: true
-                                            onStatusChanged: if (status === Image.Error) source = ""
-                                        }
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: modelData.name || "App"
-                                            color: modelData.enabled ? Color.foreground : Qt.darker(Color.foreground, 1.3)
-                                            font.family: Style.font.family
-                                            font.pixelSize: Style.font.caption - 1
-                                            font.bold: true
-                                            elide: Text.ElideRight
-                                            maximumLineCount: 1
-                                            horizontalAlignment: Text.AlignHCenter
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // scroll hint arrow when content overflows
-                    Text {
-                        visible: scrollingStrip.overflows
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.rightMargin: 2
-                        text: "›"
-                        color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.45)
-                        font.pixelSize: 14
-                        font.bold: true
-                    }
-                }
-
-                // Tiled layouts (dwindle / master / unknown) — absolute rects
                 Repeater {
-                    model: root.hyprLayout === "scrolling" ? [] : root.assignedApps
-                    delegate: Rectangle {
+                    id: tileRepeater
+                    model: root.assignedApps
+                    delegate: Tile {
                         required property var modelData
                         required property int index
-                        function rectFor(idx, total, parentW, parentH) {
-                            if (root.hyprLayout === "master") return tilesContainer.rectForMaster(idx, total, parentW, parentH)
-                            return tilesContainer.rectForDwindle(idx, total, parentW, parentH)
-                        }
-                        property rect geom: rectFor(index, tilesContainer.count, tilesContainer.width, tilesContainer.height)
-                        x: geom.x
-                        y: geom.y
-                        width: geom.width
-                        height: geom.height
-                        radius: 6
-                        color: modelData.enabled ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.18) : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.06)
-                        border.width: 1
-                        border.color: modelData.enabled ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.45) : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.15)
-                        clip: true
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 4
-                            spacing: 1
-                            Item {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                ColumnLayout {
-                                    anchors.centerIn: parent
-                                    spacing: 2
-                                    Image {
-                                        Layout.alignment: Qt.AlignHCenter
-                                        Layout.preferredWidth: 16
-                                        Layout.preferredHeight: 16
-                                        visible: source !== ""
-                                        source: root.iconSourceFor(modelData.exec || modelData.command)
-                                        fillMode: Image.PreserveAspectFit
-                                        asynchronous: true
-                                        cache: true
-                                        onStatusChanged: if (status === Image.Error) source = ""
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: modelData.name || "App"
-                                        color: modelData.enabled ? Color.foreground : Qt.darker(Color.foreground, 1.3)
-                                        font.family: Style.font.family
-                                        font.pixelSize: Style.font.caption - 1
-                                        font.bold: true
-                                        elide: Text.ElideRight
-                                        maximumLineCount: 1
-                                        horizontalAlignment: Text.AlignHCenter
-                                    }
-                                }
-                            }
-                        }
+                        app: modelData
+                        z: index
                     }
                 }
             }
         }
 
-        // Bottom spacer (pairs with the top one) keeps the mini screen centered
         Item { Layout.fillHeight: true; Layout.minimumHeight: 0 }
+    }
+
+    component Tile: Rectangle {
+        id: tile
+        property var app: null
+        readonly property var geom: {
+            var apps = root.assignedApps || []
+            var idx = 0
+            for (var i = 0; i < apps.length; i++) if (apps[i] && tile.app && apps[i].id === tile.app.id) { idx = i; break }
+            return root.geomForApp(tile.app, idx, apps.length)
+        }
+
+        x: 0
+        y: 0
+        width: 48
+        height: 36
+        radius: 6
+
+        function applyFrac(g) {
+            if (!g || tilesContainer.width <= 0 || tilesContainer.height <= 0) return
+            tile.x = g.x * tilesContainer.width
+            tile.y = g.y * tilesContainer.height
+            tile.width = Math.max(36, g.w * tilesContainer.width)
+            tile.height = Math.max(28, g.h * tilesContainer.height)
+        }
+
+        Component.onCompleted: applyFrac(geom)
+        onGeomChanged: if (!root.dragging) applyFrac(geom)
+        Connections {
+            target: tilesContainer
+            function onWidthChanged() { if (!root.dragging) tile.applyFrac(tile.geom) }
+            function onHeightChanged() { if (!root.dragging) tile.applyFrac(tile.geom) }
+        }
+        color: (app && app.enabled !== false)
+               ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.18)
+               : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.06)
+        border.width: 1
+        border.color: (app && app.enabled !== false)
+                      ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.45)
+                      : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.15)
+        clip: true
+
+        function fracGeom() {
+            var pw = Math.max(1, tilesContainer.width)
+            var ph = Math.max(1, tilesContainer.height)
+            return Model.normalizeGeom({
+                x: tile.x / pw,
+                y: tile.y / ph,
+                w: tile.width / pw,
+                h: tile.height / ph
+            })
+        }
+
+        function clampPosSize(nx, ny, nw, nh) {
+            var minW = 36, minH = 28
+            nw = Math.max(minW, Math.min(tilesContainer.width, nw))
+            nh = Math.max(minH, Math.min(tilesContainer.height, nh))
+            nx = Math.max(0, Math.min(tilesContainer.width - nw, nx))
+            ny = Math.max(0, Math.min(tilesContainer.height - nh, ny))
+            tile.x = nx; tile.y = ny; tile.width = nw; tile.height = nh
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 8
+            spacing: 1
+            Item {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                ColumnLayout {
+                    anchors.centerIn: parent
+                    spacing: 2
+                    Image {
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.preferredWidth: 16
+                        Layout.preferredHeight: 16
+                        visible: source !== ""
+                        source: root.iconSourceFor(app ? (app.exec || app.command) : "")
+                        fillMode: Image.PreserveAspectFit
+                        asynchronous: true
+                        cache: true
+                        onStatusChanged: if (status === Image.Error) source = ""
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: app ? (app.name || "App") : ""
+                        color: (app && app.enabled !== false) ? Color.foreground : Qt.darker(Color.foreground, 1.3)
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption - 1
+                        font.bold: true
+                        elide: Text.ElideRight
+                        maximumLineCount: 1
+                        horizontalAlignment: Text.AlignHCenter
+                    }
+                }
+            }
+        }
+
+        MouseArea {
+            id: moveArea
+            anchors.fill: parent
+            anchors.margins: 8
+            cursorShape: Qt.SizeAllCursor
+            hoverEnabled: true
+            property real grabX: 0
+            property real grabY: 0
+            property real origX: 0
+            property real origY: 0
+            onPressed: function(mouse) {
+                var p = mapToItem(tilesContainer, mouse.x, mouse.y)
+                grabX = p.x; grabY = p.y
+                origX = tile.x; origY = tile.y
+                root.dragging = true
+                tile.z = ++root.frontZ
+            }
+            onPositionChanged: function(mouse) {
+                if (!pressed) return
+                var p = mapToItem(tilesContainer, mouse.x, mouse.y)
+                var nx = origX + p.x - grabX
+                var ny = origY + p.y - grabY
+                if (Math.abs(nx - origX) > 2 || Math.abs(ny - origY) > 2) moveArea.moved = true
+                tile.clampPosSize(nx, ny, tile.width, tile.height)
+            }
+            property bool moved: false
+            onReleased: {
+                root.dragging = false
+                if (moveArea.moved || root.customLayout) root.commitTiles()
+                moveArea.moved = false
+            }
+        }
+
+        // Resize handles: edges + corners
+        Repeater {
+            model: [
+                { edge: "n",  xA: 8, yA: 0, w: -16, h: 8 },
+                { edge: "s",  xA: 8, yA: -8, w: -16, h: 8 },
+                { edge: "w",  xA: 0, yA: 8, w: 8, h: -16 },
+                { edge: "e",  xA: -8, yA: 8, w: 8, h: -16 },
+                { edge: "nw", xA: 0, yA: 0, w: 10, h: 10 },
+                { edge: "ne", xA: -10, yA: 0, w: 10, h: 10 },
+                { edge: "sw", xA: 0, yA: -10, w: 10, h: 10 },
+                { edge: "se", xA: -10, yA: -10, w: 10, h: 10 }
+            ]
+            delegate: MouseArea {
+                required property var modelData
+                z: 20
+                x: modelData.xA >= 0 ? modelData.xA : tile.width + modelData.xA
+                y: modelData.yA >= 0 ? modelData.yA : tile.height + modelData.yA
+                width: modelData.w > 0 ? modelData.w : tile.width + modelData.w
+                height: modelData.h > 0 ? modelData.h : tile.height + modelData.h
+                cursorShape: {
+                    var e = modelData.edge
+                    if (e === "n" || e === "s") return Qt.SizeVerCursor
+                    if (e === "e" || e === "w") return Qt.SizeHorCursor
+                    if (e === "nw" || e === "se") return Qt.SizeFDiagCursor
+                    return Qt.SizeBDiagCursor
+                }
+                property real grabX: 0
+                property real grabY: 0
+                property real origX: 0
+                property real origY: 0
+                property real origW: 0
+                property real origH: 0
+                property bool moved: false
+                onPressed: function(mouse) {
+                    var p = mapToItem(tilesContainer, mouse.x, mouse.y)
+                    grabX = p.x; grabY = p.y
+                    origX = tile.x; origY = tile.y; origW = tile.width; origH = tile.height
+                    root.dragging = true
+                    tile.z = ++root.frontZ
+                }
+                onPositionChanged: function(mouse) {
+                    if (!pressed) return
+                    var p = mapToItem(tilesContainer, mouse.x, mouse.y)
+                    var dx = p.x - grabX
+                    var dy = p.y - grabY
+                    var nx = origX, ny = origY, nw = origW, nh = origH
+                    var e = modelData.edge
+                    if (e.indexOf("e") >= 0) nw = origW + dx
+                    if (e.indexOf("s") >= 0) nh = origH + dy
+                    if (e.indexOf("w") >= 0) { nx = origX + dx; nw = origW - dx }
+                    if (e.indexOf("n") >= 0) { ny = origY + dy; nh = origH - dy }
+                    tile.clampPosSize(nx, ny, nw, nh)
+                    if (Math.abs(nx - origX) > 1 || Math.abs(ny - origY) > 1 || Math.abs(nw - origW) > 1 || Math.abs(nh - origH) > 1)
+                        moved = true
+                }
+                onReleased: {
+                    root.dragging = false
+                    if (moved || root.customLayout) root.commitTiles()
+                    moved = false
+                }
+            }
+        }
     }
 }

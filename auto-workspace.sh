@@ -98,6 +98,59 @@ bind_workspace_to_monitor() {
     || true
 }
 
+# geom JSON {x,y,w,h} is 0–1 of the workspace's monitor usable area.
+apply_window_geom() {
+  local addr=$1 geom_json=$2 ws=$3
+  [[ -n $addr && -n $geom_json && $geom_json != "null" ]] || return 0
+  local pixels
+  pixels=$(python3 -c '
+import json, subprocess, sys
+geom = json.loads(sys.argv[1])
+ws = sys.argv[2]
+try:
+    monitors = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
+    workspaces = json.loads(subprocess.check_output(["hyprctl", "-j", "workspaces"], text=True))
+except Exception:
+    sys.exit(0)
+name = None
+for w in workspaces:
+    if str(w.get("id")) == str(ws) or str(w.get("name")) == str(ws):
+        name = w.get("monitor")
+        break
+if not name:
+    for m in monitors:
+        if m.get("focused"):
+            name = m.get("name")
+            break
+mon = next((m for m in monitors if m.get("name") == name), None)
+if not mon:
+    sys.exit(0)
+reserved = list(mon.get("reserved") or [0, 0, 0, 0]) + [0, 0, 0, 0]
+rl, rt, rr, rb = reserved[:4]
+uw = max(1, int(mon.get("width") or 0) - int(rl) - int(rr))
+uh = max(1, int(mon.get("height") or 0) - int(rt) - int(rb))
+x = int(mon.get("x") or 0) + int(rl) + float(geom.get("x") or 0) * uw
+y = int(mon.get("y") or 0) + int(rt) + float(geom.get("y") or 0) * uh
+w = max(80, int(float(geom.get("w") or 1) * uw))
+h = max(60, int(float(geom.get("h") or 1) * uh))
+print(int(x), int(y), int(w), int(h))
+' "$geom_json" "$ws" 2>/dev/null) || return 0
+  local gx gy gw gh
+  read -r gx gy gw gh <<<"$pixels"
+  [[ -n $gx && -n $gw ]] || return 0
+  local a="address:$addr"
+  hyprctl eval "hl.dispatch(hl.dsp.window.float({window=\"$a\", action=\"set\"}))" >/dev/null 2>&1 \
+    || hyprctl dispatch setfloating "$a" >/dev/null 2>&1 \
+    || true
+  hyprctl eval "hl.dispatch(hl.dsp.window.resize({window=\"$a\", x=$gw, y=$gh, relative=false}))" >/dev/null 2>&1 \
+    || hyprctl dispatch resizewindowpixel "exact $gw $gh,$a" >/dev/null 2>&1 \
+    || true
+  hyprctl eval "hl.dispatch(hl.dsp.window.move({window=\"$a\", x=$gx, y=$gy}))" >/dev/null 2>&1 \
+    || hyprctl dispatch movewindowpixel "exact $gx $gy,$a" >/dev/null 2>&1 \
+    || true
+  echo "geom $a → ${gw}x${gh}+${gx}+${gy}"
+}
+
 apply_bindings() {
   local bindings_json=$1
   [[ -n $bindings_json && $bindings_json != "{}" && $bindings_json != "null" ]] || return 0
@@ -117,7 +170,8 @@ profile_assignments() {
   local profile_id=$1
   if jq -e '.profiles' "$CONFIG_FILE" >/dev/null 2>&1; then
     jq -c --arg id "$profile_id" '
-      (.profiles // [] | map(select(.id == $id)) | .[0].assignments // [])[]?
+      (.profiles // [] | map(select(.id == $id)) | .[0].assignments // [])
+      | sort_by(.geom.z // 0)[]?
     ' "$CONFIG_FILE" 2>/dev/null
   else
     jq -c '.assignments[]?' "$CONFIG_FILE" 2>/dev/null
@@ -263,8 +317,9 @@ cmd_launch() {
   local workspace="$1"
   local exec_cmd="$2"
   local silent="${3:-true}"
+  local geom_json="${4:-}"
   if [[ -z $workspace || -z $exec_cmd ]]; then
-    echo "usage: $0 --launch <workspace> <exec> [silent]" >&2
+    echo "usage: $0 --launch <workspace> <exec> [silent] [geom-json]" >&2
     exit 1
   fi
   if ! [[ $workspace =~ ^[0-9]+$ ]] && ! [[ $workspace =~ ^special: ]]; then
@@ -325,6 +380,7 @@ cmd_launch() {
   local target_ws="$workspace"
   local ok=false
   local tries=40
+  local placed_addrs=()
   for _try in $(seq 1 $tries); do
     local now_addrs new_addrs moved=0
     now_addrs=$(hyprctl clients -j 2>/dev/null | jq -r '.[].address' 2>/dev/null | sort -u)
@@ -358,6 +414,7 @@ cmd_launch() {
             || true
         fi
         moved=$((moved + 1))
+        placed_addrs+=("$addr")
       done <<< "$new_addrs"
       if ((moved > 0)); then
         ok=true
@@ -366,6 +423,11 @@ cmd_launch() {
     fi
     sleep 0.3
   done
+  if [[ -n $geom_json && $geom_json != "null" && ${#placed_addrs[@]} -gt 0 ]]; then
+    apply_window_geom "${placed_addrs[0]}" "$geom_json" "$target_ws"
+    sleep 0.15
+    apply_window_geom "${placed_addrs[0]}" "$geom_json" "$target_ws"
+  fi
 
   if [[ $is_browser_like == "true" ]]; then
     (
@@ -517,7 +579,9 @@ launch_profile_assignments() {
     if ((idx > 0)) && [[ $stagger -gt 0 ]]; then
       sleep "$(awk "BEGIN {print $stagger/1000}")"
     fi
-    if cmd_launch "$ws" "$exec_cmd" "$silent"; then
+    local geom_json
+    geom_json=$(echo "$item" | jq -c '.geom // empty')
+    if cmd_launch "$ws" "$exec_cmd" "$silent" "$geom_json"; then
       echo "$(date -u) OK ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true
     else
       echo "$(date -u) FAIL ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true

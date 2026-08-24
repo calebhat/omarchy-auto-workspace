@@ -278,6 +278,36 @@ Panel {
         config = cfg
         saveConfig()
     }
+    function applyPreviewLayout(tiles) {
+        if (!tiles || !tiles.length) return
+        var byId = {}
+        for (var t = 0; t < tiles.length; t++) if (tiles[t] && tiles[t].id) byId[tiles[t].id] = tiles[t]
+        var next = []
+        for (var i = 0; i < assignments.length; i++) {
+            var a = Model.clone(assignments[i])
+            if (byId[a.id]) {
+                var g = Model.normalizeGeom(byId[a.id])
+                if (g) a.geom = g
+            }
+            next.push(a)
+        }
+        assignments = next
+        saveConfig()
+        statusText = "Saved window layout on WS" + formWorkspace
+        clearStatusTimer.restart()
+    }
+    function resetPreviewLayout() {
+        var next = []
+        for (var i = 0; i < assignments.length; i++) {
+            var a = Model.clone(assignments[i])
+            if (a.workspace === formWorkspace) delete a.geom
+            next.push(a)
+        }
+        assignments = next
+        saveConfig()
+        statusText = "Reset WS" + formWorkspace + " to tiling"
+        clearStatusTimer.restart()
+    }
     onFormCommandChanged: { updateFormPreview(); updateAutofillName() }
     Timer { id: clearStatusTimer; interval: 3000; onTriggered: root.statusText = "" }
 
@@ -735,6 +765,8 @@ Panel {
                             screenH: panel.screenH
                             hyprLayout: root.hyprLayout
                             columnWidth: root.hyprColumnWidth
+                            onLayoutChanged: function(tiles) { root.applyPreviewLayout(tiles) }
+                            onLayoutCleared: root.resetPreviewLayout()
                         }
                         Text {
                             Layout.fillWidth: true
@@ -744,11 +776,10 @@ Panel {
                                 var opts = root.monitorOptions
                                 for (var i = 0; i < opts.length; i++) if (opts[i].value === root.workspaceMonitorId) mon = opts[i].label
                                 var line = mon && root.workspaceMonitorId ? ("WS " + root.formWorkspace + " → " + mon + ". ") : ("WS " + root.formWorkspace + " has no monitor pin. ")
-                                if (root.addedApps.length > 1) {
-                                    if (root.hyprLayout === "scrolling") line += "Scrolling layout."
-                                    else if (root.hyprLayout === "master") line += "Master layout."
-                                    else line += "Dwindle layout."
-                                }
+                                if (Model.workspaceUsesCustomLayout(root.addedApps))
+                                    line += "Custom sizes: drag a window to move, drag an edge/corner to resize."
+                                else if (root.addedApps.length > 0)
+                                    line += "Drag a window in the preview to pin size and position (floats on apply)."
                                 return line
                             }
                             color: root.dim

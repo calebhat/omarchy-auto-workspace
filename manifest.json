@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.calebhat.auto-workspace",
   "name": "Auto Workspace",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "calebhat",
   "license": "MIT",
   "description": "Launch apps onto workspaces and bind those workspaces to monitors. Named profiles match the connected display layout (EDID serial/description), apply from a hotkey, and optionally at login.",
