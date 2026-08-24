@@ -6,16 +6,16 @@ import qs.Ui
 
 BarWidget {
     id: root
-    moduleName: "io.github.calebhat.scenebook"
+    moduleName: "io.github.calebhat.workbook"
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
-    readonly property string pluginId: "io.github.calebhat.scenebook"
+    readonly property string pluginId: "io.github.calebhat.workbook"
     readonly property string home: Quickshell.env("HOME")
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
-    readonly property string configFile: stateHome + "/omarchy/scenebook/config.json"
-    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/scenebook.sh"
+    readonly property string configFile: stateHome + "/omarchy/workbook/config.json"
+    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/workbook.sh"
 
     property int totalCount: 0
     property int enabledCount: 0
@@ -71,8 +71,8 @@ BarWidget {
 
     Process {
         id: applyProc
-        stdout: SplitParser { onRead: function(d){ console.log("[scenebook] " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[scenebook] " + d) } }
+        stdout: SplitParser { onRead: function(d){ console.log("[workbook] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[workbook] " + d) } }
     }
 
     Timer {
@@ -108,8 +108,8 @@ BarWidget {
         text: "󱂬"
         slotSize: Style.bar.statusSlot
         tooltipText: root.pluginEnabled
-            ? ("SceneBook • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching")
-            : "SceneBook • disabled • click to enable"
+            ? ("WorkBook • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching")
+            : "WorkBook • disabled • click to enable"
         onPressed: function(btn){
             if (btn === Qt.LeftButton) root.toggle()
             else if (btn === Qt.MiddleButton) root.applyMatching()

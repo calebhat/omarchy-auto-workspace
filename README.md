@@ -1,4 +1,4 @@
-# SceneBook
+# WorkBook
 
 Omarchy + Hyprland plugin: assign apps to workspaces, pin those workspaces to
 monitors, and switch the whole setup with a hotkey based on the displays that
@@ -7,13 +7,13 @@ are actually connected.
 Fork of [tenzin.auto-workspace](https://github.com/yesheytenzin/auto-workspace)
 with monitor-layout profiles. Not listed on the Omarchy plugin marketplace.
 
-Plugin id: `io.github.calebhat.scenebook`
+Plugin id: `io.github.calebhat.workbook`
 
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/calebhat/omarchy-scenebook.git --enable
-omarchy bar move io.github.calebhat.scenebook --section right
+omarchy plugin add https://github.com/calebhat/omarchy-workbook.git --enable
+omarchy bar move io.github.calebhat.workbook --section right
 ```
 
 If you already had `tenzin.auto-workspace`, disable it so both do not launch:
@@ -24,7 +24,7 @@ omarchy plugin disable tenzin.auto-workspace
 
 ## Usage
 
-1. Click the workspace icon in the bar → **SceneBook**. The header profile
+1. Click the workspace icon in the bar → **WorkBook**. The header profile
    selector is the object you are editing (like a theme in ThemeBook).
 2. **Profiles**: **Save current monitors as profile** while docked, then
    again on laptop-only. Matching uses EDID serial, then description — not
@@ -53,16 +53,16 @@ workspace 9 on the laptop. A separate laptop profile has a different app set.
 
 ## Config
 
-`~/.local/state/omarchy/scenebook/config.json` (outside the plugin tree so
+`~/.local/state/omarchy/workbook/config.json` (outside the plugin tree so
 saves do not reload the shell plugin).
 
 ## CLI
 
 ```sh
-scenebook.sh --live-status
-scenebook.sh --apply-matching
-scenebook.sh --apply-profile desk-dock
-omarchy-shell -q io.github.calebhat.scenebook applyMatching
+workbook.sh --live-status
+workbook.sh --apply-matching
+workbook.sh --apply-profile desk-dock
+omarchy-shell -q io.github.calebhat.workbook applyMatching
 ```
 
 ## License

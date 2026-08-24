@@ -1,11 +1,11 @@
 #!/bin/bash
 set -uo pipefail
 
-PLUGIN_ID="io.github.calebhat.scenebook"
+PLUGIN_ID="io.github.calebhat.workbook"
 # Config lives OUTSIDE the plugin dir: the shell watches the plugin folder and
 # reloads the whole plugin on any file change there, which would close the
 # panel and restart the service on every settings save.
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/scenebook"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/workbook"
 CONFIG_FILE="$STATE_DIR/config.json"
 PREV_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-workspace"
 LEGACY_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/tenzin.auto-workspace/config.json"
@@ -13,6 +13,7 @@ STATE_FILE="$STATE_DIR/state.json"
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MATCH="$PLUGIN_DIR/scripts/match"
 GEOM="$PLUGIN_DIR/scripts/geom"
+GESTURES="$PLUGIN_DIR/scripts/gestures"
 
 mkdir -p "$STATE_DIR"
 
@@ -97,7 +98,7 @@ cmd_match_id() {
 notify() {
   local title=$1 body=$2
   if command -v notify-send >/dev/null 2>&1; then
-    notify-send -a "SceneBook" "$title" "$body" >/dev/null 2>&1 || true
+    notify-send -a "WorkBook" "$title" "$body" >/dev/null 2>&1 || true
   fi
 }
 
@@ -680,7 +681,7 @@ cmd_apply() {
 
   if [[ -z $profile_id || $profile_id == "null" ]]; then
     echo "no matching profile for the current monitor layout"
-    notify "SceneBook" "No profile matches the current monitors"
+    notify "WorkBook" "No profile matches the current monitors"
     exit 0
   fi
 
@@ -697,6 +698,7 @@ cmd_apply() {
   restore_unpinned_workspaces "$ws_snap" "$bindings"
   apply_bindings "$bindings"
   live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --apply-ws-prefs >/dev/null || true
+  python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "$profile_id" --apply >/dev/null || true
   restore_unpinned_workspaces "$ws_snap" "$bindings"
   # Hotkey still bypasses "once per boot", but never relaunches a window
   # that is already on the workspace (duplicate Apply was stacking apps).
@@ -705,7 +707,7 @@ cmd_apply() {
     launch_force=true
   fi
   launch_profile_assignments "$profile_id" "$launch_force"
-  notify "SceneBook" "Applied $profile_name"
+  notify "WorkBook" "Applied $profile_name"
 }
 
 cmd_launch_all() {
@@ -725,9 +727,10 @@ case "${1:-}" in
   --apply-matching) cmd_apply hotkey "" true ;;
   --apply-profile) cmd_apply hotkey "${2:-}" true ;;
   --watch-extras) exec python3 "$PLUGIN_DIR/scripts/watch" ;;
+  --apply-gestures) python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "${2:-}" --apply ;;
   --default-config) default_config ;;
   --help|-h|"") cat <<'HELP'
-scenebook.sh — helper for io.github.calebhat.scenebook
+workbook.sh — helper for io.github.calebhat.workbook
 
   --ensure-config              ensure config exists and print it
   --list-apps                  list .desktop + extra apps as TSV
@@ -740,6 +743,7 @@ scenebook.sh — helper for io.github.calebhat.scenebook
   --apply-matching             detect layout, bind workspaces, launch apps
   --apply-profile <id>         bind + launch a specific profile
   --watch-extras               keep locked panes pinned; send extras away when extras=block
+  --apply-gestures             write trackpad / swipe prefs and hyprctl eval them
   --default-config             print default config
 HELP
   ;;

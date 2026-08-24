@@ -9,7 +9,7 @@ import "Model.js" as Model
 
 Panel {
     id: root
-    moduleName: "io.github.calebhat.scenebook"
+    moduleName: "io.github.calebhat.workbook"
     manageIpc: false
 
     property var anchorItem: null
@@ -18,9 +18,9 @@ Panel {
     readonly property string home: Quickshell.env("HOME")
     readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || home + "/.config"
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
-    readonly property string pluginId: "io.github.calebhat.scenebook"
-    readonly property string configFile: stateHome + "/omarchy/scenebook/config.json"
-    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/scenebook.sh"
+    readonly property string pluginId: "io.github.calebhat.workbook"
+    readonly property string configFile: stateHome + "/omarchy/workbook/config.json"
+    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/workbook.sh"
 
     signal countsChanged()
 
@@ -434,6 +434,66 @@ Panel {
         statusText = "Applying matching profile…"
         clearStatusTimer.restart()
     }
+    readonly property var currentGestures: {
+        if ((config.settings && config.settings.gestureSource) === "global")
+            return Model.normalizeGestures(config.settings.gestures)
+        return Model.normalizeGestures(activeProfile.gestures)
+    }
+    function setGestureSource(src) {
+        var cfg = root.currentConfig()
+        cfg.settings.gestureSource = src === "global" ? "global" : "profile"
+        config = cfg
+        saveConfig()
+    }
+    function setGestureField(field, value) {
+        var cfg = root.currentConfig()
+        var g
+        if (cfg.settings.gestureSource === "global") {
+            g = Model.normalizeGestures(cfg.settings.gestures)
+            g[field] = value
+            cfg.settings.gestures = Model.normalizeGestures(g)
+        } else {
+            var pid = cfg.settings.activeProfileId
+            for (var i = 0; i < cfg.profiles.length; i++) {
+                if (cfg.profiles[i].id !== pid) continue
+                g = Model.normalizeGestures(cfg.profiles[i].gestures)
+                g[field] = value
+                cfg.profiles[i].gestures = Model.normalizeGestures(g)
+            }
+        }
+        config = cfg
+        saveConfig()
+    }
+    function setWorkspaceName(ws, name) {
+        var cfg = root.currentConfig()
+        var pid = cfg.settings.activeProfileId
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== pid) continue
+            var names = Model.normalizeWorkspaceNames(cfg.profiles[i].workspaceNames)
+            var key = String(ws)
+            var n = String(name || "").trim()
+            if (n) names[key] = n
+            else delete names[key]
+            cfg.profiles[i].workspaceNames = names
+        }
+        config = cfg
+        saveConfig()
+    }
+    function setProfileField(field, value) {
+        var cfg = root.currentConfig()
+        var pid = cfg.settings.activeProfileId
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== pid) continue
+            cfg.profiles[i][field] = value
+        }
+        config = cfg
+        saveConfig()
+    }
+    function applyGestures() {
+        gestureProc.running = true
+        statusText = "Applying gestures…"
+        clearStatusTimer.restart()
+    }
     function applyProfile(id) {
         if (root.applyBusy || applyProc.running) return
         root.applyBusy = true
@@ -691,11 +751,11 @@ Panel {
             }
         }
     }
-    Process { id: refreshServiceProc; command: ["bash", "-c", "omarchy-shell -q io.github.calebhat.scenebook refreshConfig >/dev/null 2>&1 || true"] }
+    Process { id: refreshServiceProc; command: ["bash", "-c", "omarchy-shell -q io.github.calebhat.workbook refreshConfig >/dev/null 2>&1 || true"] }
     Process {
         id: applyProc
-        stdout: SplitParser { onRead: function(d){ console.log("[scenebook] " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[scenebook] " + d) } }
+        stdout: SplitParser { onRead: function(d){ console.log("[workbook] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[workbook] " + d) } }
         onExited: function(code) {
             root.applyBusy = false
             root.statusText = code === 0 ? "Applied" : "Apply failed"
@@ -715,6 +775,15 @@ Panel {
             if (parts[0]) root.hyprLayout = parts[0].trim()
             var cw = parseFloat(parts[1])
             if (!isNaN(cw) && cw > 0.1 && cw < 1.0) root.hyprColumnWidth = cw
+        }
+    }
+    Process {
+        id: gestureProc
+        command: ["python3", home + "/.config/omarchy/plugins/" + pluginId + "/scripts/gestures", "--config", root.configFile, "--profile-id", root.activeProfileId, "--apply"]
+        stdout: StdioCollector { waitForEnd: true }
+        onExited: function(code) {
+            statusText = code === 0 ? "Gestures applied" : "Gesture apply failed"
+            clearStatusTimer.restart()
         }
     }
     Process {
@@ -872,7 +941,7 @@ Panel {
 
                 PanelHero {
                     Layout.fillWidth: true
-                    title: "SceneBook"
+                    title: "WorkBook"
                     meta: (root.activeProfile.name || "Profile") + " · " + root.totalCount + " apps · " + (root.config.profiles || []).length + " profiles"
                     foreground: root.foreground
                     fontFamily: root.fontFamily
@@ -930,6 +999,7 @@ Panel {
                     options: [
                         { value: "workspaces", label: "Workspaces" },
                         { value: "displays", label: "Displays" },
+                        { value: "gestures", label: "Gestures" },
                         { value: "profiles", label: "Profiles" }
                     ]
                     value: root.mainView
@@ -1185,6 +1255,13 @@ Panel {
                                 font.pixelSize: Style.font.caption
                                 elide: Text.ElideRight
                             }
+                            TextField {
+                                Layout.preferredWidth: Style.space(120)
+                                placeholderText: "Name"
+                                foreground: root.foreground
+                                text: (root.activeProfile.workspaceNames && root.activeProfile.workspaceNames[String(root.formWorkspace)]) || ""
+                                onEditingFinished: root.setWorkspaceName(root.formWorkspace, text)
+                            }
                             Button {
                                 text: "Copy / move"
                                 tooltipText: "Copy this workspace to another profile or move it to another number"
@@ -1226,7 +1303,7 @@ Panel {
                             visible: root.anyLockOnWs
                             Layout.fillWidth: true
                             label: "Send extra windows to the next workspace"
-                            description: "A new window still opens, then SceneBook moves it off this workspace. Off: extras stay here as extra scrolling columns."
+                            description: "A new window still opens, then WorkBook moves it off this workspace. Off: extras stay here as extra scrolling columns."
                             checked: root.currentWsPref.extras === "block"
                             foreground: root.foreground
                             onClicked: root.setWorkspacePref("extras", root.currentWsPref.extras === "block" ? "around" : "block")
@@ -1313,6 +1390,171 @@ Panel {
                         Layout.minimumHeight: Style.space(320)
                         tiles: Model.monitorLayoutTiles(root.config, root.activeProfile, root.liveMonitors)
                         onLayoutChanged: function(positions) { root.setMonitorLayout(positions) }
+                    }
+                }
+
+                // ——— Gestures ———
+                Flickable {
+                    visible: root.mainView === "gestures"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    contentWidth: width
+                    contentHeight: gestureCol.implicitHeight
+                    ColumnLayout {
+                        id: gestureCol
+                        width: parent.width
+                        spacing: Style.space(8)
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: "Trackpad workspace swipes. Hyprland applies these for the whole session; pick whether they follow this profile or stay the same on every profile."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                        }
+                        ButtonGroup {
+                            Layout.fillWidth: true
+                            foreground: root.foreground
+                            value: (root.config.settings && root.config.settings.gestureSource) === "global" ? "global" : "profile"
+                            options: [
+                                { value: "profile", label: "This profile" },
+                                { value: "global", label: "Global" }
+                            ]
+                            onChanged: function(v) { root.setGestureSource(v) }
+                        }
+                        Toggle {
+                            Layout.fillWidth: true
+                            label: "Workspace swipe"
+                            description: "Horizontal swipe switches workspaces (same as your 3-finger swipe)."
+                            checked: root.currentGestures.workspaceSwipe
+                            foreground: root.foreground
+                            onClicked: root.setGestureField("workspaceSwipe", !root.currentGestures.workspaceSwipe)
+                        }
+                        RowLayout {
+                            visible: root.currentGestures.workspaceSwipe
+                            Layout.fillWidth: true
+                            Text {
+                                text: "Fingers"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                            }
+                            Button { text: "3"; selected: root.currentGestures.fingers === 3; onClicked: root.setGestureField("fingers", 3) }
+                            Button { text: "4"; selected: root.currentGestures.fingers === 4; onClicked: root.setGestureField("fingers", 4) }
+                        }
+                        Toggle {
+                            visible: root.currentGestures.workspaceSwipe
+                            Layout.fillWidth: true
+                            label: "Skip empty workspaces"
+                            description: "On: swipe only through workspaces that have windows. Off: swipe through every workspace number, empty included."
+                            checked: root.currentGestures.skipEmpty
+                            foreground: root.foreground
+                            onClicked: root.setGestureField("skipEmpty", !root.currentGestures.skipEmpty)
+                        }
+                        Toggle {
+                            visible: root.currentGestures.workspaceSwipe
+                            Layout.fillWidth: true
+                            label: "Include empty workspaces on touchscreen"
+                            description: "Also swipe workspaces from the display edge (Hyprland workspace_swipe_touch)."
+                            checked: root.currentGestures.touch
+                            foreground: root.foreground
+                            onClicked: root.setGestureField("touch", !root.currentGestures.touch)
+                        }
+                        Toggle {
+                            visible: root.currentGestures.workspaceSwipe
+                            Layout.fillWidth: true
+                            label: "Invert swipe direction"
+                            checked: root.currentGestures.invert
+                            foreground: root.foreground
+                            onClicked: root.setGestureField("invert", !root.currentGestures.invert)
+                        }
+                        Toggle {
+                            visible: root.currentGestures.workspaceSwipe
+                            Layout.fillWidth: true
+                            label: "Create a new workspace past the last one"
+                            checked: root.currentGestures.createNew
+                            foreground: root.foreground
+                            onClicked: root.setGestureField("createNew", !root.currentGestures.createNew)
+                        }
+                        Toggle {
+                            visible: root.currentGestures.workspaceSwipe
+                            Layout.fillWidth: true
+                            label: "Keep swiping beyond the next workspace"
+                            checked: root.currentGestures.forever
+                            foreground: root.foreground
+                            onClicked: root.setGestureField("forever", !root.currentGestures.forever)
+                        }
+                        Toggle {
+                            Layout.fillWidth: true
+                            label: "SUPER + , / .  previous and next workspace"
+                            description: "Comma and period (the < > keys). Follows Skip empty: occupied only, or every workspace including empty."
+                            checked: root.currentGestures.keyboard
+                            foreground: root.foreground
+                            onClicked: root.setGestureField("keyboard", !root.currentGestures.keyboard)
+                        }
+                        Toggle {
+                            Layout.fillWidth: true
+                            label: "Swipe down for scratchpad"
+                            description: "Opens Omarchy’s special:scratchpad (same as SUPER+S)."
+                            checked: root.currentGestures.scratchpadSwipe
+                            foreground: root.foreground
+                            onClicked: root.setGestureField("scratchpadSwipe", !root.currentGestures.scratchpadSwipe)
+                        }
+                        RowLayout {
+                            visible: root.currentGestures.scratchpadSwipe
+                            Layout.fillWidth: true
+                            Text {
+                                text: "Scratchpad fingers"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                            }
+                            Button { text: "3"; selected: root.currentGestures.scratchpadFingers === 3; onClicked: root.setGestureField("scratchpadFingers", 3) }
+                            Button { text: "4"; selected: root.currentGestures.scratchpadFingers === 4; onClicked: root.setGestureField("scratchpadFingers", 4) }
+                        }
+                        Toggle {
+                            Layout.fillWidth: true
+                            label: "Keep workspaces 1–10 even when empty"
+                            description: "So “include empty” swipe has a full row of workspaces to land on."
+                            checked: root.activeProfile.persistentWorkspaces === true
+                            foreground: root.foreground
+                            onClicked: root.setProfileField("persistentWorkspaces", !(root.activeProfile.persistentWorkspaces === true))
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text {
+                                text: "After apply, go to"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                            }
+                            Dropdown {
+                                Layout.fillWidth: true
+                                showLabel: false
+                                label: "Workspace"
+                                foreground: root.foreground
+                                value: String(root.activeProfile.defaultWorkspace || 0)
+                                options: [
+                                    { value: "0", label: "Leave as-is" },
+                                    { value: "1", label: "Workspace 1" },
+                                    { value: "2", label: "Workspace 2" },
+                                    { value: "3", label: "Workspace 3" },
+                                    { value: "4", label: "Workspace 4" },
+                                    { value: "5", label: "Workspace 5" },
+                                    { value: "6", label: "Workspace 6" },
+                                    { value: "7", label: "Workspace 7" },
+                                    { value: "8", label: "Workspace 8" },
+                                    { value: "9", label: "Workspace 9" },
+                                    { value: "10", label: "Workspace 10" }
+                                ]
+                                onChanged: function(v) { root.setProfileField("defaultWorkspace", parseInt(v, 10) || 0) }
+                            }
+                        }
+                        Button {
+                            text: "Apply gestures now"
+                            onClicked: root.applyGestures()
+                        }
                     }
                 }
 

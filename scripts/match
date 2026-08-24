@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Match SceneBook profiles to currently connected Hyprland monitors.
+"""Match WorkBook profiles to currently connected Hyprland monitors.
 
 Identities prefer EDID serial, then description (make+model+serial), and only
 then the Hyprland connector name (DP-1 / DVI-I-1), which is unstable on docks.
@@ -375,7 +375,7 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Match SceneBook profiles to live monitors")
+    parser = argparse.ArgumentParser(description="Match WorkBook profiles to live monitors")
     parser.add_argument("--config", required=True)
     parser.add_argument("--live-json", default="")
     parser.add_argument("--profile-id", default="")

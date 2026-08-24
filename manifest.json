@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.calebhat.scenebook",
-  "name": "SceneBook",
-  "version": "1.1.2",
+  "id": "io.github.calebhat.workbook",
+  "name": "WorkBook",
+  "version": "1.2.0",
   "author": "calebhat",
   "license": "MIT",
   "description": "Launch apps onto workspaces and bind those workspaces to monitors. Named profiles match the connected display layout (EDID serial/description), apply from a hotkey, and optionally at login.",
-  "homepage": "https://github.com/calebhat/omarchy-scenebook",
+  "homepage": "https://github.com/calebhat/omarchy-workbook",
   "kinds": ["service", "bar-widget"],
   "entryPoints": {
     "service": "Service.qml",

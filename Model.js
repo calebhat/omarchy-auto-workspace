@@ -1,6 +1,6 @@
 .pragma library
 
-// Shared helpers for SceneBook panel + service.
+// Shared helpers for WorkBook panel + service.
 // Config lives outside the plugin dir so saves do not reload the plugin.
 
 function defaultConfig() {
@@ -14,7 +14,9 @@ function defaultConfig() {
             silent: true,
             onlyOnBoot: true,
             lastFormWorkspace: 1,
-            activeProfileId: "default"
+            activeProfileId: "default",
+            gestureSource: "profile",
+            gestures: defaultGestures()
         },
         monitors: [],
         extraApps: [],
@@ -32,8 +34,56 @@ function defaultProfile() {
         disabledMonitors: [],
         monitorLayout: {},
         workspacePrefs: {},
-        assignments: []
+        assignments: [],
+        gestures: defaultGestures(),
+        workspaceNames: {},
+        defaultWorkspace: 0,
+        persistentWorkspaces: false
     }
+}
+
+function defaultGestures() {
+    return {
+        workspaceSwipe: true,
+        fingers: 3,
+        skipEmpty: true,
+        invert: false,
+        createNew: false,
+        forever: false,
+        touch: false,
+        keyboard: false,
+        scratchpadSwipe: false,
+        scratchpadFingers: 4
+    }
+}
+
+function normalizeGestures(raw) {
+    var src = raw && typeof raw === "object" ? raw : {}
+    var out = defaultGestures()
+    out.workspaceSwipe = src.workspaceSwipe !== false
+    out.fingers = parseInt(src.fingers, 10) === 4 ? 4 : 3
+    out.skipEmpty = src.skipEmpty !== false
+    out.invert = src.invert === true
+    out.createNew = src.createNew === true
+    out.forever = src.forever === true
+    out.touch = src.touch === true
+    out.keyboard = src.keyboard === true
+    out.scratchpadSwipe = src.scratchpadSwipe === true
+    out.scratchpadFingers = parseInt(src.scratchpadFingers, 10) === 3 ? 3 : 4
+    return out
+}
+
+function normalizeWorkspaceNames(raw) {
+    var out = {}
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out
+    var keys = Object.keys(raw)
+    for (var i = 0; i < keys.length; i++) {
+        var ws = parseInt(keys[i], 10)
+        if (!(ws >= 1 && ws <= 10)) continue
+        var name = String(raw[keys[i]] || "").trim().slice(0, 24)
+        if (name) out[String(ws)] = name
+    }
+    return out
 }
 
 function layoutDescription(layout, hasLock) {
@@ -901,7 +951,15 @@ function normalizeProfile(p, monitorIds) {
         })(),
         monitorLayout: normalizeMonitorLayout(p.monitorLayout),
         workspacePrefs: normalizeWorkspacePrefs(p.workspacePrefs),
-        assignments: assignments
+        assignments: assignments,
+        gestures: normalizeGestures(p.gestures),
+        workspaceNames: normalizeWorkspaceNames(p.workspaceNames),
+        defaultWorkspace: (function() {
+            var n = parseInt(p.defaultWorkspace, 10)
+            if (!(n >= 0 && n <= 10)) n = 0
+            return n
+        })(),
+        persistentWorkspaces: p.persistentWorkspaces === true
     }
 }
 
@@ -940,6 +998,8 @@ function sanitizeConfig(cfg) {
         out.settings.onlyOnBoot = cfg.settings.onlyOnBoot !== false
         out.settings.lastFormWorkspace = Math.max(1, Math.min(10, parseInt(cfg.settings.lastFormWorkspace) || 1))
         out.settings.activeProfileId = String(cfg.settings.activeProfileId || "default").slice(0, 40)
+        out.settings.gestureSource = cfg.settings.gestureSource === "global" ? "global" : "profile"
+        out.settings.gestures = normalizeGestures(cfg.settings.gestures)
     }
     var monitors = []
     var ids = []

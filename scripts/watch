@@ -13,7 +13,7 @@ from pathlib import Path
 
 def config_path() -> Path:
     state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
-    return Path(state) / "omarchy/scenebook/config.json"
+    return Path(state) / "omarchy/workbook/config.json"
 
 
 def lock_path() -> Path:

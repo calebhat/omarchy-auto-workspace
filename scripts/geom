@@ -165,7 +165,7 @@ def config_path() -> str:
     import os
     from pathlib import Path
     state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
-    return str(Path(state) / "omarchy/scenebook/config.json")
+    return str(Path(state) / "omarchy/workbook/config.json")
 
 
 def force_tiled(addr: str) -> None:
