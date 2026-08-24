@@ -70,6 +70,11 @@ Panel {
     readonly property var monitorOptions: Model.monitorOptions(config, activeProfile, liveMonitors)
     readonly property bool showMonitorPicker: monitorOptions.length > 1
     property string copyTargetId: ""
+    property bool transferOpen: false
+    property string transferMode: "copy"
+    property string transferFromWs: "1"
+    property string transferToWs: "1"
+    property string transferToProfileId: ""
     readonly property var copyProfileOptions: {
         var list = config.profiles || []
         var out = []
@@ -79,6 +84,14 @@ Panel {
         }
         return out
     }
+    readonly property var workspaceOptions: {
+        var out = []
+        for (var i = 1; i <= 10; i++) out.push({ value: String(i), label: "WS " + i })
+        return out
+    }
+    readonly property var transferToProfileOptions: transferMode === "move"
+        ? [{ value: activeProfileId, label: activeProfile.name }]
+        : root.profileOptions
     readonly property string workspaceMonitorId: {
         var map = activeProfile.workspaceMonitors || {}
         return String(map[String(formWorkspace)] || "")
@@ -145,6 +158,43 @@ Panel {
         for (var i = 0; i < list.length; i++) if (list[i].id !== id) opts.push(list[i].id)
         if (opts.length && (root.copyTargetId === id || !root.copyTargetId)) root.copyTargetId = opts[0]
         saveConfig()
+    }
+    function openTransfer(mode) {
+        transferMode = mode === "move" ? "move" : "copy"
+        transferFromWs = String(formWorkspace)
+        transferToWs = transferMode === "move" ? (formWorkspace === 10 ? "1" : String(formWorkspace + 1)) : String(formWorkspace)
+        transferToProfileId = transferMode === "move" ? activeProfileId : (copyTargetId || (copyProfileOptions[0] ? copyProfileOptions[0].value : ""))
+        transferOpen = true
+    }
+    function closeTransfer() { transferOpen = false }
+    function confirmTransfer() {
+        var fromWs = parseInt(transferFromWs, 10)
+        var toWs = parseInt(transferToWs, 10)
+        var cfg = root.currentConfig()
+        if (transferMode === "move") {
+            if (fromWs === toWs) { errorText = "Pick a different destination workspace"; return }
+            cfg = Model.moveWorkspace(cfg, activeProfileId, fromWs, toWs)
+            config = cfg
+            assignments = (Model.profileById(cfg, activeProfileId) || { assignments: [] }).assignments.slice()
+            formWorkspace = toWs
+            persistFormWorkspace()
+            statusText = "Moved WS" + fromWs + " → WS" + toWs
+        } else {
+            var toId = transferToProfileId
+            if (!toId) { errorText = "Pick a destination profile"; return }
+            cfg = Model.copyWorkspace(cfg, activeProfileId, fromWs, toId, toWs)
+            var dest = Model.profileById(cfg, toId)
+            if (!dest) { errorText = "Profile not found"; return }
+            config = cfg
+            saveConfig()
+            statusText = "Copied WS" + fromWs + " → " + dest.name + " WS" + toWs
+            clearStatusTimer.restart()
+            closeTransfer()
+            return
+        }
+        saveConfig()
+        clearStatusTimer.restart()
+        closeTransfer()
     }
     function setWorkspaceMonitor(monitorId) {
         var cfg = root.currentConfig()
@@ -311,17 +361,7 @@ Panel {
         statusText = "Saved window layout on WS" + formWorkspace
         clearStatusTimer.restart()
     }
-    function copyWorkspaceTo(toId) {
-        if (!toId) toId = root.copyTargetId
-        if (!toId || toId === root.activeProfileId) { errorText = "Pick a different profile"; return }
-        var cfg = Model.copyWorkspace(root.currentConfig(), root.activeProfileId, root.formWorkspace, toId)
-        var dest = Model.profileById(cfg, toId)
-        if (!dest) { errorText = "Profile not found"; return }
-        config = cfg
-        saveConfig()
-        statusText = "Copied WS" + formWorkspace + " to " + dest.name
-        clearStatusTimer.restart()
-    }
+
     function resetPreviewLayout() {
         var next = []
         for (var i = 0; i < assignments.length; i++) {
@@ -563,10 +603,10 @@ Panel {
         PanelKeyCatcher {
             id: keyCatcher
             anchors.fill: parent
-            blocked: filterField.activeFocus || customField.activeFocus || customNameField.activeFocus
-            onMoveRequested: function(dx, dy) { root.moveCursor(dx, dy) }
-            onActivateRequested: root.activateCursor()
-            onCloseRequested: root.close()
+            blocked: root.transferOpen || filterField.activeFocus || customField.activeFocus || customNameField.activeFocus
+            onMoveRequested: function(dx, dy) { if (!root.transferOpen) root.moveCursor(dx, dy) }
+            onActivateRequested: { if (!root.transferOpen) root.activateCursor() }
+            onCloseRequested: { if (root.transferOpen) root.closeTransfer(); else root.close() }
             onTabRequested: function(direction) { root.moveTabCursor(direction) }
             onTextKey: function(t) {
                 if (t === "/") {
@@ -703,24 +743,11 @@ Panel {
                             elide: Text.ElideRight
                         }
 
-                        RowLayout {
-                            visible: root.copyProfileOptions.length > 0
+                        Button {
                             Layout.fillWidth: true
-                            spacing: Style.space(6)
-                            Dropdown {
-                                Layout.fillWidth: true
-                                label: ""
-                                showLabel: false
-                                foreground: root.foreground
-                                value: root.copyTargetId
-                                options: root.copyProfileOptions
-                                onChanged: function(v) { root.copyTargetId = v }
-                            }
-                            Button {
-                                text: "Copy WS" + root.formWorkspace
-                                tooltipText: "Copy this workspace’s apps and split into the other profile"
-                                onClicked: root.copyWorkspaceTo(root.copyTargetId)
-                            }
+                            text: "Move / copy workspace"
+                            tooltipText: "Copy to another profile or move to another workspace number"
+                            onClicked: root.openTransfer("copy")
                         }
 
                         RowLayout {
@@ -975,6 +1002,135 @@ Panel {
                         font.pixelSize: Style.font.caption
                         wrapMode: Text.WordWrap
                         Layout.fillWidth: true
+                    }
+                }
+            }
+
+            Rectangle {
+                id: transferScrim
+                visible: root.transferOpen
+                z: 200
+                anchors.fill: parent
+                color: Qt.rgba(0, 0, 0, 0.45)
+                MouseArea { anchors.fill: parent; onClicked: root.closeTransfer() }
+
+                Rectangle {
+                    width: Math.min(parent.width - Style.space(28), Style.space(420))
+                    implicitHeight: transferCol.implicitHeight + Style.space(28)
+                    height: implicitHeight
+                    anchors.centerIn: parent
+                    radius: Style.cornerRadius
+                    color: Color.background
+                    border.width: 1
+                    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+                    MouseArea { anchors.fill: parent; onClicked: function(e) { e.accepted = true } }
+
+                    ColumnLayout {
+                        id: transferCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Style.space(16)
+                        spacing: Style.space(10)
+
+                        Text {
+                            text: "Move / copy workspace"
+                            color: root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.title
+                            font.bold: true
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: root.transferMode === "move"
+                                  ? "Move apps and the split to another workspace on this profile. If that workspace already has apps, the two swap."
+                                  : "Copy apps and the split onto another profile. Pick the destination workspace number."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                        }
+
+                        ButtonGroup {
+                            Layout.fillWidth: true
+                            foreground: root.foreground
+                            options: [
+                                { value: "copy", label: "Copy" },
+                                { value: "move", label: "Move" }
+                            ]
+                            value: root.transferMode
+                            onChanged: function(v) {
+                                root.transferMode = v
+                                if (v === "move") root.transferToProfileId = root.activeProfileId
+                                else if (root.copyProfileOptions.length) root.transferToProfileId = root.copyTargetId || root.copyProfileOptions[0].value
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            Text { text: "From"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; Layout.preferredWidth: Style.space(48) }
+                            Text {
+                                text: root.activeProfile.name
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                            }
+                            Dropdown {
+                                Layout.preferredWidth: Style.space(110)
+                                label: ""
+                                showLabel: false
+                                foreground: root.foreground
+                                value: root.transferFromWs
+                                options: root.workspaceOptions
+                                onChanged: function(v) { root.transferFromWs = v }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            Text { text: "To"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; Layout.preferredWidth: Style.space(48) }
+                            Dropdown {
+                                visible: root.transferMode === "copy"
+                                Layout.fillWidth: true
+                                label: ""
+                                showLabel: false
+                                foreground: root.foreground
+                                value: root.transferToProfileId
+                                options: root.transferToProfileOptions
+                                onChanged: function(v) { root.transferToProfileId = v; root.copyTargetId = v }
+                            }
+                            Text {
+                                visible: root.transferMode === "move"
+                                Layout.fillWidth: true
+                                text: root.activeProfile.name
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                elide: Text.ElideRight
+                            }
+                            Dropdown {
+                                Layout.preferredWidth: Style.space(110)
+                                label: ""
+                                showLabel: false
+                                foreground: root.foreground
+                                value: root.transferToWs
+                                options: root.workspaceOptions
+                                onChanged: function(v) { root.transferToWs = v }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            Item { Layout.fillWidth: true }
+                            Button { text: "Cancel"; onClicked: root.closeTransfer() }
+                            Button {
+                                text: root.transferMode === "move" ? "Move" : "Copy"
+                                onClicked: root.confirmTransfer()
+                            }
+                        }
                     }
                 }
             }

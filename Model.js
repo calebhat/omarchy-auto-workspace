@@ -644,31 +644,62 @@ function monitorOptions(cfg, profile, liveList) {
     return opts
 }
 
-function copyWorkspace(cfg, fromId, ws, toId) {
-    if (!cfg || fromId === toId) return cfg
+function copyWorkspace(cfg, fromId, fromWs, toId, toWs) {
+    if (!cfg) return cfg
+    var srcWs = parseInt(fromWs, 10)
+    var dstWs = parseInt(toWs == null || toWs === "" ? fromWs : toWs, 10)
+    if (!(srcWs >= 1 && srcWs <= 10) || !(dstWs >= 1 && dstWs <= 10)) return cfg
+    if (fromId === toId && srcWs === dstWs) return cfg
     var out = clone(cfg)
     var from = profileById(out, fromId)
     var to = profileById(out, toId)
     if (!from || !to) return cfg
-    var nws = parseInt(ws, 10)
-    if (!(nws >= 1 && nws <= 10)) return cfg
     var kept = []
     var list = to.assignments || []
-    for (var i = 0; i < list.length; i++) if (list[i].workspace !== nws) kept.push(list[i])
+    for (var i = 0; i < list.length; i++) if (list[i].workspace !== dstWs) kept.push(list[i])
     var copies = []
     var src = from.assignments || []
     for (var j = 0; j < src.length; j++) {
-        if (src[j].workspace !== nws) continue
+        if (src[j].workspace !== srcWs) continue
         var item = clone(src[j])
         item.id = makeId()
+        item.workspace = dstWs
         copies.push(normalizeAssignment(item))
     }
     to.assignments = kept.concat(copies)
     if (!to.workspaceMonitors) to.workspaceMonitors = {}
-    var pin = (from.workspaceMonitors || {})[String(nws)]
-    if (pin && (to.monitors || []).indexOf(pin) >= 0) to.workspaceMonitors[String(nws)] = pin
-    else if ((to.monitors || []).length === 1) to.workspaceMonitors[String(nws)] = to.monitors[0]
-    else delete to.workspaceMonitors[String(nws)]
+    var pin = (from.workspaceMonitors || {})[String(srcWs)]
+    if (pin && (to.monitors || []).indexOf(pin) >= 0) to.workspaceMonitors[String(dstWs)] = pin
+    else if ((to.monitors || []).length === 1) to.workspaceMonitors[String(dstWs)] = to.monitors[0]
+    else delete to.workspaceMonitors[String(dstWs)]
+    return out
+}
+
+function moveWorkspace(cfg, profileId, fromWs, toWs) {
+    var srcWs = parseInt(fromWs, 10)
+    var dstWs = parseInt(toWs, 10)
+    if (!cfg || srcWs === dstWs) return cfg
+    if (!(srcWs >= 1 && srcWs <= 10) || !(dstWs >= 1 && dstWs <= 10)) return cfg
+    var out = clone(cfg)
+    var prof = profileById(out, profileId)
+    if (!prof) return cfg
+    var next = []
+    var list = prof.assignments || []
+    for (var i = 0; i < list.length; i++) {
+        var item = clone(list[i])
+        if (item.workspace === srcWs) item.workspace = dstWs
+        else if (item.workspace === dstWs) item.workspace = srcWs
+        next.push(normalizeAssignment(item))
+    }
+    prof.assignments = next
+    var pins = prof.workspaceMonitors || {}
+    var pFrom = pins[String(srcWs)]
+    var pTo = pins[String(dstWs)]
+    if (pFrom) pins[String(dstWs)] = pFrom
+    else delete pins[String(dstWs)]
+    if (pTo) pins[String(srcWs)] = pTo
+    else delete pins[String(srcWs)]
+    prof.workspaceMonitors = pins
     return out
 }
 

@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -92,5 +92,28 @@ if (!dest.assignments.some(function(a){ return a.name === "Herdr" && a.workspace
   throw new Error("copy workspace apps")
 if (dest.assignments.filter(function(a){ return a.workspace === 1 }).length !== 1)
   throw new Error("copy replaces dest ws assignments")
+copied = m.copyWorkspace(copied, "laptop", 1, "desk-dock", 4)
+const dest2 = copied.profiles.find(function(p){ return p.id === "desk-dock" })
+if (!dest2.assignments.some(function(a){ return a.name === "Herdr" && a.workspace === 4 }))
+  throw new Error("copy to a different workspace number")
+
+const movedCfg = m.sanitizeConfig({
+  version: 2,
+  profiles: [{
+    id: "p",
+    name: "P",
+    monitors: ["laptop"],
+    workspaceMonitors: { "1": "laptop" },
+    assignments: [
+      { id: "a", workspace: 1, name: "A", exec: "foot" },
+      { id: "b", workspace: 5, name: "B", exec: "brave" }
+    ]
+  }]
+})
+const moved = m.moveWorkspace(movedCfg, "p", 1, 5)
+const mp = moved.profiles[0]
+if (!mp.assignments.some(function(a){ return a.name === "A" && a.workspace === 5 })) throw new Error("move src to dest")
+if (!mp.assignments.some(function(a){ return a.name === "B" && a.workspace === 1 })) throw new Error("move swaps dest back")
+if (mp.workspaceMonitors["5"] !== "laptop") throw new Error("move pin")
 
 console.log("model.test.js ok")
