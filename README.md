@@ -32,7 +32,9 @@ omarchy plugin disable tenzin.auto-workspace
    to a named monitor, then toggle apps. ShopHawk Herdr is injected even
    though it is not a `.desktop` file. Custom commands go in the row at the
    bottom. Drag the splitter between windows to resize both sides (they stay
-   tiled and cannot overlap). **Reset** restores the default split.
+   tiled and cannot overlap). Apply keeps windows in the Hyprland tile
+   layout so later resize still moves the shared split. **Reset** restores
+   the default split.
 4. **Apply matching** (or **SUPER+ALT+W**, or middle-click the bar chip)
    snapshots the connected monitors and loads the matching profile: bind
    workspaces to monitors, then launch that profile’s apps.

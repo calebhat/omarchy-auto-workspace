@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Map preview 0–1 geoms onto Hyprland layout pixels and apply them.
+"""Apply preview splits as Hyprland *tiled* layout, not independent floats.
 
-hyprctl monitors reports backend pixels (width/height) plus scale.
-Window at/size and reserved are layout pixels: backend / scale.
-Floating restore must use layout pixels or windows miss the monitor.
+Windows stay in dwindle/master so Super+mouse resize moves the shared
+split. Layout pixels are backend size / scale.
 """
 from __future__ import annotations
 
@@ -75,23 +74,27 @@ def geom_pixels(geom: dict[str, Any], metrics: dict[str, float]) -> dict[str, in
     return {"x": int(round(x)), "y": int(round(y)), "w": int(round(w)), "h": int(round(h))}
 
 
-def force_float(addr: str) -> None:
+def force_tiled(addr: str) -> None:
     a = f"address:{addr}"
     hypr_eval(
         f"""
 local w = hl.get_window("{a}")
-if w and not w.floating then
+if w and w.floating then
   hl.dispatch(hl.dsp.window.float({{ action = "toggle", window = "{a}" }}))
 end
 """
     )
 
 
-def resize_move(addr: str, x: int, y: int, w: int, h: int) -> None:
+def swap_windows(a_addr: str, b_addr: str) -> None:
+    hypr_eval(
+        f'hl.dispatch(hl.dsp.window.swap({{ window = "address:{a_addr}", with = "address:{b_addr}" }}))'
+    )
+
+
+def resize_relative(addr: str, dx: int, dy: int) -> None:
     a = f"address:{addr}"
-    hypr_eval(f'hl.dispatch(hl.dsp.window.resize({{window="{a}", x={w}, y={h}, relative=false}}))')
-    hypr_eval(f'hl.dispatch(hl.dsp.window.move({{window="{a}", x={x}, y={y}}}))')
-    hypr_eval(f'hl.dispatch(hl.dsp.window.move({{window="{a}", x={x}, y={y}}}))')
+    hypr_eval(f'hl.dispatch(hl.dsp.window.resize({{window="{a}", x={int(dx)}, y={int(dy)}, relative=true}}))')
 
 
 def client_by_addr(addr: str) -> dict[str, Any] | None:
@@ -110,61 +113,73 @@ def actual_box(addr: str) -> dict[str, int] | None:
     return {"x": int(at[0]), "y": int(at[1]), "w": int(size[0]), "h": int(size[1])}
 
 
-def pack_horizontal(items: list[dict[str, Any]], metrics: dict[str, float]) -> list[dict[str, Any]]:
-    """Left-to-right pack using actual min widths so panes stay adjacent."""
-    ordered = sorted(items, key=lambda it: float((it.get("geom") or {}).get("x") or 0))
-    usable_x = int(metrics["x"])
-    usable_y = int(metrics["y"])
-    usable_w = int(metrics["w"])
-    usable_h = int(metrics["h"])
-    widths: list[int] = []
-    for it in ordered:
-        want = int(it["px"]["w"])
-        addr = it["addr"]
-        force_float(addr)
-        resize_move(addr, usable_x, usable_y, want, usable_h)
-        time.sleep(0.05)
-        box = actual_box(addr) or {"w": want}
-        widths.append(max(80, int(box["w"])))
-    last_min = widths[-1]
-    left_total = sum(widths[:-1]) if len(widths) > 1 else 0
-    if len(widths) > 1 and left_total + last_min > usable_w:
-        overflow = left_total + last_min - usable_w
-        for i in range(len(widths) - 2, -1, -1):
-            take = min(overflow, max(0, widths[i] - 80))
-            widths[i] -= take
-            overflow -= take
-            if overflow <= 0:
+def apply_tiled_split(items: list[dict[str, Any]], metrics: dict[str, float]) -> list[dict[str, Any]]:
+    """Keep windows tiled and set the shared dwindle/master split from geoms."""
+    for it in items:
+        force_tiled(it["addr"])
+    time.sleep(0.08)
+    if len(items) < 2:
+        box = actual_box(items[0]["addr"]) if items else None
+        return [{**items[0], "place": box or items[0]["px"]}] if items else []
+
+    geoms = [it.get("geom") or {} for it in items]
+    side_by_side = all(abs(float(g.get("h") or 1) - 1) < 0.08 and float(g.get("y") or 0) < 0.08 for g in geoms)
+    stacked = all(abs(float(g.get("w") or 1) - 1) < 0.08 and float(g.get("x") or 0) < 0.08 for g in geoms)
+
+    if side_by_side:
+        ordered = sorted(items, key=lambda it: float((it.get("geom") or {}).get("x") or 0))
+        axis = "x"
+        size_idx = 0
+        want_key = "w"
+    elif stacked:
+        ordered = sorted(items, key=lambda it: float((it.get("geom") or {}).get("y") or 0))
+        axis = "y"
+        size_idx = 1
+        want_key = "h"
+    else:
+        return [{**it, "place": actual_box(it["addr"]) or it["px"]} for it in items]
+
+    # Visual order must match geom order so the split resize hits the right pane.
+    for _ in range(len(ordered)):
+        live = [actual_box(it["addr"]) for it in ordered]
+        if not all(live):
+            break
+        swapped = False
+        for i in range(len(ordered) - 1):
+            a = live[i][axis]
+            b = live[i + 1][axis]
+            if a > b + 4:
+                swap_windows(ordered[i]["addr"], ordered[i + 1]["addr"])
+                time.sleep(0.05)
+                swapped = True
                 break
-    x = usable_x
-    out = []
-    for i, it in enumerate(ordered):
-        if i == len(ordered) - 1:
-            w = max(80, usable_x + usable_w - x)
+        if not swapped:
+            break
+
+    left = ordered[0]
+    box = actual_box(left["addr"])
+    if not box:
+        return [{**it, "place": it["px"]} for it in ordered]
+    want = int(left["px"][want_key])
+    cur = int(box["w"] if axis == "x" else box["h"])
+    delta = want - cur
+    if abs(delta) >= 4:
+        if axis == "x":
+            resize_relative(left["addr"], delta, 0)
         else:
-            w = max(80, widths[i])
-        out.append({**it, "place": {"x": x, "y": usable_y, "w": w, "h": usable_h}})
-        x += w
+            resize_relative(left["addr"], 0, delta)
+        time.sleep(0.08)
+
+    out = []
+    for it in ordered:
+        out.append({**it, "place": actual_box(it["addr"]) or it["px"]})
     return out
 
 
 def apply_items(items: list[dict[str, Any]], metrics: dict[str, float]) -> list[dict[str, Any]]:
     if not items:
         return []
-    geoms = [it.get("geom") or {} for it in items]
-    full_h = all(abs(float(g.get("h") or 1) - 1) < 0.08 and float(g.get("y") or 0) < 0.08 for g in geoms)
-    if len(items) >= 2 and full_h:
-        placed = pack_horizontal(items, metrics)
-    else:
-        placed = []
-        for it in items:
-            placed.append({**it, "place": it["px"]})
-    for it in placed:
-        p = it["place"]
-        force_float(it["addr"])
-        resize_move(it["addr"], p["x"], p["y"], p["w"], p["h"])
-        time.sleep(0.04)
-    return placed
+    return apply_tiled_split(items, metrics)
 
 
 def apply_one(addr: str, geom_json: str, ws: str) -> dict[str, Any]:
