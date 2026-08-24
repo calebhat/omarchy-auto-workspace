@@ -4,43 +4,92 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Drag monitors in layout pixels (Hyprland x/y). Edges snap to neighbors.
+// Drag monitors in Hyprland layout pixels. Delegates stay alive for the
+// whole drag so the grab is not destroyed. Snap runs on release only.
 Item {
     id: root
     property var tiles: []
     property bool dragging: false
-    property var liveTiles: []
+    property var layoutModel: []
+    property real dragScale: 0.1
 
     signal layoutChanged(var positions)
 
+    function visibleTiles(src) {
+        var out = []
+        var list = src || []
+        for (var i = 0; i < list.length; i++) {
+            if (list[i] && !list[i].off) out.push(JSON.parse(JSON.stringify(list[i])))
+        }
+        return out
+    }
+
     function rebuild() {
         if (dragging) return
-        liveTiles = JSON.parse(JSON.stringify(tiles || []))
+        layoutModel = visibleTiles(tiles)
+        computeScale()
     }
+
+    function computeScale() {
+        var list = layoutModel
+        var minX = 0, minY = 0, maxX = 1920, maxY = 1080
+        var first = true
+        for (var i = 0; i < list.length; i++) {
+            var t = list[i]
+            if (first) {
+                minX = t.x; minY = t.y; maxX = t.x + t.w; maxY = t.y + t.h
+                first = false
+            } else {
+                minX = Math.min(minX, t.x)
+                minY = Math.min(minY, t.y)
+                maxX = Math.max(maxX, t.x + t.w)
+                maxY = Math.max(maxY, t.y + t.h)
+            }
+        }
+        var bw = Math.max(400, maxX - minX)
+        var bh = Math.max(300, maxY - minY)
+        // Extra margin so you can drag past the current cluster in any direction.
+        var sx = stage.width / (bw * 1.8)
+        var sy = stage.height / (bh * 1.8)
+        var s = Math.min(sx, sy)
+        if (!(s > 0) || s > 1) s = Math.min(sx, sy, 0.4)
+        if (!(s > 0)) s = 0.08
+        dragScale = s
+        originX = minX - bw * 0.4
+        originY = minY - bh * 0.4
+    }
+
+    property real originX: 0
+    property real originY: 0
 
     onTilesChanged: rebuild()
     Component.onCompleted: rebuild()
 
-    function bounds() {
-        var list = liveTiles || []
-        var maxX = 1, maxY = 1
-        for (var i = 0; i < list.length; i++) {
-            var t = list[i]
-            if (t.off) continue
-            maxX = Math.max(maxX, t.x + t.w)
-            maxY = Math.max(maxY, t.y + t.h)
+    function collectPositions(snap) {
+        var out = {}
+        var others = []
+        var i
+        for (i = 0; i < tileRepeater.count; i++) {
+            var item = tileRepeater.itemAt(i)
+            if (!item || !item.tileId) continue
+            others.push({ id: item.tileId, x: item.layoutX, y: item.layoutY, w: item.layoutW, h: item.layoutH })
         }
-        return { w: maxX, h: maxY }
+        for (i = 0; i < others.length; i++) {
+            var t = others[i]
+            var pos = { x: t.x, y: t.y, w: t.w, h: t.h, id: t.id }
+            if (snap) {
+                var rest = []
+                for (var j = 0; j < others.length; j++) if (others[j].id !== t.id) rest.push(others[j])
+                pos = Model.snapLayoutRect(pos, rest, 32)
+            }
+            out[t.id] = { x: Math.round(pos.x), y: Math.round(pos.y) }
+        }
+        return out
     }
 
-    function commit() {
-        var out = {}
-        var list = liveTiles || []
-        for (var i = 0; i < list.length; i++) {
-            if (!list[i] || list[i].off) continue
-            out[list[i].id] = { x: Math.round(list[i].x), y: Math.round(list[i].y) }
-        }
-        root.layoutChanged(out)
+    function commit(doSnap) {
+        var positions = collectPositions(!!doSnap)
+        if (Object.keys(positions).length) root.layoutChanged(positions)
     }
 
     Rectangle {
@@ -53,12 +102,7 @@ Item {
         clip: true
 
         Text {
-            visible: {
-                var n = 0
-                var list = root.liveTiles || []
-                for (var i = 0; i < list.length; i++) if (!list[i].off) n++
-                return n === 0
-            }
+            visible: root.layoutModel.length === 0
             anchors.centerIn: parent
             text: "No on-displays in this profile"
             color: Qt.darker(Color.foreground, 1.4)
@@ -69,37 +113,35 @@ Item {
         Item {
             id: stage
             anchors.fill: parent
-            anchors.margins: 16
-            readonly property var box: root.bounds()
-            readonly property real scale: {
-                var bw = Math.max(1, box.w)
-                var bh = Math.max(1, box.h)
-                var sx = width / bw
-                var sy = height / bh
-                var s = Math.min(sx, sy) * 0.9
-                return s > 0 ? s : 0.1
-            }
+            anchors.margins: 12
 
             Repeater {
-                model: root.liveTiles
+                id: tileRepeater
+                model: root.layoutModel
                 delegate: Rectangle {
+                    id: tile
                     required property var modelData
                     required property int index
-                    visible: modelData && !modelData.off
-                    x: (modelData.x - 0) * stage.scale
-                    y: (modelData.y - 0) * stage.scale
-                    width: Math.max(48, modelData.w * stage.scale)
-                    height: Math.max(36, modelData.h * stage.scale)
+                    property string tileId: modelData ? String(modelData.id) : ""
+                    property real layoutX: modelData ? modelData.x : 0
+                    property real layoutY: modelData ? modelData.y : 0
+                    property real layoutW: modelData ? modelData.w : 1920
+                    property real layoutH: modelData ? modelData.h : 1080
+
+                    x: (layoutX - root.originX) * root.dragScale
+                    y: (layoutY - root.originY) * root.dragScale
+                    width: Math.max(56, layoutW * root.dragScale)
+                    height: Math.max(40, layoutH * root.dragScale)
                     radius: 6
                     z: index
-                    color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, moveArea.containsMouse ? 0.28 : 0.16)
+                    color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, moveArea.containsMouse || moveArea.pressed ? 0.32 : 0.16)
                     border.width: 2
                     border.color: Color.accent
 
                     Text {
                         anchors.centerIn: parent
-                        width: parent.width - 12
-                        text: modelData.label + "\n" + Math.round(modelData.w) + "×" + Math.round(modelData.h)
+                        width: parent.width - 10
+                        text: (modelData && modelData.label ? modelData.label : "Display") + "\n" + Math.round(tile.layoutW) + "×" + Math.round(tile.layoutH)
                         color: Color.foreground
                         font.family: Style.font.family
                         font.pixelSize: Style.font.caption - 1
@@ -118,42 +160,28 @@ Item {
                         property real grabY: 0
                         property real origX: 0
                         property real origY: 0
-                        property bool moved: false
+
                         onPressed: function(mouse) {
                             var p = mapToItem(stage, mouse.x, mouse.y)
-                            grabX = p.x; grabY = p.y
-                            origX = modelData.x; origY = modelData.y
-                            moved = false
+                            grabX = p.x
+                            grabY = p.y
+                            origX = tile.layoutX
+                            origY = tile.layoutY
                             root.dragging = true
-                            parent.z = 80
+                            tile.z = 80
                             mouse.accepted = true
                         }
                         onPositionChanged: function(mouse) {
                             if (!pressed) return
                             var p = mapToItem(stage, mouse.x, mouse.y)
-                            var nx = origX + (p.x - grabX) / Math.max(0.001, stage.scale)
-                            var ny = origY + (p.y - grabY) / Math.max(0.001, stage.scale)
-                            if (Math.abs(nx - origX) > 4 || Math.abs(ny - origY) > 4) moved = true
-                            var others = []
-                            var list = root.liveTiles || []
-                            for (var i = 0; i < list.length; i++) {
-                                if (!list[i] || list[i].off || list[i].id === modelData.id) continue
-                                others.push(list[i])
-                            }
-                            var snapped = Model.snapLayoutRect({ id: modelData.id, x: nx, y: ny, w: modelData.w, h: modelData.h }, others, 48)
-                            var next = JSON.parse(JSON.stringify(list))
-                            for (var j = 0; j < next.length; j++) {
-                                if (next[j].id === modelData.id) {
-                                    next[j].x = snapped.x
-                                    next[j].y = snapped.y
-                                }
-                            }
-                            root.liveTiles = next
+                            var s = Math.max(0.001, root.dragScale)
+                            tile.layoutX = origX + (p.x - grabX) / s
+                            tile.layoutY = origY + (p.y - grabY) / s
                         }
                         onReleased: {
                             root.dragging = false
-                            if (moved) root.commit()
-                            moved = false
+                            root.commit(true)
+                            Qt.callLater(root.rebuild)
                         }
                     }
                 }
