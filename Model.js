@@ -86,6 +86,81 @@ function uniqueNums(vals) {
     return out
 }
 
+function compoundEdgeSlots(dragged, others) {
+    var w = dragged.w, h = dragged.h
+    var slots = []
+    var list = others || []
+
+    function groups(keyFn) {
+        var map = {}
+        for (var i = 0; i < list.length; i++) {
+            var k = String(Math.round(keyFn(list[i])))
+            if (!map[k]) map[k] = []
+            map[k].push(list[i])
+        }
+        return map
+    }
+
+    function vertical(lineX, members, placeLeft) {
+        if (!members || !members.length) return
+        var y0 = members[0].y, y1 = members[0].y + members[0].h
+        var i
+        for (i = 1; i < members.length; i++) {
+            y0 = Math.min(y0, members[i].y)
+            y1 = Math.max(y1, members[i].y + members[i].h)
+        }
+        var x = placeLeft ? lineX - w : lineX
+        var yMin = y0 - h + 24
+        var yMax = y1 - 24
+        if (yMax < yMin) {
+            yMin = y0
+            yMax = y1 - h
+        }
+        var yDrop = Math.max(yMin, Math.min(yMax, dragged.y))
+        if (Math.abs(h - (y1 - y0)) <= 48) yDrop = y0
+        else if (Math.abs(yDrop - y0) <= 48) yDrop = y0
+        else if (Math.abs(yDrop - (y1 - h)) <= 48) yDrop = y1 - h
+        slots.push({ x: x, y: yDrop })
+        slots.push({ x: x, y: y0 })
+        slots.push({ x: x, y: y1 - h })
+    }
+
+    function horizontal(lineY, members, placeAbove) {
+        if (!members || !members.length) return
+        var x0 = members[0].x, x1 = members[0].x + members[0].w
+        var i
+        for (i = 1; i < members.length; i++) {
+            x0 = Math.min(x0, members[i].x)
+            x1 = Math.max(x1, members[i].x + members[i].w)
+        }
+        var y = placeAbove ? lineY - h : lineY
+        var xMin = x0 - w + 24
+        var xMax = x1 - 24
+        if (xMax < xMin) {
+            xMin = x0
+            xMax = x1 - w
+        }
+        var xDrop = Math.max(xMin, Math.min(xMax, dragged.x))
+        if (Math.abs(w - (x1 - x0)) <= 48) xDrop = x0
+        else if (Math.abs(xDrop - x0) <= 48) xDrop = x0
+        else if (Math.abs(xDrop - (x1 - w)) <= 48) xDrop = x1 - w
+        slots.push({ x: xDrop, y: y })
+        slots.push({ x: x0, y: y })
+        slots.push({ x: x1 - w, y: y })
+    }
+
+    var g, k
+    g = groups(function(o) { return o.x })
+    for (k in g) if (Object.prototype.hasOwnProperty.call(g, k)) vertical(Number(k), g[k], true)
+    g = groups(function(o) { return o.x + o.w })
+    for (k in g) if (Object.prototype.hasOwnProperty.call(g, k)) vertical(Number(k), g[k], false)
+    g = groups(function(o) { return o.y })
+    for (k in g) if (Object.prototype.hasOwnProperty.call(g, k)) horizontal(Number(k), g[k], true)
+    g = groups(function(o) { return o.y + o.h })
+    for (k in g) if (Object.prototype.hasOwnProperty.call(g, k)) horizontal(Number(k), g[k], false)
+    return slots
+}
+
 function flushSlots(dragged, o) {
     var w = dragged.w, h = dragged.h
     return [
@@ -119,7 +194,7 @@ function arrangeMonitorsAfterDrop(dragged, others) {
     var dropCy = dragged.y + h / 2
     var list = others || []
     var best = null
-    var bestD = Infinity
+    var bestScore = Infinity
 
     function consider(positions, draggedPos) {
         if (!draggedPos) return
@@ -139,16 +214,18 @@ function arrangeMonitorsAfterDrop(dragged, others) {
         var placed = positions[dragged.id]
         if (!placed) return
         var r = { x: placed.x, y: placed.y, w: w, h: h }
-        var touches = list.length === 0
+        var nTouch = 0
         for (i = 0; i < items.length; i++) {
             if (items[i].id === dragged.id) continue
-            if (edgesTouch(r, items[i])) { touches = true; break }
+            if (edgesTouch(r, items[i])) nTouch++
         }
-        if (!touches) return
+        if (list.length && nTouch === 0) return
         var d = (placed.x + w / 2 - dropCx) * (placed.x + w / 2 - dropCx) + (placed.y + h / 2 - dropCy) * (placed.y + h / 2 - dropCy)
-        if (d < bestD) {
-            bestD = d
-            best = positions
+        // Prefer bordering more parallel monitors when the drop spans them.
+        var score = d - nTouch * 400 * 400
+        if (score < bestScore) {
+            bestScore = score
+            best = JSON.parse(JSON.stringify(positions))
         }
     }
 
@@ -178,6 +255,8 @@ function arrangeMonitorsAfterDrop(dragged, others) {
     for (i = 0; i < xs.length; i++) {
         for (j = 0; j < ys.length; j++) consider(basePositions(xs[i], ys[j]), { x: xs[i], y: ys[j] })
     }
+    var compound = compoundEdgeSlots(dragged, list)
+    for (i = 0; i < compound.length; i++) consider(basePositions(compound[i].x, compound[i].y), compound[i])
 
     // Insert between two horizontal neighbors (split them apart if needed).
     for (i = 0; i < list.length; i++) {
@@ -187,9 +266,13 @@ function arrangeMonitorsAfterDrop(dragged, others) {
             var yOv = spanOverlap(a.y, a.y + a.h, b.y, b.y + b.h)
             if (yOv <= 8) continue
             if (a.x + a.w > b.x + 2) continue
+            var pairY0 = Math.max(a.y, b.y)
+            var pairY1 = Math.min(a.y + a.h, b.y + b.h)
+            if (dropCy < pairY0 - 80 || dropCy > pairY1 + 80) continue
             var seam = a.x + a.w
             var gap = b.x - seam
-            var yOpts = uniqueNums([a.y, b.y, a.y + a.h - h, b.y + b.h - h, dragged.y, (a.y + b.y) / 2])
+            if (Math.abs(dropCx - (seam + gap / 2)) > Math.max(w, 240)) continue
+            var yOpts = uniqueNums([a.y, b.y, a.y + a.h - h, b.y + b.h - h, (a.y + b.y) / 2])
             var yi
             for (yi = 0; yi < yOpts.length; yi++) {
                 var shift = Math.max(0, w - gap)
@@ -214,9 +297,13 @@ function arrangeMonitorsAfterDrop(dragged, others) {
             var xOv = spanOverlap(a2.x, a2.x + a2.w, b2.x, b2.x + b2.w)
             if (xOv <= 8) continue
             if (a2.y + a2.h > b2.y + 2) continue
+            var pairX0 = Math.max(a2.x, b2.x)
+            var pairX1 = Math.min(a2.x + a2.w, b2.x + b2.w)
+            if (dropCx < pairX0 - 80 || dropCx > pairX1 + 80) continue
             var seamY = a2.y + a2.h
             var gapY = b2.y - seamY
-            var xOpts = uniqueNums([a2.x, b2.x, a2.x + a2.w - w, b2.x + b2.w - w, dragged.x, (a2.x + b2.x) / 2])
+            if (Math.abs(dropCy - (seamY + gapY / 2)) > Math.max(h, 240)) continue
+            var xOpts = uniqueNums([a2.x, b2.x, a2.x + a2.w - w, b2.x + b2.w - w, (a2.x + b2.x) / 2])
             var xi
             for (xi = 0; xi < xOpts.length; xi++) {
                 var shiftY = Math.max(0, h - gapY)

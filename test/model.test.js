@@ -158,4 +158,22 @@ const touchesA = Math.abs(far.x - (a.x + a.w)) < 2 || Math.abs(far.x + far.w - a
 const touchesB = Math.abs(far.x - (b.x + b.w)) < 2 || Math.abs(far.x + far.w - b.x) < 2 || Math.abs(far.y - (b.y + b.h)) < 2 || Math.abs(far.y + far.h - b.y) < 2
 if (!touchesA && !touchesB) throw new Error("far drop must dock to the cluster")
 
+const stackedTop = { id: "t", x: 0, y: 0, w: 1920, h: 1080 }
+const stackedBot = { id: "b", x: 0, y: 1080, w: 1920, h: 1080 }
+const side = m.placeMonitorNoOverlap(
+  { id: "s", x: -1800, y: 500, w: 1920, h: 1080 },
+  [stackedTop, stackedBot]
+)
+if (side.x !== -1920) throw new Error("flush left of stacked pair")
+var ovTop = Math.min(side.y + 1080, 1080) - Math.max(side.y, 0)
+var ovBot = Math.min(side.y + 1080, 2160) - Math.max(side.y, 1080)
+if (!(ovTop > 0 && ovBot > 0)) throw new Error("must border both stacked monitors, y=" + side.y)
+
+const wide = m.placeMonitorNoOverlap(
+  { id: "w", x: 200, y: -200, w: 3840, h: 900 },
+  [a, b]
+)
+if (wide.y !== -900) throw new Error("ultrawide sits on top edge")
+if (wide.x !== 0) throw new Error("ultrawide spans both side-by-side, x=" + wide.x)
+
 console.log("model.test.js ok")
