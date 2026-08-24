@@ -190,5 +190,8 @@ if (!m.assignmentIsLocked(lockedApp, prefCfg.profiles[0])) throw new Error("effe
 const wrap = 'sh -c if echo "%u" | grep -q "^mailto:"; then exec omarchy-launch-webapp "https://outlook.office.com/mail/deeplink/compose?to=x"; else exec omarchy-launch-webapp "https://outlook.office.com/mail/"; fi'
 if (!m.sameAppExec(wrap, "omarchy-launch-webapp 'https://outlook.office.com/mail/'")) throw new Error("outlook exec match")
 if (m.canonicalExec(wrap).indexOf("outlook.office.com/mail") < 0) throw new Error("canonical outlook exec")
+if (m.sameAppExec(wrap, "omarchy-launch-webapp 'https://calendar.google.com/'")) throw new Error("webapps must not share launcher name")
+if (m.sameAppExec(wrap, "/home/caleb/.local/bin/brave")) throw new Error("outlook is not brave")
+if (!m.sameAppExec("/home/caleb/.local/bin/brave", "/home/caleb/.local/bin/brave")) throw new Error("brave match")
 
 console.log("model.test.js ok")

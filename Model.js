@@ -1163,14 +1163,22 @@ function execBasename(s) {
     return first.split("/").pop().toLowerCase()
 }
 
+function isGenericLauncher(base) {
+    var b = String(base || "").toLowerCase()
+    return b === "sh" || b === "bash" || b === "env" || b === "uwsm-app"
+        || b === "omarchy-launch-webapp" || b === "omarchy-launch-tui"
+        || b === "omarchy-launch-or-focus-tui"
+}
+
 function sameAppExec(a, b) {
     var ca = canonicalExec(a), cb = canonicalExec(b)
     if (ca && cb && ca === cb) return true
     var ua = extractWebappUrl(a), ub = extractWebappUrl(b)
-    if (ua && ub && ua === ub) return true
+    if (ua && ub) return ua === ub
+    if (ua || ub) return false
     var ba = execBasename(a), bb = execBasename(b)
     if (!ba || !bb) return false
-    if (ba === "sh" || ba === "bash" || bb === "sh" || bb === "bash") return ua && ub && ua === ub
+    if (isGenericLauncher(ba) || isGenericLauncher(bb)) return false
     return ba === bb
 }
 
