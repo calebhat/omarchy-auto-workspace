@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -76,5 +76,21 @@ if (m.layoutHasOverlap(nudged)) throw new Error("nudge overlap")
 if (Math.abs((nudged[0].x + nudged[0].w) - nudged[1].x) > 0.02) throw new Error("shared edge after nudge")
 const tooFar = m.nudgeSplit(tiled, splits[0], 0.9)
 if (tooFar[1].w < 0.12 - 1e-6) throw new Error("min size on right")
+
+const laptopOpts = m.monitorOptions(cfg, cfg.profiles[1], liveDesk)
+if (laptopOpts.some(function(o){ return o.value === "desk-left" || o.value === "desk-right" }))
+  throw new Error("laptop profile must not list desk monitors")
+if (!laptopOpts.some(function(o){ return o.value === "laptop" })) throw new Error("laptop option missing")
+const deskOpts = m.monitorOptions(cfg, cfg.profiles[0], liveDesk)
+if (!deskOpts.some(function(o){ return o.value === "desk-left" })) throw new Error("desk profile lists desk-left")
+
+let copied = m.copyWorkspace(cfg, "laptop", 1, "desk-dock")
+copied.profiles[1].assignments = [{ id: "src", workspace: 1, name: "Herdr", exec: "herdr-shophawk", type: "custom", geom: { x: 0, y: 0, w: 0.6, h: 1 } }]
+copied = m.copyWorkspace(copied, "laptop", 1, "desk-dock")
+const dest = copied.profiles.find(function(p){ return p.id === "desk-dock" })
+if (!dest.assignments.some(function(a){ return a.name === "Herdr" && a.workspace === 1 && a.id !== "src" }))
+  throw new Error("copy workspace apps")
+if (dest.assignments.filter(function(a){ return a.workspace === 1 }).length !== 1)
+  throw new Error("copy replaces dest ws assignments")
 
 console.log("model.test.js ok")

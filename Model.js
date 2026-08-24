@@ -620,34 +620,56 @@ function bestProfile(cfg, liveList) {
 }
 
 function monitorOptions(cfg, profile, liveList) {
-    var opts = [{ value: "", label: "Any monitor" }]
+    var opts = []
     var seen = {}
     function add(id, label) {
         if (!id || seen[id]) return
         seen[id] = true
         opts.push({ value: id, label: label })
     }
-    var mons = (cfg && cfg.monitors) || []
     var prefer = (profile && profile.monitors) || []
     for (var i = 0; i < prefer.length; i++) {
         var m = monitorById(cfg, prefer[i])
         if (m) add(m.id, m.label)
     }
-    for (var j = 0; j < mons.length; j++) add(mons[j].id, mons[j].label)
-    var live = liveList || []
-    for (var k = 0; k < live.length; k++) {
-        if (!liveIsReal(live[k])) continue
-        var existing = null
-        for (var n = 0; n < mons.length; n++) {
-            if (sameMonitor(mons[n], live[k])) { existing = mons[n]; break }
-        }
-        if (existing) add(existing.id, existing.label)
-        else {
+    if (prefer.length === 0) {
+        var live = liveList || []
+        for (var k = 0; k < live.length; k++) {
+            if (!liveIsReal(live[k])) continue
             var tmp = normalizeMonitor(live[k])
-            if (tmp) add(tmp.id, tmp.label + " (now)")
+            if (tmp) add(tmp.id, tmp.label)
         }
     }
+    if (opts.length > 1) opts.unshift({ value: "", label: "Any monitor" })
     return opts
+}
+
+function copyWorkspace(cfg, fromId, ws, toId) {
+    if (!cfg || fromId === toId) return cfg
+    var out = clone(cfg)
+    var from = profileById(out, fromId)
+    var to = profileById(out, toId)
+    if (!from || !to) return cfg
+    var nws = parseInt(ws, 10)
+    if (!(nws >= 1 && nws <= 10)) return cfg
+    var kept = []
+    var list = to.assignments || []
+    for (var i = 0; i < list.length; i++) if (list[i].workspace !== nws) kept.push(list[i])
+    var copies = []
+    var src = from.assignments || []
+    for (var j = 0; j < src.length; j++) {
+        if (src[j].workspace !== nws) continue
+        var item = clone(src[j])
+        item.id = makeId()
+        copies.push(normalizeAssignment(item))
+    }
+    to.assignments = kept.concat(copies)
+    if (!to.workspaceMonitors) to.workspaceMonitors = {}
+    var pin = (from.workspaceMonitors || {})[String(nws)]
+    if (pin && (to.monitors || []).indexOf(pin) >= 0) to.workspaceMonitors[String(nws)] = pin
+    else if ((to.monitors || []).length === 1) to.workspaceMonitors[String(nws)] = to.monitors[0]
+    else delete to.workspaceMonitors[String(nws)]
+    return out
 }
 
 function upsertLiveMonitor(cfg, live) {

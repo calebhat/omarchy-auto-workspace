@@ -68,6 +68,17 @@ Panel {
         return out
     }
     readonly property var monitorOptions: Model.monitorOptions(config, activeProfile, liveMonitors)
+    readonly property bool showMonitorPicker: monitorOptions.length > 1
+    property string copyTargetId: ""
+    readonly property var copyProfileOptions: {
+        var list = config.profiles || []
+        var out = []
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].id === activeProfileId) continue
+            out.push({ value: list[i].id, label: list[i].name })
+        }
+        return out
+    }
     readonly property string workspaceMonitorId: {
         var map = activeProfile.workspaceMonitors || {}
         return String(map[String(formWorkspace)] || "")
@@ -129,6 +140,10 @@ Panel {
         cfg.settings.activeProfileId = id
         config = cfg
         assignments = Model.profileById(cfg, id).assignments.slice()
+        var opts = []
+        var list = cfg.profiles || []
+        for (var i = 0; i < list.length; i++) if (list[i].id !== id) opts.push(list[i].id)
+        if (opts.length && (root.copyTargetId === id || !root.copyTargetId)) root.copyTargetId = opts[0]
         saveConfig()
     }
     function setWorkspaceMonitor(monitorId) {
@@ -148,12 +163,12 @@ Panel {
         var pid = cfg.settings.activeProfileId
         for (var i = 0; i < cfg.profiles.length; i++) {
             if (cfg.profiles[i].id !== pid) continue
+            var allowed = cfg.profiles[i].monitors || []
+            if (monitorId && allowed.length && allowed.indexOf(monitorId) < 0) continue
             var map = cfg.profiles[i].workspaceMonitors || {}
             if (!monitorId) delete map[String(formWorkspace)]
             else map[String(formWorkspace)] = monitorId
             cfg.profiles[i].workspaceMonitors = map
-            if (monitorId && cfg.profiles[i].monitors.indexOf(monitorId) < 0)
-                cfg.profiles[i].monitors = cfg.profiles[i].monitors.concat([monitorId])
         }
         config = cfg
         saveConfig()
@@ -296,6 +311,17 @@ Panel {
         statusText = "Saved window layout on WS" + formWorkspace
         clearStatusTimer.restart()
     }
+    function copyWorkspaceTo(toId) {
+        if (!toId) toId = root.copyTargetId
+        if (!toId || toId === root.activeProfileId) { errorText = "Pick a different profile"; return }
+        var cfg = Model.copyWorkspace(root.currentConfig(), root.activeProfileId, root.formWorkspace, toId)
+        var dest = Model.profileById(cfg, toId)
+        if (!dest) { errorText = "Profile not found"; return }
+        config = cfg
+        saveConfig()
+        statusText = "Copied WS" + formWorkspace + " to " + dest.name
+        clearStatusTimer.restart()
+    }
     function resetPreviewLayout() {
         var next = []
         for (var i = 0; i < assignments.length; i++) {
@@ -379,6 +405,10 @@ Panel {
                 var prof = Model.profileById(sane, sane.settings.activeProfileId)
                 root.assignments = (prof && prof.assignments) ? prof.assignments.slice() : []
                 root.formWorkspace = sane.settings.lastFormWorkspace
+                var others = []
+                for (var p = 0; p < sane.profiles.length; p++)
+                    if (sane.profiles[p].id !== sane.settings.activeProfileId) others.push(sane.profiles[p].id)
+                if (others.length) root.copyTargetId = others[0]
                 root.countsChanged()
                 if (repaired.changed) root.saveConfig()
             } catch (e) { root.errorText = "Invalid config JSON: " + e }
@@ -473,21 +503,21 @@ Panel {
         var list = []
         for (var i = 0; i < appList.length; i++) list.push(appList[i])
         if (!f) {
-            var act = list.filter(function(a){ return root.isInList(root.addedApps, a.exec) })
-            var pinned = list.filter(function(a){ return a.score >= 9999 })
-            var pool = act.length > 0 ? act : (pinned.length > 0 ? pinned.concat(list) : list)
             var seen = {}
             var uniq = []
-            for (var u = 0; u < pool.length; u++) {
-                if (seen[pool[u].exec]) continue
-                seen[pool[u].exec] = true
-                uniq.push(pool[u])
+            for (var u = 0; u < list.length; u++) {
+                if (seen[list[u].exec]) continue
+                seen[list[u].exec] = true
+                uniq.push(list[u])
             }
             uniq.sort(function(a, b){
+                var aOn = root.isInList(root.addedApps, a.exec) ? 1 : 0
+                var bOn = root.isInList(root.addedApps, b.exec) ? 1 : 0
+                if (bOn !== aOn) return bOn - aOn
                 if (b.score !== a.score) return b.score - a.score
                 return root.alphabeticalCompare(a, b)
             })
-            return uniq.slice(0, 8)
+            return uniq.slice(0, 24)
         }
         var exact = [], prefix = [], sub = []
         for (var j = 0; j < list.length; j++) {
@@ -500,7 +530,7 @@ Panel {
         exact.sort(root.alphabeticalCompare)
         prefix.sort(root.alphabeticalCompare)
         sub.sort(root.alphabeticalCompare)
-        return exact.concat(prefix, sub).slice(0, 6)
+        return exact.concat(prefix, sub).slice(0, 24)
     }
     function getAppsForWs(ws) {
         var out = []
@@ -526,9 +556,9 @@ Panel {
         open: root.opened
         centerOnBar: true
         focusTarget: keyCatcher
-        padding: Style.space(24)
-        contentWidth: panel.fittedContentWidth(Style.space(920))
-        contentHeight: panel.fittedContentHeight(content.implicitHeight + Style.space(40), panel.screenH - Style.gapsOut * 2 - Style.space(16))
+        padding: Style.space(18)
+        contentWidth: panel.fittedContentWidth(Style.space(980))
+        contentHeight: panel.fittedContentHeight(Math.round(panel.screenH * 0.78), panel.screenH - Style.gapsOut * 2 - Style.space(12))
 
         PanelKeyCatcher {
             id: keyCatcher
@@ -549,7 +579,7 @@ Panel {
             ColumnLayout {
                 id: content
                 anchors.fill: parent
-                spacing: Style.space(12)
+                spacing: Style.space(8)
 
                 PanelHero {
                     Layout.fillWidth: true
@@ -585,59 +615,48 @@ Panel {
                     onChanged: function(v) { root.mainView = v; liveProc.running = true }
                 }
 
-                Text {
-                    text: root.mainView === "apps"
-                          ? "↑↓ navigate · Enter toggles · / searches · Esc closes"
-                          : "Profiles match the connected monitors by serial/description, not DP-1 names."
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
-
                 // ——— Apps ———
                 RowLayout {
                     visible: root.mainView === "apps"
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(Style.space(460), Math.round(panel.screenH * 0.52))
-                    Layout.maximumHeight: Layout.preferredHeight
-                    Layout.minimumHeight: Layout.preferredHeight
-                    spacing: Style.space(14)
+                    Layout.fillHeight: true
+                    Layout.minimumHeight: Style.space(360)
+                    spacing: Style.space(12)
 
                     ColumnLayout {
                         id: leftStack
                         Layout.fillWidth: false
-                        Layout.preferredWidth: Math.round(content.width * 0.34)
-                        Layout.minimumWidth: Style.space(260)
-                        Layout.alignment: Qt.AlignTop
-                        spacing: Style.space(8)
+                        Layout.preferredWidth: Math.round(content.width * 0.38)
+                        Layout.minimumWidth: Style.space(280)
+                        Layout.fillHeight: true
+                        spacing: Style.space(6)
 
-                        PanelSectionHeader {
-                            text: "PROFILE"
-                            foreground: root.foreground
-                            fontFamily: root.fontFamily
-                        }
-                        Dropdown {
+                        RowLayout {
                             Layout.fillWidth: true
-                            label: ""
-                            showLabel: false
-                            foreground: root.foreground
-                            value: root.activeProfileId
-                            options: root.profileOptions
-                            onChanged: function(v) { root.setActiveProfile(v) }
+                            spacing: Style.space(8)
+                            Text {
+                                text: "Profile"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                font.bold: true
+                            }
+                            Dropdown {
+                                Layout.fillWidth: true
+                                label: ""
+                                showLabel: false
+                                foreground: root.foreground
+                                value: root.activeProfileId
+                                options: root.profileOptions
+                                onChanged: function(v) { root.setActiveProfile(v) }
+                            }
                         }
 
-                        PanelSectionHeader {
-                            text: "PICK A WORKSPACE"
-                            foreground: root.foreground
-                            fontFamily: root.fontFamily
-                        }
                         GridLayout {
                             Layout.fillWidth: true
                             columns: 5
-                            columnSpacing: Style.space(4)
-                            rowSpacing: Style.space(4)
+                            columnSpacing: Style.space(3)
+                            rowSpacing: Style.space(3)
                             Repeater {
                                 model: 10
                                 delegate: Button {
@@ -648,35 +667,70 @@ Panel {
                                     verticalPadding: 0
                                     onClicked: { root.workspacePicked = true; root.formWorkspace = index + 1; root.persistFormWorkspace() }
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: Style.space(38)
+                                    Layout.preferredHeight: Style.space(30)
                                 }
                             }
                         }
 
-                        Dropdown {
-                            Layout.fillWidth: true
-                            label: "Load workspace on"
-                            foreground: root.foreground
-                            value: root.workspaceMonitorId
-                            options: root.monitorOptions
-                            onChanged: function(v) { root.setWorkspaceMonitor(v) }
-                        }
-
-                        PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
-
-                        PanelSectionHeader {
-                            text: "SEARCH APPS"
-                            foreground: root.foreground
-                            fontFamily: root.fontFamily
-                        }
                         RowLayout {
+                            visible: root.showMonitorPicker
                             Layout.fillWidth: true
                             spacing: Style.space(8)
+                            Text {
+                                text: "Monitor"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                font.bold: true
+                            }
+                            Dropdown {
+                                Layout.fillWidth: true
+                                label: ""
+                                showLabel: false
+                                foreground: root.foreground
+                                value: root.workspaceMonitorId
+                                options: root.monitorOptions
+                                onChanged: function(v) { root.setWorkspaceMonitor(v) }
+                            }
+                        }
+                        Text {
+                            visible: !root.showMonitorPicker && root.monitorOptions.length === 1
+                            Layout.fillWidth: true
+                            text: "WS " + root.formWorkspace + " → " + root.monitorOptions[0].label
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            elide: Text.ElideRight
+                        }
+
+                        RowLayout {
+                            visible: root.copyProfileOptions.length > 0
+                            Layout.fillWidth: true
+                            spacing: Style.space(6)
+                            Dropdown {
+                                Layout.fillWidth: true
+                                label: ""
+                                showLabel: false
+                                foreground: root.foreground
+                                value: root.copyTargetId
+                                options: root.copyProfileOptions
+                                onChanged: function(v) { root.copyTargetId = v }
+                            }
+                            Button {
+                                text: "Copy WS" + root.formWorkspace
+                                tooltipText: "Copy this workspace’s apps and split into the other profile"
+                                onClicked: root.copyWorkspaceTo(root.copyTargetId)
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(6)
                             TextField {
                                 id: filterField
                                 Layout.fillWidth: true
-                                verticalPadding: Style.space(9)
-                                placeholderText: "Search apps, Herdr, ShopHawk…"
+                                verticalPadding: Style.space(6)
+                                placeholderText: "Search apps"
                                 foreground: root.foreground
                                 accent: Color.accent
                                 font.family: root.fontFamily
@@ -687,13 +741,13 @@ Panel {
                                     else if (event.key === Qt.Key_Down) { root.setCursor(0, 0); keyCatcher.forceActiveFocus(); event.accepted = true }
                                 }
                             }
-                            Button { text: "⟳"; tooltipText: "Refresh app list"; verticalPadding: Style.space(9); onClicked: { appsProc.running = true; liveProc.running = true } }
+                            Button { text: "⟳"; tooltipText: "Refresh app list"; verticalPadding: Style.space(6); onClicked: { appsProc.running = true; liveProc.running = true } }
                         }
 
                         Text {
                             visible: root.filteredApps.length === 0 && root.appFilter.trim().length > 0
                             Layout.fillWidth: true
-                            text: "No matches — use custom command below"
+                            text: "No matches — add a custom command below"
                             color: root.dim
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
@@ -704,12 +758,13 @@ Panel {
                             visible: root.filteredApps.length > 0
                             Layout.fillWidth: true
                             Layout.fillHeight: true
+                            Layout.minimumHeight: Style.space(180)
                             clip: true
                             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                             ScrollBar.vertical.policy: ScrollBar.AsNeeded
                             Column {
                                 width: resultsScroll.width
-                                spacing: Style.space(6)
+                                spacing: Style.space(3)
                                 Repeater {
                                     model: root.filteredApps
                                     delegate: AppRow {
@@ -726,7 +781,7 @@ Panel {
                             spacing: Style.space(6)
                             TextField {
                                 id: customNameField
-                                Layout.preferredWidth: Style.space(110)
+                                Layout.preferredWidth: Style.space(88)
                                 placeholderText: "Name"
                                 foreground: root.foreground
                                 text: root.customName
@@ -747,9 +802,9 @@ Panel {
 
                     ColumnLayout {
                         Layout.fillWidth: true
-                        Layout.preferredWidth: Math.round(content.width * 0.66)
-                        Layout.alignment: Qt.AlignTop
-                        spacing: Style.space(10)
+                        Layout.preferredWidth: Math.round(content.width * 0.62)
+                        Layout.fillHeight: true
+                        spacing: Style.space(6)
 
                         PanelSectionHeader {
                             text: "PREVIEW · drag splitters · " + root.activeProfile.name
@@ -775,15 +830,11 @@ Panel {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             text: {
-                                var mon = ""
-                                var opts = root.monitorOptions
-                                for (var i = 0; i < opts.length; i++) if (opts[i].value === root.workspaceMonitorId) mon = opts[i].label
-                                var line = mon && root.workspaceMonitorId ? ("WS " + root.formWorkspace + " → " + mon + ". ") : ("WS " + root.formWorkspace + " has no monitor pin. ")
                                 if (root.addedApps.length > 1)
-                                    line += "Drag the bar between windows to resize both. They stay tiled (no overlap). Reset restores the default split."
-                                else if (root.addedApps.length === 1)
-                                    line += "Add another app to split this workspace."
-                                return line
+                                    return "Drag the bar between panes. Apply keeps them tiled so later resize still moves both."
+                                if (root.addedApps.length === 1)
+                                    return "Add another app to split this workspace."
+                                return "Toggle apps in the list to place them on WS " + root.formWorkspace + "."
                             }
                             color: root.dim
                             font.family: root.fontFamily
@@ -796,8 +847,8 @@ Panel {
                 ColumnLayout {
                     visible: root.mainView === "profiles"
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(Style.space(460), Math.round(panel.screenH * 0.52))
-                    spacing: Style.space(10)
+                    Layout.fillHeight: true
+                    spacing: Style.space(8)
 
                     Toggle {
                         Layout.fillWidth: true
@@ -936,7 +987,7 @@ Panel {
         readonly property bool rowSelected: root.cursorActive && root.selectedRow === rowIndex
         hasCursor: rowSelected
         foreground: root.foreground
-        implicitHeight: Style.space(44)
+        implicitHeight: Style.space(36)
 
         onRowSelectedChanged: if (rowSelected) root.ensureCursorVisible(this)
 
