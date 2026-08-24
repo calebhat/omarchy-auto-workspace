@@ -441,7 +441,8 @@ function normalizeProfile(p, monitorIds) {
                 oseen[did] = true
                 off.push(did)
             }
-            if (off.length >= mons.length && mons.length) off = off.slice(0, mons.length - 1)
+            if (mons.length < 2) return []
+            if (off.length >= mons.length) off = off.slice(0, mons.length - 1)
             return off
         })(),
         assignments: assignments

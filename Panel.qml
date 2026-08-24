@@ -381,6 +381,11 @@ Panel {
         for (var i = 0; i < cfg.profiles.length; i++) {
             if (cfg.profiles[i].id !== profileId) continue
             var mons = cfg.profiles[i].monitors || []
+            if (mons.length < 2) {
+                cfg.profiles[i].disabledMonitors = []
+                errorText = "Can't turn off the only display in this profile"
+                return
+            }
             var offList = []
             var raw = cfg.profiles[i].disabledMonitors || []
             for (var d = 0; d < raw.length; d++) offList.push(raw[d])
@@ -1073,11 +1078,13 @@ Panel {
                                             font.pixelSize: Style.font.caption
                                         }
                                         Repeater {
-                                            model: profile.monitors || []
+                                            model: (profile.monitors || []).length > 1 ? (profile.monitors || []) : []
                                             delegate: RowLayout {
                                                 required property var modelData
                                                 readonly property string monitorId: String(modelData)
+                                                readonly property int onCount: (profile.monitors || []).length - (profile.disabledMonitors || []).length
                                                 readonly property bool isOff: (profile.disabledMonitors || []).indexOf(monitorId) >= 0
+                                                readonly property bool canTurnOff: onCount > 1
                                                 Layout.fillWidth: true
                                                 spacing: Style.space(8)
                                                 Text {
@@ -1095,7 +1102,11 @@ Panel {
                                                     checked: !isOff
                                                     foreground: root.foreground
                                                     accent: Color.accent
-                                                    onToggled: root.setMonitorDisabled(profile.id, monitorId, checked === false)
+                                                    opacity: (isOff || canTurnOff) ? 1 : 0.4
+                                                    onToggled: {
+                                                        if (!isOff && !canTurnOff) return
+                                                        root.setMonitorDisabled(profile.id, monitorId, checked === false)
+                                                    }
                                                 }
                                             }
                                         }

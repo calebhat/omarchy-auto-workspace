@@ -69,4 +69,16 @@ lid_id=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-des
 lid_bind=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-desk-lid.json" --profile-id desk-dock --bindings)
 [[ $(printf '%s' "$lid_bind" | jq -r '.["9"]') == "null" ]]
 
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+assert m.disable_plan(["eDP-1"], ["eDP-1"]) == []
+assert m.disable_plan(["eDP-1", "DVI-I-1"], ["eDP-1"]) == ["eDP-1"]
+assert m.disable_plan(["eDP-1", "DVI-I-1"], ["eDP-1", "DVI-I-1"]) == ["eDP-1"]
+assert m.safe_connector("eDP-1") == "eDP-1"
+assert m.safe_connector("eDP-1; rm -rf /") is None
+print("disable_plan ok")
+PY
+
 echo "match.test.sh ok"

@@ -116,4 +116,12 @@ if (!mp.assignments.some(function(a){ return a.name === "A" && a.workspace === 5
 if (!mp.assignments.some(function(a){ return a.name === "B" && a.workspace === 1 })) throw new Error("move swaps dest back")
 if (mp.workspaceMonitors["5"] !== "laptop") throw new Error("move pin")
 
+const oneScreen = m.sanitizeConfig({
+  version: 2,
+  monitors: [{ id: "laptop", label: "Laptop", description: "BOE", name: "eDP-1" }],
+  profiles: [{ id: "solo", name: "Solo", monitors: ["laptop"], disabledMonitors: ["laptop"], assignments: [] }]
+})
+if ((oneScreen.profiles[0].disabledMonitors || []).length !== 0)
+  throw new Error("cannot disable the only display in a profile")
+
 console.log("model.test.js ok")

@@ -95,7 +95,9 @@ notify() {
 
 bind_workspace_to_monitor() {
   local ws=$1 name=$2
-  [[ -n $ws && -n $name ]] || return 0
+  [[ $ws =~ ^[0-9]+$ ]] || return 0
+  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || return 0
+  [[ $name != *HEADLESS* ]] || return 0
   hyprctl keyword workspace "$ws,monitor:$name,persistent:true" >/dev/null 2>&1 || true
   local lua
   lua=$(printf 'hl.dispatch(hl.dsp.workspace.move({workspace="%s", monitor="%s"}))' "$ws" "$name")

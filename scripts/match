@@ -8,9 +8,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from typing import Any
+
+_CONNECTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+
+
+def safe_connector(name: str) -> str | None:
+    n = str(name or "").strip()
+    if _CONNECTOR_RE.fullmatch(n) and "HEADLESS" not in n:
+        return n
+    return None
 
 
 def live_is_connected(m: dict[str, Any]) -> bool:
@@ -149,7 +159,7 @@ def _keyword_monitor(spec: str) -> None:
 
 
 def enable_monitor(m: dict[str, Any]) -> None:
-    name = str(m.get("name") or "")
+    name = safe_connector(str(m.get("name") or ""))
     if not name:
         return
     w = int(m.get("width") or 0)
@@ -164,18 +174,34 @@ def enable_monitor(m: dict[str, Any]) -> None:
 
 
 def disable_monitor(m: dict[str, Any]) -> None:
-    name = str(m.get("name") or "")
+    name = safe_connector(str(m.get("name") or ""))
     if name:
         _keyword_monitor(f"{name},disable")
 
 
+def disable_plan(enabled_names: list[str], disable_names: list[str]) -> list[str]:
+    """Never power off the last enabled output."""
+    remaining = {n for n in enabled_names if n}
+    plan: list[str] = []
+    for name in disable_names:
+        if name not in remaining:
+            continue
+        if len(remaining) <= 1:
+            break
+        plan.append(name)
+        remaining.remove(name)
+    return plan
+
+
 def apply_outputs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
+    mons = list(profile.get("monitors") or [])
     disabled_ids = {str(x) for x in (profile.get("disabledMonitors") or [])}
+    if len(mons) < 2:
+        disabled_ids = set()
     connected = [m for m in live_list if live_is_connected(m)]
-    enabled_now = [m for m in connected if live_is_enabled(m)]
     to_enable: list[dict[str, Any]] = []
     to_disable: list[dict[str, Any]] = []
-    for mid in profile.get("monitors") or []:
+    for mid in mons:
         saved = monitor_by_id(cfg, str(mid))
         if not saved:
             continue
@@ -191,15 +217,25 @@ def apply_outputs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[
         if m.get("disabled"):
             enable_monitor(m)
             changed.append(f"on:{m.get('name')}")
-    still_on = len(enabled_now) + sum(1 for m in to_enable if m.get("disabled"))
-    for m in to_disable:
-        if m.get("disabled"):
+    enabled_names: list[str] = []
+    try:
+        live_now = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors", "all"], text=True))
+        enabled_names = [str(m.get("name") or "") for m in live_now if live_is_enabled(m)]
+    except Exception:
+        enabled_names = [str(m.get("name") or "") for m in connected if live_is_enabled(m)]
+        for m in to_enable:
+            n = str(m.get("name") or "")
+            if n and n not in enabled_names:
+                enabled_names.append(n)
+    disable_names = [str(m.get("name") or "") for m in to_disable]
+    for name in disable_plan(enabled_names, disable_names):
+        hit = next((m for m in to_disable if m.get("name") == name), None)
+        if not hit:
             continue
-        if still_on <= 1:
-            break
-        disable_monitor(m)
-        still_on -= 1
-        changed.append(f"off:{m.get('name')}")
+        disable_monitor(hit)
+        changed.append(f"off:{name}")
+        if name in enabled_names:
+            enabled_names.remove(name)
     return {"changed": changed}
 
 
