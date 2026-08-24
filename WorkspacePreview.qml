@@ -37,6 +37,7 @@ Item {
 
     signal layoutChanged(var tiles)
     signal layoutCleared()
+    signal appLockToggled(string assignmentId)
 
     function iconSourceFor(exec) {
         for (var i = 0; i < appList.length; i++) {
@@ -209,13 +210,18 @@ Item {
                             anchors.top: parent.verticalCenter
                             anchors.topMargin: 4
                             width: parent.width - 12
-                            text: modelData ? (modelData.name || "App") : ""
+                            text: (modelData && modelData.lockPlace ? "🔒 " : "") + (modelData ? (modelData.name || "App") : "")
                             color: Color.foreground
                             font.family: Style.font.family
                             font.pixelSize: Style.font.caption - 1
                             font.bold: true
                             elide: Text.ElideRight
                             horizontalAlignment: Text.AlignHCenter
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.RightButton
+                            onClicked: if (modelData && modelData.id) root.appLockToggled(modelData.id)
                         }
                     }
                 }

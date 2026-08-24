@@ -755,11 +755,19 @@ function normalizeAssignment(a) {
         exec: String(a.exec || a.command || "").slice(0, 500),
         type: type,
         enabled: a.enabled !== false,
-        onlyOnBoot: onlyOnBoot
+        onlyOnBoot: onlyOnBoot,
+        lockPlace: a.lockPlace === true
     }
     var geom = normalizeGeom(a.geom)
     if (geom) out.geom = geom
     return out
+}
+
+function assignmentIsLocked(a, profile) {
+    if (!a) return false
+    if (a.lockPlace === true) return true
+    var pref = workspacePref(profile, a.workspace)
+    return pref.lockSizes === true
 }
 
 function normalizeExtraApp(a) {

@@ -294,6 +294,60 @@ Panel {
         if (formType === "webapp" && (formCommand.indexOf("http://") === 0 || formCommand.indexOf("https://") === 0)) formExecPreview = "omarchy-launch-webapp '" + formCommand + "'"
         else formExecPreview = formCommand
     }
+    function assignmentForExec(execStr) {
+        var ws = formWorkspace
+        for (var i = 0; i < assignments.length; i++) {
+            if (assignments[i].workspace === ws && (assignments[i].exec === execStr || assignments[i].command === execStr))
+                return assignments[i]
+        }
+        return null
+    }
+    function isAppLocked(execStr) {
+        var a = root.assignmentForExec(execStr)
+        return Model.assignmentIsLocked(a, root.activeProfile)
+    }
+    function toggleAppLock(execStr) {
+        var a = root.assignmentForExec(execStr)
+        if (!a) return
+        var cfg = root.currentConfig()
+        var pid = cfg.settings.activeProfileId
+        var ws = formWorkspace
+        var pref = Model.workspacePref(Model.profileById(cfg, pid), ws)
+        var unlockingFromAll = pref.lockSizes === true
+        var next = []
+        for (var i = 0; i < assignments.length; i++) {
+            var item = Model.clone(assignments[i])
+            if (unlockingFromAll && item.workspace === ws) {
+                item.lockPlace = item.id !== a.id
+            } else if (item.id === a.id) {
+                item.lockPlace = !(item.lockPlace === true)
+            }
+            next.push(item)
+        }
+        if (unlockingFromAll) {
+            for (var p = 0; p < cfg.profiles.length; p++) {
+                if (cfg.profiles[p].id !== pid) continue
+                var prefs = cfg.profiles[p].workspacePrefs || {}
+                var pr = Model.normalizeWorkspacePref(prefs[String(ws)])
+                pr.lockSizes = false
+                prefs[String(ws)] = pr
+                cfg.profiles[p].workspacePrefs = prefs
+            }
+            config = cfg
+        }
+        assignments = next
+        saveConfig()
+        statusText = (root.isAppLocked(execStr) ? "Locked " : "Unlocked ") + a.name
+        clearStatusTimer.restart()
+    }
+    function toggleAppLockById(id) {
+        for (var i = 0; i < assignments.length; i++) {
+            if (assignments[i].id === id) {
+                root.toggleAppLock(assignments[i].exec || assignments[i].command)
+                return
+            }
+        }
+    }
     function setWorkspacePref(field, value) {
         var cfg = root.currentConfig()
         var pid = cfg.settings.activeProfileId
@@ -948,10 +1002,10 @@ Panel {
                         }
                         Toggle {
                             Layout.fillWidth: true
-                            label: "Lock assigned sizes"
+                            label: "Lock all assigned sizes"
                             description: root.currentWsPref.lockSizes
-                                ? "New windows won't resize these panes."
-                                : "Opening windows may resize the split."
+                                ? "Every assigned app on this workspace keeps its size."
+                                : "Lock one app with 🔒 in the list to pin it (e.g. always left)."
                             checked: root.currentWsPref.lockSizes === true
                             foreground: root.foreground
                             onClicked: root.setWorkspacePref("lockSizes", !(root.currentWsPref.lockSizes === true))
@@ -1078,6 +1132,7 @@ Panel {
                             columnWidth: 1 / Math.max(2, root.currentWsPref.visibleCount)
                             onLayoutChanged: function(tiles) { root.applyPreviewLayout(tiles) }
                             onLayoutCleared: root.resetPreviewLayout()
+                            onAppLockToggled: function(id) { root.toggleAppLockById(id) }
                         }
                         Text {
                             Layout.fillWidth: true
@@ -1502,6 +1557,14 @@ Panel {
                 }
             }
 
+            Button {
+                visible: app ? root.isInList(root.addedApps, app.exec) : false
+                text: app && root.isAppLocked(app.exec) ? "🔒" : "🔓"
+                tooltipText: app && root.isAppLocked(app.exec)
+                    ? "Unlock this app’s size — other windows can resize it"
+                    : "Lock this app’s size and place — others tile around it"
+                onClicked: if (app) root.toggleAppLock(app.exec)
+            }
             ToggleSwitch {
                 Layout.alignment: Qt.AlignVCenter
                 checked: app ? root.isInList(root.addedApps, app.exec) : false

@@ -333,7 +333,11 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
             vis = 4
         lock = pref.get("lockSizes") is True
         extras = pref.get("extras") if pref.get("extras") == "block" else "around"
-        if lock and extras == "around" and layout != "scrolling":
+        any_app_lock = lock or any(
+            str(a.get("workspace")) == str(ws) and a.get("lockPlace") is True
+            for a in (profile.get("assignments") or [])
+        )
+        if any_app_lock and extras == "around" and layout != "scrolling":
             layout = "scrolling"
         mon = pins.get(ws) or ""
         mon = safe_connector(mon) or ""

@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePrefs }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePrefs, assignmentIsLocked, normalizeAssignment }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -184,5 +184,8 @@ const pref = prefCfg.profiles[0].workspacePrefs["2"]
 if (pref.layout !== "scrolling" || pref.visibleCount !== 3 || pref.lockSizes !== true || pref.extras !== "block")
   throw new Error("workspace prefs")
 if (prefCfg.profiles[0].workspacePrefs["99"]) throw new Error("invalid ws pref dropped")
+const lockedApp = m.normalizeAssignment({ workspace: 2, name: "Herdr", exec: "herdr", lockPlace: true })
+if (!lockedApp.lockPlace) throw new Error("per-app lock")
+if (!m.assignmentIsLocked(lockedApp, prefCfg.profiles[0])) throw new Error("effective lock")
 
 console.log("model.test.js ok")
