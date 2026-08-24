@@ -87,19 +87,6 @@ def render_lua(g: dict) -> str:
         "  },",
         "})",
         "",
-        "pcall(function()",
-        '  hl.gesture({ fingers = 3, direction = "horizontal", action = "unset" })',
-        "end)",
-        "pcall(function()",
-        '  hl.gesture({ fingers = 4, direction = "horizontal", action = "unset" })',
-        "end)",
-        "pcall(function()",
-        '  hl.gesture({ fingers = 3, direction = "down", action = "unset" })',
-        "end)",
-        "pcall(function()",
-        '  hl.gesture({ fingers = 4, direction = "down", action = "unset" })',
-        "end)",
-        "",
     ]
     if g["workspaceSwipe"]:
         lines.append(
@@ -156,16 +143,6 @@ def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "") -> dict
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(render_lua(g), encoding="utf-8")
     hypr_eval(config_lua_eval(g))
-    if g["workspaceSwipe"]:
-        hypr_eval('hl.gesture({ fingers = 3, direction = "horizontal", action = "unset" })')
-        hypr_eval('hl.gesture({ fingers = 4, direction = "horizontal", action = "unset" })')
-        hypr_eval(
-            f'hl.gesture({{ fingers = {g["fingers"]}, direction = "horizontal", action = "workspace" }})'
-        )
-    if g["scratchpadSwipe"]:
-        hypr_eval(
-            f'hl.gesture({{ fingers = {g["scratchpadFingers"]}, direction = "down", action = "special", workspace_name = "scratchpad" }})'
-        )
     subprocess.run(["hyprctl", "reload"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return {"ok": True, "path": str(dest), "gestures": g}
 
