@@ -37,8 +37,10 @@ function defaultProfile() {
 }
 
 function layoutDescription(layout, hasLock) {
+    if (layout === "stage")
+        return "The first window stays full width. Extra windows are smaller columns to the right; scroll to see them. Visible sets extra-column width, not the first window."
     if (layout === "master" && !hasLock)
-        return "One large main window, with the rest stacked in a column beside it. New windows join the stack."
+        return "Hyprland master: one large pane with the rest stacked beside it on the same screen. No scrolling."
     if (layout === "scrolling" || hasLock)
         return "Windows sit in a row of columns. Locked panes keep their width; extra windows use the Visible size. Focusing a column to the right can clip a wider locked pane off the left."
     return "Each new window splits the current one in half (Hyprland’s default tiling)."
@@ -56,7 +58,7 @@ function visibleCountHelp(visibleCount, hasLock) {
     var n = clampVisibleCount(visibleCount)
     if (hasLock)
         return "Extra columns are 1/" + n + " of the screen (1–20). Locked panes keep the size you set."
-    return n + " extra columns fit on screen before you scroll. Ultrawides can go up to 20."
+    return n + " extra columns (not the first, in Stage) fit on screen before you scroll. Ultrawides can go up to 20."
 }
 
 function normalizeWorkspacePref(p) {
@@ -64,7 +66,7 @@ function normalizeWorkspacePref(p) {
         return { layout: "dwindle", visibleCount: 2, lockSizes: false, extras: "around" }
     }
     var layout = p.layout
-    if (layout !== "scrolling" && layout !== "master") layout = "dwindle"
+    if (layout !== "scrolling" && layout !== "master" && layout !== "stage") layout = "dwindle"
     var vis = clampVisibleCount(p.visibleCount)
     var extras = p.extras === "block" ? "block" : "around"
     return {
@@ -511,6 +513,12 @@ function autoLayoutRects(count, layout, columnWidth) {
     if (layout === "scrolling") {
         var cw = columnWidth > 0.1 && columnWidth < 1 ? columnWidth : 0.49
         for (var i = 0; i < count; i++) push(i * (cw + gap), 0, cw, 1)
+        return rects
+    }
+    if (layout === "stage") {
+        push(0, 0, 1, 1)
+        var scw = columnWidth > 0.1 && columnWidth < 1 ? columnWidth : 0.5
+        for (var s = 1; s < count; s++) push(1 + (s - 1) * scw, 0, scw, 1)
         return rects
     }
     if (layout === "master") {

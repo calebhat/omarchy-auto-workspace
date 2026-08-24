@@ -24,26 +24,29 @@ omarchy plugin disable tenzin.auto-workspace
 
 ## Usage
 
-1. Click the workspace icon in the bar → **SceneBook**.
-2. **Profiles** tab: **Save current monitors as profile** while docked, then
+1. Click the workspace icon in the bar → **SceneBook**. The header profile
+   selector is the object you are editing (like a theme in ThemeBook).
+2. **Profiles**: **Save current monitors as profile** while docked, then
    again on laptop-only. Matching uses EDID serial, then description — not
    `DP-1` / `DVI-I-1` (those names swap on a dock).
-3. **Apps** tab: pick a profile, pick workspace 1–10, set **Load workspace on**
-   to a named monitor, then toggle apps. ShopHawk Herdr is injected even
-   though it is not a `.desktop` file. Custom commands go in the row at the
-   bottom. Drag the splitter between windows to resize both sides (they stay
-   tiled and cannot overlap). Lock an app (🔒) or **Lock all assigned sizes**
-   so a new window cannot move or resize those panes — extras either scroll
-   around them or get sent to another workspace. Apply keeps windows in the
+3. **Workspaces**: pick workspace 1–10, set **Load workspace on** to a named
+   monitor, then toggle apps. ShopHawk Herdr is injected even though it is
+   not a `.desktop` file. Custom commands go in the row at the bottom. Drag
+   the splitter between windows to resize both sides (they stay tiled and
+   cannot overlap). Lock an app (🔒) or **Lock all assigned sizes** so a new
+   window cannot move or resize those panes — extras either scroll around
+   them or get sent to another workspace. Apply keeps windows in the
    Hyprland tile layout so later resize still moves the shared split.
-   **Reset** restores the default split.
-4. **Apply matching** (or **SUPER+ALT+W**, or middle-click the bar chip)
-   snapshots the connected monitors and loads the matching profile: bind
-   workspaces to monitors, then launch that profile’s apps. On the
-   Profiles tab, toggle a display off (for example the laptop panel on
-   the dock profile) so Apply disables it. At least one display must stay on.
-   Arrangement is a drag canvas for monitor positions; edges snap.
-5. **Apply matching profile at login** is off by default.
+   **Reset** restores the default split. Layouts: Dwindle (Hyprland split
+   tree), Scrolling (equal columns), Master (Hyprland large pane + stack),
+   Stage (first window full width; extras are smaller columns you scroll to).
+4. **Displays**: arrange monitors on the canvas (edges snap), turn a display
+   off for this profile (laptop panel on the dock setup), and set match mode.
+   At least one display must stay on.
+5. **Apply matching** (or **SUPER+ALT+W**, or middle-click the bar chip)
+   snapshots the connected monitors and loads the matching profile.
+   **Apply this profile** on Displays runs the header profile as saved.
+6. **Apply matching profile at login** (Profiles tab) is off by default.
 
 Desk example: workspace 1 on the left external, 2–5 on the right external,
 workspace 9 on the laptop. A separate laptop profile has a different app set.

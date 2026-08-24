@@ -61,6 +61,14 @@ def test_lock_plan_and_assignment():
     assert len(plan["locked"]) == 1
     assert plan["locked"][0]["exec"] == "herdr"
     assert plan["extras"] == "around"
+    stage_profile = {
+        "workspacePrefs": {"1": {"layout": "stage", "visibleCount": 2, "extras": "around"}},
+        "assignments": [{"workspace": 1, "exec": "brave", "lockPlace": False}],
+    }
+    sp = geom.lock_plan_for_workspace(stage_profile, "1")
+    assert sp["stage"] is True
+    assert len(sp["locked"]) == 1
+    assert sp["locked"][0]["geom"]["w"] == 1.0
 
 
 def test_close_enough_and_fallback():

@@ -653,6 +653,17 @@ cmd_apply() {
       echo "apply on boot disabled — use hotkey or Apply now"
       exit 0
     fi
+    # Same kernel boot_id means this is a shell restart (plugin install),
+    # not a new login. Re-applying would resize existing windows.
+    local boot_id last_boot_file last_boot
+    boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "")
+    last_boot_file="$STATE_DIR/last_boot_id"
+    last_boot=""
+    [[ -f $last_boot_file ]] && last_boot=$(cat "$last_boot_file" 2>/dev/null || echo "")
+    if [[ $force != "true" && -n $boot_id && -n $last_boot && $last_boot == "$boot_id" ]]; then
+      echo "already applied this login — skip shell restart"
+      exit 0
+    fi
   fi
 
   local status_json profile_id profile_name bindings

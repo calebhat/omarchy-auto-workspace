@@ -11,6 +11,7 @@ Item {
     id: root
     property int workspace: 1
     property var assignedApps: []
+    property bool lockAll: false
     property var appList: []
     property bool isExpanded: false
     property int screenW: 0
@@ -30,6 +31,7 @@ Item {
     readonly property string layoutLabel: {
         if (customLayout) return "tiled · drag the splitters"
         if (hyprLayout === "scrolling") return "scrolling • " + Math.round(columnWidth * 100) + "% columns"
+        if (hyprLayout === "stage") return "stage · first window full width"
         if (hyprLayout === "master") return "master · large pane + stack"
         if (hyprLayout === "dwindle") return "dwindle · split tree"
         return hyprLayout
@@ -210,7 +212,7 @@ Item {
                             anchors.top: parent.verticalCenter
                             anchors.topMargin: 4
                             width: parent.width - 12
-                            text: (modelData && modelData.lockPlace ? "🔒 " : "") + (modelData ? (modelData.name || "App") : "")
+                            text: ((root.lockAll || (modelData && modelData.lockPlace)) ? "🔒 " : "") + (modelData ? (modelData.name || "App") : "")
                             color: Color.foreground
                             font.family: Style.font.family
                             font.pixelSize: Style.font.caption - 1

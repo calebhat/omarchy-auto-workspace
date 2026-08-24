@@ -93,7 +93,7 @@ BarWidget {
     Loader {
         id: panelLoader
         active: true
-        source: Qt.resolvedUrl("Panel.qml")
+        source: Qt.resolvedUrl("Panel.qml") + "?v=ws-layout-2"
         visible: false
         onLoaded: {
             root.injectPanel()

@@ -141,6 +141,12 @@ def locked_workspaces() -> list[str]:
 
 _restoring = False
 _last_restore: dict[str, float] = {}
+STARTED_AT = time.monotonic()
+STARTUP_GRACE_SEC = 4.0
+
+
+def in_startup_grace() -> bool:
+    return time.monotonic() - STARTED_AT < STARTUP_GRACE_SEC
 
 
 def restore_locks(ws: str, addr: str = "") -> None:
@@ -160,7 +166,7 @@ def restore_locks(ws: str, addr: str = "") -> None:
 
 
 def handle_open(addr: str, ws: str) -> None:
-    if apply_in_progress():
+    if apply_in_progress() or in_startup_grace():
         return
     blocked = load_block_map()
     time.sleep(0.12)

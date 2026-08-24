@@ -330,7 +330,8 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
     applied = []
     for ws in sorted(ws_ids, key=lambda s: int(s) if s.isdigit() else 99):
         pref = prefs.get(ws) or {}
-        layout = pref.get("layout") if pref.get("layout") in ("dwindle", "scrolling", "master") else ""
+        requested = pref.get("layout") if pref.get("layout") in ("dwindle", "scrolling", "master", "stage") else ""
+        layout = requested
         vis = int(pref.get("visibleCount") or 2)
         if vis < 1:
             vis = 1
@@ -342,7 +343,8 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
             str(a.get("workspace")) == str(ws) and a.get("lockPlace") is True
             for a in (profile.get("assignments") or [])
         )
-        if any_app_lock:
+        stage = requested == "stage" and not any_app_lock
+        if any_app_lock or stage:
             layout = "scrolling"
         mon = pins.get(ws) or ""
         mon = safe_connector(mon) or ""
@@ -355,8 +357,12 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
             col = round(1.0 / vis, 4)
             if any_app_lock:
                 parts.append(f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false }}")
+            elif stage:
+                parts.append(f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = true }}")
             else:
                 parts.append(f"layout_opts = {{ column_width = {col} }}")
+        elif layout == "master":
+            parts.append("layout_opts = { orientation = \"left\" }")
         lua = "hl.workspace_rule({ " + ", ".join(parts) + " })"
         subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if mon:
@@ -364,7 +370,7 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
                 ["hyprctl", "eval", f'hl.dispatch(hl.dsp.workspace.move({{workspace="{ws}", monitor="{mon}"}}))'],
                 check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-        applied.append({"workspace": ws, "layout": layout or "dwindle", "monitor": mon, "visibleCount": vis, "lockSizes": lock, "extras": extras})
+        applied.append({"workspace": ws, "layout": requested or layout or "dwindle", "monitor": mon, "visibleCount": vis, "lockSizes": lock, "extras": extras})
     return {"ok": True, "workspaces": applied}
 
 

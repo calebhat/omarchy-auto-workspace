@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, layoutDescription, visibleCountHelp, clampVisibleCount }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, layoutDescription, visibleCountHelp, clampVisibleCount }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -184,6 +184,11 @@ const pref = prefCfg.profiles[0].workspacePrefs["2"]
 if (pref.layout !== "scrolling" || pref.visibleCount !== 3 || pref.lockSizes !== true || pref.extras !== "block")
   throw new Error("workspace prefs")
 if (m.layoutDescription("master").indexOf("stack") < 0) throw new Error("master layout copy")
+if (m.layoutDescription("stage").indexOf("full width") < 0) throw new Error("stage layout copy")
+if (m.normalizeWorkspacePref({ layout: "stage" }).layout !== "stage") throw new Error("persist stage")
+const stageRects = m.autoLayoutRects(2, "stage", 0.5)
+if (stageRects[0].w !== 1) throw new Error("stage first full")
+if (!(stageRects[1].w > 0.4 && stageRects[1].w < 0.6)) throw new Error("stage extra width")
 if (m.layoutDescription("scrolling").indexOf("column") < 0) throw new Error("scrolling layout copy")
 if (m.layoutDescription("dwindle").indexOf("split") < 0) throw new Error("dwindle layout copy")
 if (m.layoutDescription("dwindle", true).indexOf("clip") < 0) throw new Error("lock uses scrolling copy")

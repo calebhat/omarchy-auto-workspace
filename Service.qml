@@ -83,9 +83,16 @@ Item {
     Process {
         id: extrasWatch
         command: ["python3", root.home + "/.config/omarchy/plugins/" + root.pluginId + "/scripts/watch"]
-        running: true
+        running: false
         stdout: SplitParser { onRead: function(d){ root.log("extras " + d) } }
         stderr: SplitParser { onRead: function(d){ console.warn("[scenebook] extras] " + d) } }
+    }
+
+    Timer {
+        interval: 1500
+        running: true
+        repeat: false
+        onTriggered: extrasWatch.running = true
     }
 
     Process {

@@ -52,12 +52,12 @@ Item {
         var cy = (minY + maxY) / 2
         var sw = Math.max(1, stage.width)
         var sh = Math.max(1, stage.height)
-        // Pad so there is empty space above/beside after each snap.
-        var sx = sw / (bw * 2.2)
-        var sy = sh / (bh * 2.2)
+        // Pad just enough to drag without clipping; keep tiles large.
+        var sx = sw / (bw * 1.22)
+        var sy = sh / (bh * 1.22)
         var s = Math.min(sx, sy)
         if (!(s > 0)) s = 0.08
-        if (s > 0.55) s = 0.55
+        if (s > 0.92) s = 0.92
         dragScale = s
         originX = cx - sw / (2 * s)
         originY = cy - sh / (2 * s)
@@ -124,6 +124,8 @@ Item {
             id: stage
             anchors.fill: parent
             anchors.margins: 12
+            onWidthChanged: root.computeScale()
+            onHeightChanged: root.computeScale()
 
             Repeater {
                 id: tileRepeater

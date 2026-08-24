@@ -101,4 +101,48 @@ assert "fullscreen_on_one_column = false" in lua, lua
 print("lock forces scrolling ok")
 PY
 
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+calls = []
+m.safe_connector = lambda n: n or ""
+m.workspace_bindings = lambda cfg, profile, live: {"1": "DVI-I-2"}
+m.subprocess.run = lambda *a, **k: calls.append(a)
+profile = {
+    "workspacePrefs": {"1": {"layout": "master", "visibleCount": 2, "lockSizes": False, "extras": "around"}},
+    "assignments": [{"workspace": 1, "exec": "brave", "lockPlace": False}],
+    "workspaceMonitors": {"1": "desk-left"},
+}
+m.apply_ws_prefs({"monitors": []}, profile, [])
+lua = " ".join(str(c) for c in calls)
+assert "layout = \"master\"" in lua, lua
+assert "orientation = \"left\"" in lua, lua
+assert "column_width" not in lua, lua
+print("master layout rule ok")
+PY
+
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+calls = []
+m.safe_connector = lambda n: n or ""
+m.workspace_bindings = lambda cfg, profile, live: {"5": "DVI-I-2"}
+m.subprocess.run = lambda *a, **k: calls.append(a)
+profile = {
+    "workspacePrefs": {"5": {"layout": "stage", "visibleCount": 3, "lockSizes": False, "extras": "around"}},
+    "assignments": [{"workspace": 5, "exec": "foot", "lockPlace": False}],
+    "workspaceMonitors": {"5": "desk-left"},
+}
+out = m.apply_ws_prefs({"monitors": []}, profile, [])
+lua = " ".join(str(c) for c in calls)
+assert out["workspaces"][0]["layout"] == "stage", out
+assert "layout = \"scrolling\"" in lua, lua
+assert "fullscreen_on_one_column = true" in lua, lua
+assert "column_width = 0.3333" in lua, lua
+assert "orientation" not in lua, lua
+print("stage layout rule ok")
+PY
+
 echo "match.test.sh ok"

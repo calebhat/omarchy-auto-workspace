@@ -41,13 +41,12 @@ Panel {
     property bool formNameEdited: false
     property string autoName: ""
     property bool fillingName: false
-    property string mainView: "apps"
+    property string mainView: "workspaces"
     property string customCommand: ""
     property string customName: ""
     property var liveStatus: ({ live: [], profiles: [], matchedProfileId: "", bindings: {} })
     property var liveMonitors: []
     property bool applyBusy: false
-    property string profilesPage: "list"
     onFormTypeChanged: { updateFormPreview(); updateAutofillName() }
 
     property string hyprLayout: "dwindle"
@@ -134,7 +133,7 @@ Panel {
         return n
     })()
 
-    function open() { root.controller.show(); loadConfig(); layoutProc.running = true; liveProc.running = true; root.workspacePicked = true }
+    function open() { root.controller.show(); loadConfig(); appsProc.running = true; layoutProc.running = true; liveProc.running = true; root.workspacePicked = true }
     function close() { root.controller.hide() }
     function toggle() { root.opened ? root.close() : root.open() }
     function closeForPopoutSwitch() { root.close() }
@@ -371,8 +370,15 @@ Panel {
             pref[field] = value
             prefs[ws] = Model.normalizeWorkspacePref(pref)
             cfg.profiles[i].workspacePrefs = prefs
-            if (field === "lockSizes" && prefs[ws].lockSizes === true) {
-                assignments = Model.ensureAssignmentGeoms(assignments, formWorkspace, prefs[ws])
+            if (field === "lockSizes") {
+                var next = []
+                for (var a = 0; a < assignments.length; a++) {
+                    var item = Model.clone(assignments[a])
+                    if (item.workspace === formWorkspace) item.lockPlace = value === true
+                    next.push(item)
+                }
+                if (value === true) next = Model.ensureAssignmentGeoms(next, formWorkspace, prefs[ws])
+                assignments = next
             }
         }
         config = cfg
@@ -463,7 +469,7 @@ Panel {
         assignments = []
         saveConfig()
         statusText = "Saved layout as " + prof.name; clearStatusTimer.restart()
-        mainView = "profiles"
+        mainView = "displays"
     }
     function renameProfile(id, name) {
         var cfg = root.currentConfig()
@@ -809,10 +815,26 @@ Panel {
         for (var i = 0; i < assignments.length; i++) if (assignments[i].workspace === formWorkspace) out.push(assignments[i])
         return out
     }
+    readonly property bool lockAllViable: addedApps.length >= 2
+    readonly property bool anyLockOnWs: currentWsPref.lockSizes === true || Model.workspaceHasLockedApp(activeProfile, formWorkspace)
+    readonly property bool allAssignedLocked: {
+        if (currentWsPref.lockSizes === true) return addedApps.length >= 2
+        if (addedApps.length < 2) return false
+        for (var i = 0; i < addedApps.length; i++) {
+            if (addedApps[i].lockPlace !== true) return false
+        }
+        return true
+    }
     function profileMatchBadge(id) {
         var list = (liveStatus.profiles || [])
         for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i]
         return null
+    }
+    readonly property string activeMatchLabel: {
+        var b = profileMatchBadge(activeProfileId)
+        if (b && b.matches) return "matches now"
+        if (b && b.reason) return String(b.reason)
+        return ""
     }
 
     KeyboardPanel {
@@ -851,7 +873,7 @@ Panel {
                 PanelHero {
                     Layout.fillWidth: true
                     title: "SceneBook"
-                    meta: root.totalCount + " apps · " + (root.config.profiles || []).length + " profiles · " + root.matchedLabel
+                    meta: (root.activeProfile.name || "Profile") + " · " + root.totalCount + " apps · " + (root.config.profiles || []).length + " profiles"
                     foreground: root.foreground
                     fontFamily: root.fontFamily
                     iconComponent: Component {
@@ -872,20 +894,51 @@ Panel {
                     }
                 }
 
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Style.space(10)
+                    Text {
+                        text: "PROFILE"
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                        font.letterSpacing: 1.2
+                    }
+                    Dropdown {
+                        Layout.fillWidth: true
+                        label: "Profile"
+                        showLabel: false
+                        foreground: root.foreground
+                        value: root.activeProfileId
+                        options: root.profileOptions
+                        onChanged: function(v) { if (v && v !== root.activeProfileId) root.setActiveProfile(v) }
+                    }
+                    Text {
+                        visible: root.activeMatchLabel !== ""
+                        text: root.activeMatchLabel
+                        color: Color.accent
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                    }
+                }
+
                 ButtonGroup {
                     Layout.fillWidth: true
                     foreground: root.foreground
                     options: [
-                        { value: "apps", label: "Apps" },
+                        { value: "workspaces", label: "Workspaces" },
+                        { value: "displays", label: "Displays" },
                         { value: "profiles", label: "Profiles" }
                     ]
                     value: root.mainView
                     onChanged: function(v) { root.mainView = v; liveProc.running = true }
                 }
 
-                // ——— Apps ———
+                // ——— Workspaces ———
                 RowLayout {
-                    visible: root.mainView === "apps"
+                    visible: root.mainView === "workspaces"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.minimumHeight: Style.space(360)
@@ -899,102 +952,37 @@ Panel {
                         Layout.fillHeight: true
                         spacing: Style.space(6)
 
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Style.space(8)
-                            Text {
-                                text: "Profile"
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                                font.bold: true
-                            }
-                            Dropdown {
-                                Layout.fillWidth: true
-                                label: ""
-                                showLabel: false
-                                foreground: root.foreground
-                                value: root.activeProfileId
-                                options: root.profileOptions
-                                onChanged: function(v) { root.setActiveProfile(v) }
-                            }
-                        }
-
-                        GridLayout {
-                            Layout.fillWidth: true
-                            columns: 5
-                            columnSpacing: Style.space(3)
-                            rowSpacing: Style.space(3)
-                            Repeater {
-                                model: 10
-                                delegate: Button {
-                                    required property int index
-                                    text: String(index + 1)
-                                    selected: root.workspacePicked && root.formWorkspace === (index + 1)
-                                    horizontalPadding: 0
-                                    verticalPadding: 0
-                                    onClicked: root.selectWorkspace(index + 1)
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: Style.space(30)
-                                }
-                            }
-                        }
-
-                        RowLayout {
-                            visible: root.showMonitorPicker
-                            Layout.fillWidth: true
-                            spacing: Style.space(8)
-                            Text {
-                                text: "WS " + root.formWorkspace
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                                font.bold: true
-                            }
-                            Dropdown {
-                                id: monitorDropdown
-                                Layout.fillWidth: true
-                                label: ""
-                                showLabel: false
-                                foreground: root.foreground
-                                value: root.workspaceMonitorId
-                                options: root.monitorOptions
-                                onChanged: function(v) {
-                                    if (v === root.workspaceMonitorId) return
-                                    root.setWorkspaceMonitor(v)
-                                }
-                            }
-                        }
                         Text {
-                            visible: !root.showMonitorPicker && root.monitorOptions.length === 1
-                            Layout.fillWidth: true
-                            text: root.monitorOptions.length ? ("All workspaces → " + root.monitorOptions[0].label) : ""
+                            text: "Layout"
                             color: root.dim
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
-                            elide: Text.ElideRight
+                            font.bold: true
                         }
-                        Text {
-                            visible: root.showMonitorPicker
+                        GridLayout {
                             Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: root.workspaceMonitorSummary
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption - 1
-                        }
-
-                        Dropdown {
-                            Layout.fillWidth: true
-                            label: "Layout"
-                            foreground: root.foreground
-                            value: root.currentWsPref.layout
-                            options: [
-                                { value: "dwindle", label: "Dwindle" },
-                                { value: "scrolling", label: "Scrolling" },
-                                { value: "master", label: "Master" }
-                            ]
-                            onChanged: function(v) { if (v !== root.currentWsPref.layout) root.setWorkspacePref("layout", v) }
+                            columns: 2
+                            columnSpacing: Style.space(4)
+                            rowSpacing: Style.space(4)
+                            Repeater {
+                                model: [
+                                    { value: "dwindle", label: "Dwindle" },
+                                    { value: "scrolling", label: "Scrolling" },
+                                    { value: "master", label: "Master" },
+                                    { value: "stage", label: "Stage" }
+                                ]
+                                delegate: Button {
+                                    required property var modelData
+                                    text: modelData.label
+                                    selected: root.currentWsPref.layout === modelData.value
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: Style.space(28)
+                                    onClicked: {
+                                        if (modelData.value !== root.currentWsPref.layout)
+                                            root.setWorkspacePref("layout", modelData.value)
+                                    }
+                                }
+                            }
                         }
                         Text {
                             Layout.fillWidth: true
@@ -1005,7 +993,7 @@ Panel {
                             font.pixelSize: Style.font.caption - 1
                         }
                         RowLayout {
-                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.lockSizes || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace)
+                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.layout === "stage" || (root.anyLockOnWs && root.currentWsPref.extras !== "block")
                             Layout.fillWidth: true
                             spacing: Style.space(6)
                             Text {
@@ -1045,44 +1033,23 @@ Panel {
                             }
                         }
                         Text {
-                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.lockSizes || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace)
+                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.layout === "stage" || (root.anyLockOnWs && root.currentWsPref.extras !== "block")
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
-                            text: Model.visibleCountHelp(root.currentWsPref.visibleCount, root.currentWsPref.lockSizes === true || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace))
+                            text: Model.visibleCountHelp(root.currentWsPref.visibleCount, root.anyLockOnWs)
                             color: root.dim
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption - 1
                         }
                         Toggle {
+                            visible: root.lockAllViable
                             Layout.fillWidth: true
-                            label: "Lock all assigned sizes"
-                            description: root.currentWsPref.lockSizes
-                                ? "Assigned apps keep their column width. Extra windows follow Visible; they do not cover locked panes."
-                                : "Lock one app with 🔒 to pin its width. Extra windows follow Visible and scroll instead of covering it."
-                            checked: root.currentWsPref.lockSizes === true
+                            label: "Lock every app on this workspace"
+                            description: "Pins each assigned pane. Same as tapping 🔒 on every app in the list."
+                            checked: root.allAssignedLocked
                             foreground: root.foreground
-                            onClicked: root.setWorkspacePref("lockSizes", !(root.currentWsPref.lockSizes === true))
+                            onClicked: root.setWorkspacePref("lockSizes", !root.allAssignedLocked)
                         }
-                        Dropdown {
-                            visible: root.currentWsPref.lockSizes === true || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace)
-                            Layout.fillWidth: true
-                            label: "Extra windows"
-                            foreground: root.foreground
-                            value: root.currentWsPref.extras
-                            options: [
-                                { value: "around", label: "Open around (scrolling)" },
-                                { value: "block", label: "Don't keep extras here" }
-                            ]
-                            onChanged: function(v) { if (v !== root.currentWsPref.extras) root.setWorkspacePref("extras", v) }
-                        }
-
-                        Button {
-                            Layout.fillWidth: true
-                            text: "Move / copy workspace"
-                            tooltipText: "Copy to another profile or move to another workspace number"
-                            onClicked: root.openTransfer("copy")
-                        }
-
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: Style.space(6)
@@ -1118,7 +1085,7 @@ Panel {
                             visible: root.filteredApps.length > 0
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            Layout.minimumHeight: Style.space(180)
+                            Layout.minimumHeight: Style.space(240)
                             clip: true
                             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                             ScrollBar.vertical.policy: ScrollBar.AsNeeded
@@ -1166,6 +1133,73 @@ Panel {
                         Layout.fillHeight: true
                         spacing: Style.space(6)
 
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: 10
+                            columnSpacing: Style.space(3)
+                            rowSpacing: Style.space(3)
+                            Repeater {
+                                model: 10
+                                delegate: Button {
+                                    required property int index
+                                    text: String(index + 1)
+                                    selected: root.workspacePicked && root.formWorkspace === (index + 1)
+                                    horizontalPadding: 0
+                                    verticalPadding: 0
+                                    onClicked: root.selectWorkspace(index + 1)
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: Style.space(30)
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            Text {
+                                text: "WS " + root.formWorkspace
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                font.bold: true
+                            }
+                            Dropdown {
+                                id: monitorDropdown
+                                visible: root.showMonitorPicker
+                                Layout.fillWidth: true
+                                label: ""
+                                showLabel: false
+                                foreground: root.foreground
+                                value: root.workspaceMonitorId
+                                options: root.monitorOptions
+                                onChanged: function(v) {
+                                    if (v === root.workspaceMonitorId) return
+                                    root.setWorkspaceMonitor(v)
+                                }
+                            }
+                            Text {
+                                visible: !root.showMonitorPicker
+                                Layout.fillWidth: true
+                                text: root.monitorOptions.length ? ("All workspaces → " + root.monitorOptions[0].label) : ""
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                elide: Text.ElideRight
+                            }
+                            Button {
+                                text: "Copy / move"
+                                tooltipText: "Copy this workspace to another profile or move it to another number"
+                                onClicked: root.openTransfer("copy")
+                            }
+                        }
+                        Text {
+                            visible: root.showMonitorPicker
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: root.workspaceMonitorSummary
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption - 1
+                        }
                         PanelSectionHeader {
                             text: "PREVIEW · drag splitters · " + root.activeProfile.name
                             foreground: root.foreground
@@ -1174,10 +1208,11 @@ Panel {
                         WorkspacePreview {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            Layout.minimumHeight: Math.min(Style.space(200), Math.round(panel.screenH * 0.3))
+                            Layout.minimumHeight: Math.min(Style.space(280), Math.round(panel.screenH * 0.38))
                             bar: root.bar
                             workspace: root.formWorkspace
                             assignedApps: root.addedApps
+                            lockAll: root.currentWsPref.lockSizes === true || root.allAssignedLocked
                             appList: root.appList
                             screenW: panel.screenW
                             screenH: panel.screenH
@@ -1186,6 +1221,15 @@ Panel {
                             onLayoutChanged: function(tiles) { root.applyPreviewLayout(tiles) }
                             onLayoutCleared: root.resetPreviewLayout()
                             onAppLockToggled: function(id) { root.toggleAppLockById(id) }
+                        }
+                        Toggle {
+                            visible: root.anyLockOnWs
+                            Layout.fillWidth: true
+                            label: "Send extra windows to the next workspace"
+                            description: "A new window still opens, then SceneBook moves it off this workspace. Off: extras stay here as extra scrolling columns."
+                            checked: root.currentWsPref.extras === "block"
+                            foreground: root.foreground
+                            onClicked: root.setWorkspacePref("extras", root.currentWsPref.extras === "block" ? "around" : "block")
                         }
                         Text {
                             Layout.fillWidth: true
@@ -1204,7 +1248,75 @@ Panel {
                     }
                 }
 
-                // ——— Profiles ———
+                // ——— Displays (selected profile) ———
+                ColumnLayout {
+                    visible: root.mainView === "displays"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: Style.space(8)
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: "Displays for “" + root.activeProfile.name + "”. Drag to arrange; edges snap. At least one display must stay on."
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Style.space(8)
+                        Button { text: "Use current arrangement"; onClicked: root.captureLiveMonitorLayout() }
+                        Button {
+                            text: root.activeProfile.matchMode === "all-present" ? "Match: all present" : "Match: exact"
+                            onClicked: root.setMatchMode(root.activeProfileId, root.activeProfile.matchMode === "all-present" ? "exact" : "all-present")
+                        }
+                        Item { Layout.fillWidth: true }
+                        Button { text: "Apply this profile"; onClicked: root.applyProfile(root.activeProfileId) }
+                    }
+                    Repeater {
+                        model: (root.activeProfile.monitors || []).length > 1 ? (root.activeProfile.monitors || []) : []
+                        delegate: RowLayout {
+                            required property var modelData
+                            readonly property string monitorId: String(modelData)
+                            readonly property var profile: root.activeProfile
+                            readonly property int onCount: (profile.monitors || []).length - (profile.disabledMonitors || []).length
+                            readonly property bool isOff: (profile.disabledMonitors || []).indexOf(monitorId) >= 0
+                            readonly property bool canTurnOff: onCount > 1
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            Text {
+                                Layout.fillWidth: true
+                                text: {
+                                    var m = Model.monitorById(root.config, monitorId)
+                                    return (m ? m.label : monitorId) + (isOff ? " — off" : "")
+                                }
+                                color: isOff ? root.dim : root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                elide: Text.ElideRight
+                            }
+                            ToggleSwitch {
+                                checked: !isOff
+                                foreground: root.foreground
+                                accent: Color.accent
+                                opacity: (isOff || canTurnOff) ? 1 : 0.4
+                                onToggled: {
+                                    if (!isOff && !canTurnOff) return
+                                    root.setMonitorDisabled(root.activeProfileId, monitorId, checked === false)
+                                }
+                            }
+                        }
+                    }
+                    MonitorLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.minimumHeight: Style.space(320)
+                        tiles: Model.monitorLayoutTiles(root.config, root.activeProfile, root.liveMonitors)
+                        onLayoutChanged: function(positions) { root.setMonitorLayout(positions) }
+                    }
+                }
+
+                // ——— Profiles catalog ———
                 ColumnLayout {
                     visible: root.mainView === "profiles"
                     Layout.fillWidth: true
@@ -1214,25 +1326,13 @@ Panel {
                     Toggle {
                         Layout.fillWidth: true
                         label: "Apply matching profile at login"
-                        description: "Off by default. Hotkey SUPER+ALT+W (or Apply matching) detects the layout and loads it."
+                        description: "At OS login only — not when the shell restarts (plugin install). SUPER+ALT+W still applies any time."
                         checked: root.config.settings && root.config.settings.applyOnBoot === true
                         foreground: root.foreground
                         onClicked: root.setApplyOnBoot(!(root.config.settings && root.config.settings.applyOnBoot === true))
                     }
 
-                    ButtonGroup {
-                        Layout.fillWidth: true
-                        foreground: root.foreground
-                        options: [
-                            { value: "list", label: "Profiles" },
-                            { value: "layout", label: "Arrangement" }
-                        ]
-                        value: root.profilesPage
-                        onChanged: function(v) { root.profilesPage = v; liveProc.running = true }
-                    }
-
                     RowLayout {
-                        visible: root.profilesPage === "list"
                         Layout.fillWidth: true
                         spacing: Style.space(8)
                         Button { text: "Save current monitors as profile"; onClicked: root.addProfileFromLive() }
@@ -1240,7 +1340,6 @@ Panel {
                     }
 
                     Text {
-                        visible: root.profilesPage === "list"
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
                         text: {
@@ -1256,7 +1355,6 @@ Panel {
                     }
 
                     ScrollView {
-                        visible: root.profilesPage === "list"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
@@ -1268,15 +1366,20 @@ Panel {
                                 model: root.config.profiles || []
                                 delegate: Rectangle {
                                     required property var modelData
-                                    property var profile: modelData
                                     width: parent.width
                                     implicitHeight: col.implicitHeight + Style.space(16)
                                     radius: Style.cornerRadius
-                                    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                                    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, modelData.id === root.activeProfileId ? 0.10 : 0.05)
                                     border.width: 1
                                     border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, modelData.id === root.activeProfileId ? 0.35 : 0.12)
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        z: 0
+                                        onClicked: root.setActiveProfile(modelData.id)
+                                    }
                                     ColumnLayout {
                                         id: col
+                                        z: 1
                                         anchors.left: parent.left
                                         anchors.right: parent.right
                                         anchors.verticalCenter: parent.verticalCenter
@@ -1312,81 +1415,18 @@ Panel {
                                             font.family: root.fontFamily
                                             font.pixelSize: Style.font.caption
                                         }
-                                        Repeater {
-                                            model: (profile.monitors || []).length > 1 ? (profile.monitors || []) : []
-                                            delegate: RowLayout {
-                                                required property var modelData
-                                                readonly property string monitorId: String(modelData)
-                                                readonly property int onCount: (profile.monitors || []).length - (profile.disabledMonitors || []).length
-                                                readonly property bool isOff: (profile.disabledMonitors || []).indexOf(monitorId) >= 0
-                                                readonly property bool canTurnOff: onCount > 1
-                                                Layout.fillWidth: true
-                                                spacing: Style.space(8)
-                                                Text {
-                                                    Layout.fillWidth: true
-                                                    text: {
-                                                        var m = Model.monitorById(root.config, monitorId)
-                                                        return (m ? m.label : monitorId) + (isOff ? " — off" : "")
-                                                    }
-                                                    color: isOff ? root.dim : root.foreground
-                                                    font.family: root.fontFamily
-                                                    font.pixelSize: Style.font.caption
-                                                    elide: Text.ElideRight
-                                                }
-                                                ToggleSwitch {
-                                                    checked: !isOff
-                                                    foreground: root.foreground
-                                                    accent: Color.accent
-                                                    opacity: (isOff || canTurnOff) ? 1 : 0.4
-                                                    onToggled: {
-                                                        if (!isOff && !canTurnOff) return
-                                                        root.setMonitorDisabled(profile.id, monitorId, checked === false)
-                                                    }
-                                                }
-                                            }
-                                        }
                                         RowLayout {
                                             Layout.fillWidth: true
                                             spacing: Style.space(6)
-                                            Button { text: "Edit apps"; onClicked: { root.setActiveProfile(modelData.id); root.mainView = "apps" } }
+                                            Button { text: "Workspaces"; onClicked: { root.setActiveProfile(modelData.id); root.mainView = "workspaces" } }
+                                            Button { text: "Displays"; onClicked: { root.setActiveProfile(modelData.id); root.mainView = "displays" } }
                                             Button { text: "Apply"; onClicked: root.applyProfile(modelData.id) }
-                                            Button {
-                                                text: modelData.matchMode === "all-present" ? "Match: all present" : "Match: exact"
-                                                onClicked: root.setMatchMode(modelData.id, modelData.matchMode === "all-present" ? "exact" : "all-present")
-                                            }
                                             Item { Layout.fillWidth: true }
                                             Button { text: "Delete"; onClicked: root.deleteProfile(modelData.id) }
                                         }
                                     }
                                 }
                             }
-                        }
-                    }
-
-                    ColumnLayout {
-                        visible: root.profilesPage === "layout"
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        spacing: Style.space(8)
-                        Text {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: "Arrange displays for “" + root.activeProfile.name + "”. Drag a screen; edges snap. Apply matching uses this layout."
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Button { text: "Use current arrangement"; onClicked: root.captureLiveMonitorLayout() }
-                            Button { text: "Apply this profile"; onClicked: root.applyProfile(root.activeProfileId) }
-                        }
-                        MonitorLayout {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            Layout.minimumHeight: Style.space(220)
-                            tiles: Model.monitorLayoutTiles(root.config, root.activeProfile, root.liveMonitors)
-                            onLayoutChanged: function(positions) { root.setMonitorLayout(positions) }
                         }
                     }
                 }
@@ -1637,5 +1677,5 @@ Panel {
         }
     }
 
-    Component.onCompleted: { loadConfig(); appsProc.running = true; layoutProc.running = true; liveProc.running = true }
+    Component.onCompleted: loadConfig()
 }

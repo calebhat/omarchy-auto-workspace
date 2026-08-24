@@ -115,6 +115,7 @@ def lock_plan_for_workspace(profile: dict[str, Any], ws: str) -> dict[str, Any]:
     vis = clamp_visible_count(pref.get("visibleCount") or 2)
     extras = "block" if pref.get("extras") == "block" else "around"
     lock_all = pref.get("lockSizes") is True
+    stage = pref.get("layout") == "stage"
     locked = []
     for a in profile.get("assignments") or []:
         if a.get("enabled") is False:
@@ -123,6 +124,17 @@ def lock_plan_for_workspace(profile: dict[str, Any], ws: str) -> dict[str, Any]:
             continue
         if lock_all or a.get("lockPlace") is True:
             locked.append(a)
+    if stage and not locked:
+        for a in profile.get("assignments") or []:
+            if a.get("enabled") is False:
+                continue
+            if str(a.get("workspace") or "") != str(ws):
+                continue
+            primary = dict(a)
+            primary["geom"] = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
+            primary["lockPlace"] = True
+            locked.append(primary)
+            break
     return {
         "workspace": str(ws),
         "locked": locked,
@@ -130,6 +142,7 @@ def lock_plan_for_workspace(profile: dict[str, Any], ws: str) -> dict[str, Any]:
         "extras": extras,
         "visibleCount": vis,
         "prefs": prefs,
+        "stage": stage,
     }
 
 
@@ -217,15 +230,17 @@ def column_width_frac(it: dict[str, Any], extra_frac: float) -> float:
     return max(0.05, min(1.0, float(extra_frac)))
 
 
-def scrolling_layout_opts(visible_count: int, lock: bool = False) -> str:
+def scrolling_layout_opts(visible_count: int, lock: bool = False, stage: bool = False) -> str:
     col = max(0.1, extra_column_frac(visible_count))
     if lock:
         return f"column_width = {col}, fullscreen_on_one_column = false"
+    if stage:
+        return f"column_width = {col}, fullscreen_on_one_column = true"
     return f"column_width = {col}"
 
 
-def force_scrolling(ws: str, visible_count: int = 2, lock: bool = True) -> None:
-    opts = scrolling_layout_opts(visible_count, lock=lock)
+def force_scrolling(ws: str, visible_count: int = 2, lock: bool = True, stage: bool = False) -> None:
+    opts = scrolling_layout_opts(visible_count, lock=lock, stage=stage)
     hypr_eval(
         f'hl.workspace_rule({{ workspace = "{ws}", persistent = true, layout = "scrolling", '
         f"layout_opts = {{ {opts} }} }})"
@@ -522,6 +537,11 @@ def place_scrolling_columns(
                 layout_msg("expel")
                 time.sleep(0.04)
         last_locked = len(ordered_locked)
+        locked_fracs = [column_width_frac(it, extra_frac) for it in ordered_locked]
+        if not has_extras and locked_fracs:
+            total = sum(locked_fracs)
+            if total > 0.02 and abs(total - 1.0) >= 0.02:
+                locked_fracs = [round(f / total, 4) for f in locked_fracs]
         for it in extras:
             for _ in range(6):
                 cache_clear()
@@ -537,8 +557,7 @@ def place_scrolling_columns(
                 if new_rank is not None and rank is not None and new_rank < rank:
                     layout_msg("swapcol l")
                     break
-        for it in ordered_locked:
-            frac = column_width_frac(it, extra_frac)
+        for it, frac in zip(ordered_locked, locked_fracs):
             focus_window(it["addr"])
             layout_msg(f"colresize {frac}")
             time.sleep(0.04)
@@ -551,21 +570,23 @@ def place_scrolling_columns(
                 layout_msg("expel")
                 layout_msg(f"colresize {extra_frac}")
                 time.sleep(0.04)
-        if not has_extras:
-            cache_clear()
-            for it in ordered_locked:
-                want = it.get("px") or {}
-                if want.get("w"):
-                    ensure_width(it["addr"], int(want["w"]))
-                    time.sleep(0.03)
-        if anchor:
-            focus_window(anchor)
-        elif prefer_addr:
-            focus_window(prefer_addr)
-        elif prev:
-            focus_window(prev)
+        stay = ""
+        if extras:
+            stay = anchor or extras[-1]["addr"]
+        elif ordered_locked:
+            stay = ordered_locked[0]["addr"]
+        elif sequence:
+            stay = sequence[0]["addr"]
+        if stay:
+            focus_window(stay)
     finally:
+        # inhibit_scroll is a scrolling layoutmsg. Sending it after focusing a
+        # dwindle/master workspace (e.g. after Apply) raises a Hyprland config error.
         layout_msg("inhibit_scroll false")
+    if extras:
+        focus_window(anchor or extras[-1]["addr"])
+    elif not has_extras and ordered_locked:
+        focus_window(ordered_locked[0]["addr"])
     cache_clear()
     return [{**it, "place": actual_box(it["addr"]) or it.get("px") or {}} for it in sequence]
 
@@ -604,7 +625,12 @@ def restore_locks_for_workspace(ws: str, cfg: dict[str, Any] | None = None, prof
     locked = plan["locked"]
     if not locked:
         return {"ok": True, "skipped": True, "workspace": str(ws)}
-    force_scrolling(str(ws), plan["visibleCount"], lock=True)
+    force_scrolling(
+        str(ws),
+        plan["visibleCount"],
+        lock=not plan.get("stage") or plan.get("lock_all") is True,
+        stage=plan.get("stage") is True,
+    )
     cache_clear()
     monitors = hypr_j("monitors", cached=True)
     workspaces = hypr_j("workspaces", cached=True)
@@ -762,9 +788,16 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
         pref = prefs.get(str(ws)) or {}
         vis = clamp_visible_count(pref.get("visibleCount"))
         lock_any = any(w.get("lock") for w in windows) or pref.get("lockSizes") is True
-        scrolling = lock_any or pref.get("layout") == "scrolling"
+        stage = pref.get("layout") == "stage" and not lock_any
+        scrolling = lock_any or pref.get("layout") in ("scrolling", "stage")
         if scrolling:
-            force_scrolling(ws, vis, lock=lock_any)
+            force_scrolling(ws, vis, lock=lock_any, stage=stage)
+            if stage:
+                for win in windows:
+                    if not win.get("lock"):
+                        win["lock"] = True
+                        win["geom"] = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
+                        break
             metrics = layout_metrics(mon) if mon else {"x": 0, "y": 0, "w": 1, "h": 1}
             for win in windows:
                 win["px"] = geom_pixels(win["geom"], metrics) if win.get("geom") else win.get("px")

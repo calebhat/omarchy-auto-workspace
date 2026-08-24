@@ -12,6 +12,7 @@ def test_next_open_ws():
 
 def test_handle_open_restores_when_not_blocked(monkey_calls):
     restored = []
+    watch.STARTED_AT = 0
     watch.apply_in_progress = lambda: False
     watch.locked_workspaces = lambda: ["2"]
     watch.load_block_map = lambda: {}
@@ -21,9 +22,22 @@ def test_handle_open_restores_when_not_blocked(monkey_calls):
     assert restored == [("2", "0xabc")]
 
 
+def test_handle_open_skips_startup_grace():
+    restored = []
+    watch.STARTED_AT = watch.time.monotonic()
+    watch.apply_in_progress = lambda: False
+    watch.locked_workspaces = lambda: ["2"]
+    watch.load_block_map = lambda: {}
+    watch.restore_locks = lambda ws, addr="": restored.append((ws, addr))
+    watch.time.sleep = lambda _s: None
+    watch.handle_open("0xabc", "2")
+    assert restored == []
+
+
 def test_handle_open_moves_then_restores():
     restored = []
     moved = []
+    watch.STARTED_AT = 0
     watch.apply_in_progress = lambda: False
     watch.locked_workspaces = lambda: ["2"]
     watch.geom_mod = lambda: type("G", (), {"force_scrolling": staticmethod(lambda ws, vis=2: None)})()
@@ -41,5 +55,6 @@ def test_handle_open_moves_then_restores():
 if __name__ == "__main__":
     test_next_open_ws()
     test_handle_open_restores_when_not_blocked([])
+    test_handle_open_skips_startup_grace()
     test_handle_open_moves_then_restores()
     print("watch.test.py ok")
