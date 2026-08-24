@@ -443,6 +443,7 @@ Panel {
         var cfg = root.currentConfig()
         cfg.settings.gestureSource = src === "global" ? "global" : "profile"
         config = cfg
+        saveProc.wantsGestures = true
         saveConfig()
     }
     function setGestureField(field, value) {
@@ -462,8 +463,8 @@ Panel {
             }
         }
         config = cfg
+        saveProc.wantsGestures = true
         saveConfig()
-        Qt.callLater(root.applyGestures)
     }
     function setWorkspaceName(ws, name) {
         var cfg = root.currentConfig()
@@ -738,6 +739,7 @@ Panel {
         id: saveProc
         property string pendingJson: ""
         property bool wantsSave: false
+        property bool wantsGestures: false
         stdout: StdioCollector { id: saveOut; waitForEnd: true }
         stderr: StdioCollector { id: saveErr; waitForEnd: true }
         onExited: function(code){
@@ -749,6 +751,10 @@ Panel {
                 saveProc.running = true
             } else if (code === 0) {
                 root.countsChanged(); refreshServiceProc.running = true
+                if (saveProc.wantsGestures) {
+                    saveProc.wantsGestures = false
+                    root.applyGestures()
+                }
             }
         }
     }
@@ -1462,13 +1468,35 @@ Panel {
                             foreground: root.foreground
                             onClicked: root.setGestureField("touch", !root.currentGestures.touch)
                         }
-                        Toggle {
+                        Text {
+                            visible: root.currentGestures.workspaceSwipe
+                            text: "Swipe direction"
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                        }
+                        ButtonGroup {
                             visible: root.currentGestures.workspaceSwipe
                             Layout.fillWidth: true
-                            label: "Invert swipe direction"
-                            checked: root.currentGestures.invert
                             foreground: root.foreground
-                            onClicked: root.setGestureField("invert", !root.currentGestures.invert)
+                            value: root.currentGestures.invert ? "natural" : "swapped"
+                            options: [
+                                { value: "natural", label: "Natural (Hyprland default)" },
+                                { value: "swapped", label: "Swap left / right" }
+                            ]
+                            onChanged: function(v) { root.setGestureField("invert", v === "natural") }
+                        }
+                        Text {
+                            visible: root.currentGestures.workspaceSwipe
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: root.currentGestures.invert
+                                ? "Natural: swipe the workspace strip with your fingers (Hyprland default)."
+                                : "Swapped: reverse which workspace a left or right swipe selects."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption - 1
                         }
                         Toggle {
                             visible: root.currentGestures.workspaceSwipe
