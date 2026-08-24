@@ -11,6 +11,7 @@ LEGACY_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/tenzin.aut
 STATE_FILE="$STATE_DIR/state.json"
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MATCH="$PLUGIN_DIR/scripts/match"
+GEOM="$PLUGIN_DIR/scripts/geom"
 
 mkdir -p "$STATE_DIR"
 
@@ -98,57 +99,16 @@ bind_workspace_to_monitor() {
     || true
 }
 
-# geom JSON {x,y,w,h} is 0–1 of the workspace's monitor usable area.
+# geom JSON {x,y,w,h} is 0–1 of the workspace's *layout* area (backend pixels / scale).
 apply_window_geom() {
   local addr=$1 geom_json=$2 ws=$3
   [[ -n $addr && -n $geom_json && $geom_json != "null" ]] || return 0
-  local pixels
-  pixels=$(python3 -c '
-import json, subprocess, sys
-geom = json.loads(sys.argv[1])
-ws = sys.argv[2]
-try:
-    monitors = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
-    workspaces = json.loads(subprocess.check_output(["hyprctl", "-j", "workspaces"], text=True))
-except Exception:
-    sys.exit(0)
-name = None
-for w in workspaces:
-    if str(w.get("id")) == str(ws) or str(w.get("name")) == str(ws):
-        name = w.get("monitor")
-        break
-if not name:
-    for m in monitors:
-        if m.get("focused"):
-            name = m.get("name")
-            break
-mon = next((m for m in monitors if m.get("name") == name), None)
-if not mon:
-    sys.exit(0)
-reserved = list(mon.get("reserved") or [0, 0, 0, 0]) + [0, 0, 0, 0]
-rl, rt, rr, rb = reserved[:4]
-uw = max(1, int(mon.get("width") or 0) - int(rl) - int(rr))
-uh = max(1, int(mon.get("height") or 0) - int(rt) - int(rb))
-x = int(mon.get("x") or 0) + int(rl) + float(geom.get("x") or 0) * uw
-y = int(mon.get("y") or 0) + int(rt) + float(geom.get("y") or 0) * uh
-w = max(80, int(float(geom.get("w") or 1) * uw))
-h = max(60, int(float(geom.get("h") or 1) * uh))
-print(int(x), int(y), int(w), int(h))
-' "$geom_json" "$ws" 2>/dev/null) || return 0
-  local gx gy gw gh
-  read -r gx gy gw gh <<<"$pixels"
-  [[ -n $gx && -n $gw ]] || return 0
-  local a="address:$addr"
-  hyprctl eval "hl.dispatch(hl.dsp.window.float({window=\"$a\", action=\"set\"}))" >/dev/null 2>&1 \
-    || hyprctl dispatch setfloating "$a" >/dev/null 2>&1 \
-    || true
-  hyprctl eval "hl.dispatch(hl.dsp.window.resize({window=\"$a\", x=$gw, y=$gh, relative=false}))" >/dev/null 2>&1 \
-    || hyprctl dispatch resizewindowpixel "exact $gw $gh,$a" >/dev/null 2>&1 \
-    || true
-  hyprctl eval "hl.dispatch(hl.dsp.window.move({window=\"$a\", x=$gx, y=$gy}))" >/dev/null 2>&1 \
-    || hyprctl dispatch movewindowpixel "exact $gx $gy,$a" >/dev/null 2>&1 \
-    || true
-  echo "geom $a → ${gw}x${gh}+${gx}+${gy}"
+  python3 "$GEOM" --apply-one --addr "$addr" --geom "$geom_json" --workspace "$ws" || true
+}
+
+apply_profile_geoms() {
+  local profile_id=$1
+  python3 "$GEOM" --apply-config --config "$CONFIG_FILE" --profile-id "$profile_id" || true
 }
 
 apply_bindings() {
@@ -423,11 +383,8 @@ cmd_launch() {
     fi
     sleep 0.3
   done
-  if [[ -n $geom_json && $geom_json != "null" && ${#placed_addrs[@]} -gt 0 ]]; then
-    apply_window_geom "${placed_addrs[0]}" "$geom_json" "$target_ws"
-    sleep 0.15
-    apply_window_geom "${placed_addrs[0]}" "$geom_json" "$target_ws"
-  fi
+  # Geometry is applied in a second pass after every assignment has launched,
+  # so adjacent panes can be packed with real min-sizes.
 
   if [[ $is_browser_like == "true" ]]; then
     (
@@ -589,6 +546,9 @@ launch_profile_assignments() {
     fi
     idx=$((idx + 1))
   done < <(profile_assignments "$profile_id")
+
+  echo "applying window geometry for $profile_id"
+  apply_profile_geoms "$profile_id"
 
   echo "$boot_id" > "$last_boot_file"
   echo "done"

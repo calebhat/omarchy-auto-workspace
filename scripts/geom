@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""Map preview 0–1 geoms onto Hyprland layout pixels and apply them.
+
+hyprctl monitors reports backend pixels (width/height) plus scale.
+Window at/size and reserved are layout pixels: backend / scale.
+Floating restore must use layout pixels or windows miss the monitor.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from typing import Any
+
+
+def hypr_j(cmd: str) -> Any:
+    out = subprocess.check_output(["hyprctl", "-j", cmd], text=True)
+    return json.loads(out)
+
+
+def hypr_eval(lua: str) -> None:
+    subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def gaps_out() -> tuple[int, int, int, int]:
+    """Return top, right, bottom, left gaps_out."""
+    try:
+        raw = hypr_j("getoption general:gaps_out")
+        css = str(raw.get("css") or "8")
+        parts = [int(float(p)) for p in css.replace("px", "").split()]
+        if len(parts) == 1:
+            return parts[0], parts[0], parts[0], parts[0]
+        if len(parts) == 4:
+            return parts[0], parts[1], parts[2], parts[3]
+    except Exception:
+        pass
+    return 8, 8, 8, 8
+
+
+def layout_metrics(mon: dict[str, Any]) -> dict[str, float]:
+    scale = float(mon.get("scale") or 1) or 1.0
+    lw = float(mon.get("width") or 0) / scale
+    lh = float(mon.get("height") or 0) / scale
+    reserved = list(mon.get("reserved") or [0, 0, 0, 0]) + [0, 0, 0, 0]
+    rl, rt, rr, rb = (float(reserved[0]), float(reserved[1]), float(reserved[2]), float(reserved[3]))
+    gt, gr, gb, gl = gaps_out()
+    x = float(mon.get("x") or 0) + rl + gl
+    y = float(mon.get("y") or 0) + rt + gt
+    w = max(80.0, lw - rl - rr - gl - gr)
+    h = max(60.0, lh - rt - rb - gt - gb)
+    return {"x": x, "y": y, "w": w, "h": h, "scale": scale, "lw": lw, "lh": lh}
+
+
+def monitor_for_workspace(ws: str, monitors: list[dict[str, Any]], workspaces: list[dict[str, Any]]) -> dict[str, Any] | None:
+    name = None
+    for w in workspaces:
+        if str(w.get("id")) == str(ws) or str(w.get("name")) == str(ws):
+            name = w.get("monitor")
+            break
+    if not name:
+        for m in monitors:
+            if m.get("focused"):
+                return m
+        return monitors[0] if monitors else None
+    return next((m for m in monitors if m.get("name") == name), None)
+
+
+def geom_pixels(geom: dict[str, Any], metrics: dict[str, float]) -> dict[str, int]:
+    x = metrics["x"] + float(geom.get("x") or 0) * metrics["w"]
+    y = metrics["y"] + float(geom.get("y") or 0) * metrics["h"]
+    w = max(80.0, float(geom.get("w") or 1) * metrics["w"])
+    h = max(60.0, float(geom.get("h") or 1) * metrics["h"])
+    return {"x": int(round(x)), "y": int(round(y)), "w": int(round(w)), "h": int(round(h))}
+
+
+def force_float(addr: str) -> None:
+    a = f"address:{addr}"
+    hypr_eval(
+        f"""
+local w = hl.get_window("{a}")
+if w and not w.floating then
+  hl.dispatch(hl.dsp.window.float({{ action = "toggle", window = "{a}" }}))
+end
+"""
+    )
+
+
+def resize_move(addr: str, x: int, y: int, w: int, h: int) -> None:
+    a = f"address:{addr}"
+    hypr_eval(f'hl.dispatch(hl.dsp.window.resize({{window="{a}", x={w}, y={h}, relative=false}}))')
+    hypr_eval(f'hl.dispatch(hl.dsp.window.move({{window="{a}", x={x}, y={y}}}))')
+    hypr_eval(f'hl.dispatch(hl.dsp.window.move({{window="{a}", x={x}, y={y}}}))')
+
+
+def client_by_addr(addr: str) -> dict[str, Any] | None:
+    for c in hypr_j("clients"):
+        if c.get("address") == addr:
+            return c
+    return None
+
+
+def actual_box(addr: str) -> dict[str, int] | None:
+    c = client_by_addr(addr)
+    if not c:
+        return None
+    at = c.get("at") or [0, 0]
+    size = c.get("size") or [0, 0]
+    return {"x": int(at[0]), "y": int(at[1]), "w": int(size[0]), "h": int(size[1])}
+
+
+def pack_horizontal(items: list[dict[str, Any]], metrics: dict[str, float]) -> list[dict[str, Any]]:
+    """Left-to-right pack using actual min widths so panes stay adjacent."""
+    ordered = sorted(items, key=lambda it: float((it.get("geom") or {}).get("x") or 0))
+    usable_x = int(metrics["x"])
+    usable_y = int(metrics["y"])
+    usable_w = int(metrics["w"])
+    usable_h = int(metrics["h"])
+    widths: list[int] = []
+    for it in ordered:
+        want = int(it["px"]["w"])
+        addr = it["addr"]
+        force_float(addr)
+        resize_move(addr, usable_x, usable_y, want, usable_h)
+        time.sleep(0.05)
+        box = actual_box(addr) or {"w": want}
+        widths.append(max(80, int(box["w"])))
+    last_min = widths[-1]
+    left_total = sum(widths[:-1]) if len(widths) > 1 else 0
+    if len(widths) > 1 and left_total + last_min > usable_w:
+        overflow = left_total + last_min - usable_w
+        for i in range(len(widths) - 2, -1, -1):
+            take = min(overflow, max(0, widths[i] - 80))
+            widths[i] -= take
+            overflow -= take
+            if overflow <= 0:
+                break
+    x = usable_x
+    out = []
+    for i, it in enumerate(ordered):
+        if i == len(ordered) - 1:
+            w = max(80, usable_x + usable_w - x)
+        else:
+            w = max(80, widths[i])
+        out.append({**it, "place": {"x": x, "y": usable_y, "w": w, "h": usable_h}})
+        x += w
+    return out
+
+
+def apply_items(items: list[dict[str, Any]], metrics: dict[str, float]) -> list[dict[str, Any]]:
+    if not items:
+        return []
+    geoms = [it.get("geom") or {} for it in items]
+    full_h = all(abs(float(g.get("h") or 1) - 1) < 0.08 and float(g.get("y") or 0) < 0.08 for g in geoms)
+    if len(items) >= 2 and full_h:
+        placed = pack_horizontal(items, metrics)
+    else:
+        placed = []
+        for it in items:
+            placed.append({**it, "place": it["px"]})
+    for it in placed:
+        p = it["place"]
+        force_float(it["addr"])
+        resize_move(it["addr"], p["x"], p["y"], p["w"], p["h"])
+        time.sleep(0.04)
+    return placed
+
+
+def apply_one(addr: str, geom_json: str, ws: str) -> dict[str, Any]:
+    geom = json.loads(geom_json)
+    monitors = hypr_j("monitors")
+    workspaces = hypr_j("workspaces")
+    mon = monitor_for_workspace(ws, monitors, workspaces)
+    if not mon:
+        return {"ok": False, "error": "no monitor"}
+    metrics = layout_metrics(mon)
+    px = geom_pixels(geom, metrics)
+    items = apply_items([{"addr": addr, "geom": geom, "px": px}], metrics)
+    box = actual_box(addr)
+    return {"ok": True, "metrics": metrics, "requested": px, "actual": box, "placed": items[0]["place"] if items else px}
+
+
+def match_client(assignment: dict[str, Any], clients: list[dict[str, Any]], used: set[str]) -> dict[str, Any] | None:
+    exec_cmd = str(assignment.get("exec") or assignment.get("command") or "")
+    base = exec_cmd.split()[0].split("/")[-1].lower() if exec_cmd else ""
+    name = str(assignment.get("name") or "").lower()
+    best = None
+    best_score = 0
+    for c in clients:
+        addr = c.get("address")
+        if not addr or addr in used:
+            continue
+        cls = str(c.get("class") or "").lower()
+        title = str(c.get("title") or "").lower()
+        initial = str(c.get("initialClass") or "").lower()
+        score = 0
+        if "herdr" in exec_cmd.lower() and "herdr" in cls:
+            score += 12
+        if "shophawk-panel" in exec_cmd.lower() and "shophawk" in title:
+            score += 12
+        if base and base not in {"uwsm-app", "omarchy-launch-tui", "omarchy-launch-or-focus-tui"}:
+            if base in cls or base in initial or base in title:
+                score += 6
+        if name and name in title:
+            score += 4
+        if score > best_score:
+            best_score = score
+            best = c
+    return best if best_score > 0 else None
+
+
+def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
+    with open(config_path, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    profiles = cfg.get("profiles") or []
+    profile = None
+    if profile_id:
+        profile = next((p for p in profiles if p.get("id") == profile_id), None)
+    if not profile and profiles:
+        profile = profiles[0]
+    if not profile:
+        return {"ok": False, "error": "no profile"}
+    clients = hypr_j("clients")
+    by_ws: dict[str, list[dict[str, Any]]] = {}
+    used: set[str] = set()
+    for a in profile.get("assignments") or []:
+        geom = a.get("geom")
+        if not geom:
+            continue
+        ws = str(a.get("workspace") or "1")
+        on_ws = [c for c in clients if str((c.get("workspace") or {}).get("id")) == ws or str((c.get("workspace") or {}).get("name")) == ws]
+        hit = match_client(a, on_ws, used)
+        if not hit:
+            continue
+        used.add(hit["address"])
+        by_ws.setdefault(ws, []).append({"addr": hit["address"], "geom": geom, "name": a.get("name")})
+    results = []
+    for ws, windows in by_ws.items():
+        results.append(apply_many({"workspace": ws, "windows": windows}))
+    return {"ok": True, "workspaces": results}
+
+
+def apply_many(payload: dict[str, Any]) -> dict[str, Any]:
+    ws = str(payload.get("workspace") or "1")
+    monitors = hypr_j("monitors")
+    workspaces = hypr_j("workspaces")
+    mon = monitor_for_workspace(ws, monitors, workspaces)
+    if not mon:
+        return {"ok": False, "error": "no monitor"}
+    metrics = layout_metrics(mon)
+    items = []
+    for it in payload.get("windows") or []:
+        addr = it.get("addr")
+        geom = it.get("geom") or {}
+        if not addr or not geom:
+            continue
+        items.append({"addr": addr, "geom": geom, "px": geom_pixels(geom, metrics)})
+    placed = apply_items(items, metrics)
+    actual = []
+    for it in placed:
+        box = actual_box(it["addr"])
+        actual.append({"addr": it["addr"], "place": it["place"], "actual": box})
+    return {"ok": True, "metrics": metrics, "windows": actual}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--apply-one", action="store_true")
+    parser.add_argument("--apply-many", action="store_true")
+    parser.add_argument("--apply-config", action="store_true")
+    parser.add_argument("--config", default="")
+    parser.add_argument("--profile-id", default="")
+    parser.add_argument("--addr", default="")
+    parser.add_argument("--geom", default="")
+    parser.add_argument("--payload", default="")
+    parser.add_argument("--workspace", default="1")
+    parser.add_argument("--metrics", action="store_true")
+    args = parser.parse_args()
+    if args.metrics:
+        monitors = hypr_j("monitors")
+        workspaces = hypr_j("workspaces")
+        mon = monitor_for_workspace(args.workspace, monitors, workspaces)
+        print(json.dumps(layout_metrics(mon) if mon else {}))
+        return 0
+    if args.apply_config:
+        result = apply_config(args.config, args.profile_id)
+        print(json.dumps(result))
+        return 0 if result.get("ok") else 1
+    if args.apply_many:
+        payload = json.loads(args.payload or sys.stdin.read())
+        result = apply_many(payload)
+        print(json.dumps(result))
+        return 0 if result.get("ok") else 1
+    if args.apply_one:
+        result = apply_one(args.addr, args.geom, args.workspace)
+        print(json.dumps(result))
+        return 0 if result.get("ok") else 1
+    parser.error("nothing to do")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
