@@ -37,7 +37,9 @@ omarchy plugin disable tenzin.auto-workspace
    the default split.
 4. **Apply matching** (or **SUPER+ALT+W**, or middle-click the bar chip)
    snapshots the connected monitors and loads the matching profile: bind
-   workspaces to monitors, then launch that profile’s apps.
+   workspaces to monitors, then launch that profile’s apps. On the
+   Profiles tab, toggle a display off (for example the laptop panel on
+   the dock profile) so Apply disables it. At least one display must stay on.
 5. **Apply matching profile at login** is off by default.
 
 Desk example: workspace 1 on the left external, 2–5 on the right external,

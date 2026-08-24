@@ -29,6 +29,7 @@ function defaultProfile() {
         matchMode: "exact",
         monitors: [],
         workspaceMonitors: {},
+        disabledMonitors: [],
         assignments: []
     }
 }
@@ -430,6 +431,19 @@ function normalizeProfile(p, monitorIds) {
         matchMode: matchMode,
         monitors: mons,
         workspaceMonitors: normalizeWorkspaceMonitors(p.workspaceMonitors, monitorIds),
+        disabledMonitors: (function() {
+            var off = []
+            var raw = Array.isArray(p.disabledMonitors) ? p.disabledMonitors : []
+            var oseen = {}
+            for (var d = 0; d < raw.length; d++) {
+                var did = String(raw[d] || "").trim()
+                if (!did || oseen[did] || mons.indexOf(did) < 0) continue
+                oseen[did] = true
+                off.push(did)
+            }
+            if (off.length >= mons.length && mons.length) off = off.slice(0, mons.length - 1)
+            return off
+        })(),
         assignments: assignments
     }
 }
@@ -522,7 +536,7 @@ function monitorById(cfg, id) {
 }
 
 function liveIsReal(m) {
-    if (!m || m.disabled) return false
+    if (!m) return false
     var name = String(m.name || "")
     if (name.indexOf("HEADLESS") >= 0) return false
     return true
@@ -628,7 +642,11 @@ function monitorOptions(cfg, profile, liveList) {
         opts.push({ value: id, label: label })
     }
     var prefer = (profile && profile.monitors) || []
+    var off = {}
+    var dis = (profile && profile.disabledMonitors) || []
+    for (var d = 0; d < dis.length; d++) off[String(dis[d])] = true
     for (var i = 0; i < prefer.length; i++) {
+        if (off[prefer[i]]) continue
         var m = monitorById(cfg, prefer[i])
         if (m) add(m.id, m.label)
     }

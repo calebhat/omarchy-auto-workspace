@@ -8,17 +8,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from typing import Any
 
 
-def live_is_real(m: dict[str, Any]) -> bool:
-    if not m or m.get("disabled"):
+def live_is_connected(m: dict[str, Any]) -> bool:
+    if not m:
         return False
     name = str(m.get("name") or "")
     if "HEADLESS" in name:
         return False
     return True
+
+
+def live_is_real(m: dict[str, Any]) -> bool:
+    return live_is_connected(m)
+
+
+def live_is_enabled(m: dict[str, Any]) -> bool:
+    return live_is_connected(m) and not m.get("disabled")
 
 
 def short_label(m: dict[str, Any]) -> str:
@@ -57,15 +66,16 @@ def monitor_by_id(cfg: dict[str, Any], mid: str) -> dict[str, Any] | None:
     return None
 
 
-def find_live(saved: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any] | None:
+def find_live(saved: dict[str, Any], live_list: list[dict[str, Any]], enabled_only: bool = False) -> dict[str, Any] | None:
     for live in live_list:
-        if live_is_real(live) and same_monitor(saved, live):
+        ok = live_is_enabled(live) if enabled_only else live_is_connected(live)
+        if ok and same_monitor(saved, live):
             return live
     return None
 
 
 def profile_match(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
-    live = [m for m in live_list if live_is_real(m)]
+    live = [m for m in live_list if live_is_connected(m)]
     required = list(profile.get("monitors") or [])
     missing: list[str] = []
     extra: list[str] = []
@@ -128,14 +138,73 @@ def workspace_bindings(cfg: dict[str, Any], profile: dict[str, Any], live_list: 
         saved = monitor_by_id(cfg, str(mid))
         if not saved:
             continue
-        hit = find_live(saved, live_list)
+        hit = find_live(saved, live_list, enabled_only=True)
         if hit and hit.get("name"):
             out[str(ws)] = str(hit["name"])
     return out
 
 
+def _keyword_monitor(spec: str) -> None:
+    subprocess.run(["hyprctl", "keyword", "monitor", spec], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def enable_monitor(m: dict[str, Any]) -> None:
+    name = str(m.get("name") or "")
+    if not name:
+        return
+    w = int(m.get("width") or 0)
+    h = int(m.get("height") or 0)
+    refresh = float(m.get("refreshRate") or 60)
+    scale = m.get("scale") or 1
+    if w <= 0 or h <= 0:
+        _keyword_monitor(f"{name},preferred,auto,1")
+        return
+    hz = f"{refresh:.2f}".rstrip("0").rstrip(".")
+    _keyword_monitor(f"{name},{w}x{h}@{hz},auto,{scale}")
+
+
+def disable_monitor(m: dict[str, Any]) -> None:
+    name = str(m.get("name") or "")
+    if name:
+        _keyword_monitor(f"{name},disable")
+
+
+def apply_outputs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
+    disabled_ids = {str(x) for x in (profile.get("disabledMonitors") or [])}
+    connected = [m for m in live_list if live_is_connected(m)]
+    enabled_now = [m for m in connected if live_is_enabled(m)]
+    to_enable: list[dict[str, Any]] = []
+    to_disable: list[dict[str, Any]] = []
+    for mid in profile.get("monitors") or []:
+        saved = monitor_by_id(cfg, str(mid))
+        if not saved:
+            continue
+        hit = find_live(saved, connected)
+        if not hit:
+            continue
+        if str(mid) in disabled_ids:
+            to_disable.append(hit)
+        else:
+            to_enable.append(hit)
+    changed: list[str] = []
+    for m in to_enable:
+        if m.get("disabled"):
+            enable_monitor(m)
+            changed.append(f"on:{m.get('name')}")
+    still_on = len(enabled_now) + sum(1 for m in to_enable if m.get("disabled"))
+    for m in to_disable:
+        if m.get("disabled"):
+            continue
+        if still_on <= 1:
+            break
+        disable_monitor(m)
+        still_on -= 1
+        changed.append(f"off:{m.get('name')}")
+    return {"changed": changed}
+
+
 def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
-    live = [m for m in live_list if live_is_real(m)]
+    live = [m for m in live_list if live_is_connected(m)]
     matched = best_profile(cfg, live)
     profiles = []
     for profile in cfg.get("profiles") or []:
@@ -158,6 +227,7 @@ def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[st
                 "make": m.get("make") or "",
                 "model": m.get("model") or "",
                 "label": short_label(m),
+                "disabled": bool(m.get("disabled")),
                 "width": m.get("width"),
                 "height": m.get("height"),
                 "x": m.get("x"),
@@ -180,6 +250,7 @@ def main() -> int:
     parser.add_argument("--print-id", action="store_true")
     parser.add_argument("--bindings", action="store_true")
     parser.add_argument("--status", action="store_true")
+    parser.add_argument("--apply-outputs", action="store_true")
     args = parser.parse_args()
     with open(args.config, encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -193,6 +264,18 @@ def main() -> int:
         return 1
     if args.status:
         json.dump(live_status(cfg, live), sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+    if args.apply_outputs:
+        pid = args.profile_id
+        prof = next((p for p in (cfg.get("profiles") or []) if p.get("id") == pid), None)
+        if not prof:
+            prof = best_profile(cfg, live)
+        if not prof:
+            json.dump({"changed": []}, sys.stdout)
+            sys.stdout.write("\n")
+            return 2
+        json.dump(apply_outputs(cfg, prof, live), sys.stdout)
         sys.stdout.write("\n")
         return 0
     matched = None

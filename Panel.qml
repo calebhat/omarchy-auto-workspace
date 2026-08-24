@@ -376,6 +376,32 @@ Panel {
         for (var i = 0; i < cfg.profiles.length; i++) if (cfg.profiles[i].id === id) cfg.profiles[i].name = String(name).slice(0, 48)
         config = cfg; saveConfig()
     }
+    function setMonitorDisabled(profileId, monitorId, off) {
+        var cfg = root.currentConfig()
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== profileId) continue
+            var mons = cfg.profiles[i].monitors || []
+            var offList = []
+            var raw = cfg.profiles[i].disabledMonitors || []
+            for (var d = 0; d < raw.length; d++) offList.push(raw[d])
+            var idx = offList.indexOf(monitorId)
+            if ((off && idx >= 0) || (!off && idx < 0)) return
+            if (off) {
+                if (mons.length - offList.length <= 1 && idx < 0) {
+                    errorText = "Keep at least one display on"
+                    return
+                }
+                if (idx < 0) offList.push(monitorId)
+            } else if (idx >= 0) {
+                offList.splice(idx, 1)
+            }
+            cfg.profiles[i].disabledMonitors = offList
+        }
+        config = cfg
+        saveConfig()
+        statusText = off ? "Display off for this profile" : "Display on for this profile"
+        clearStatusTimer.restart()
+    }
     function setMatchMode(id, mode) {
         var cfg = root.currentConfig()
         for (var i = 0; i < cfg.profiles.length; i++) if (cfg.profiles[i].id === id) cfg.profiles[i].matchMode = mode === "all-present" ? "all-present" : "exact"
@@ -1002,6 +1028,7 @@ Panel {
                                 model: root.config.profiles || []
                                 delegate: Rectangle {
                                     required property var modelData
+                                    property var profile: modelData
                                     width: parent.width
                                     implicitHeight: col.implicitHeight + Style.space(16)
                                     radius: Style.cornerRadius
@@ -1044,6 +1071,33 @@ Panel {
                                             color: root.dim
                                             font.family: root.fontFamily
                                             font.pixelSize: Style.font.caption
+                                        }
+                                        Repeater {
+                                            model: profile.monitors || []
+                                            delegate: RowLayout {
+                                                required property var modelData
+                                                readonly property string monitorId: String(modelData)
+                                                readonly property bool isOff: (profile.disabledMonitors || []).indexOf(monitorId) >= 0
+                                                Layout.fillWidth: true
+                                                spacing: Style.space(8)
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: {
+                                                        var m = Model.monitorById(root.config, monitorId)
+                                                        return (m ? m.label : monitorId) + (isOff ? " — off" : "")
+                                                    }
+                                                    color: isOff ? root.dim : root.foreground
+                                                    font.family: root.fontFamily
+                                                    font.pixelSize: Style.font.caption
+                                                    elide: Text.ElideRight
+                                                }
+                                                ToggleSwitch {
+                                                    checked: !isOff
+                                                    foreground: root.foreground
+                                                    accent: Color.accent
+                                                    onToggled: root.setMonitorDisabled(profile.id, monitorId, checked === false)
+                                                }
+                                            }
                                         }
                                         RowLayout {
                                             Layout.fillWidth: true

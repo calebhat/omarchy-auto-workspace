@@ -57,4 +57,16 @@ lap=$(printf '%s' "$bindings" | jq -r '.["9"]')
 [[ $right == "DVI-I-1" ]]
 [[ $lap == "eDP-1" ]]
 
+cat >"$TMP/live-desk-lid.json" <<'JSON'
+[
+  { "name": "eDP-1", "description": "BOE NE135A1M-NY1", "serial": "", "disabled": true },
+  { "name": "DVI-I-1", "description": "HP Inc. HP E24 G5 CNK436070F", "serial": "", "disabled": false },
+  { "name": "DVI-I-2", "description": "HP Inc. HP E24 G5 CNK436071M", "serial": "", "disabled": false }
+]
+JSON
+lid_id=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-desk-lid.json" --print-id)
+[[ $lid_id == "desk-dock" ]]
+lid_bind=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-desk-lid.json" --profile-id desk-dock --bindings)
+[[ $(printf '%s' "$lid_bind" | jq -r '.["9"]') == "null" ]]
+
 echo "match.test.sh ok"

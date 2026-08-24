@@ -68,7 +68,12 @@ cmd_ensure_config() {
 }
 
 live_monitors_json() {
-  hyprctl -j monitors 2>/dev/null || echo "[]"
+  hyprctl -j monitors all 2>/dev/null || hyprctl -j monitors 2>/dev/null || echo "[]"
+}
+
+apply_profile_outputs() {
+  local profile_id=$1
+  live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --apply-outputs
 }
 
 cmd_live_status() {
@@ -559,6 +564,13 @@ cmd_apply() {
   fi
 
   echo "applying profile $profile_name ($profile_id)"
+  apply_profile_outputs "$profile_id"
+  status_json=$(cmd_live_status)
+  if [[ -n $requested_id ]]; then
+    bindings=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --bindings)
+  else
+    bindings=$(printf '%s' "$status_json" | jq -c '.bindings // {}')
+  fi
   apply_bindings "$bindings"
   # Hotkey still bypasses "once per boot", but never relaunches a window
   # that is already on the workspace (duplicate Apply was stacking apps).
