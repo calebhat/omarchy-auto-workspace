@@ -163,6 +163,7 @@ Item {
                         required property var modelData
                         required property int index
                         app: modelData
+                        appIndex: index
                         z: index
                     }
                 }
@@ -175,18 +176,23 @@ Item {
     component Tile: Rectangle {
         id: tile
         property var app: null
-        readonly property var geom: {
-            var apps = root.assignedApps || []
-            var idx = 0
-            for (var i = 0; i < apps.length; i++) if (apps[i] && tile.app && apps[i].id === tile.app.id) { idx = i; break }
-            return root.geomForApp(tile.app, idx, apps.length)
-        }
+        property int appIndex: 0
 
         x: 0
         y: 0
         width: 48
         height: 36
         radius: 6
+        clip: false
+        color: (app && app.enabled !== false)
+               ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, moveArea.containsMouse ? 0.32 : 0.18)
+               : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.06)
+        border.width: 2
+        border.color: Color.accent
+
+        function modelGeom() {
+            return root.geomForApp(tile.app, tile.appIndex, (root.assignedApps || []).length)
+        }
 
         function applyFrac(g) {
             if (!g || tilesContainer.width <= 0 || tilesContainer.height <= 0) return
@@ -195,22 +201,6 @@ Item {
             tile.width = Math.max(36, g.w * tilesContainer.width)
             tile.height = Math.max(28, g.h * tilesContainer.height)
         }
-
-        Component.onCompleted: applyFrac(geom)
-        onGeomChanged: if (!root.dragging) applyFrac(geom)
-        Connections {
-            target: tilesContainer
-            function onWidthChanged() { if (!root.dragging) tile.applyFrac(tile.geom) }
-            function onHeightChanged() { if (!root.dragging) tile.applyFrac(tile.geom) }
-        }
-        color: (app && app.enabled !== false)
-               ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.18)
-               : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.06)
-        border.width: 1
-        border.color: (app && app.enabled !== false)
-                      ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.45)
-                      : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.15)
-        clip: true
 
         function fracGeom() {
             var pw = Math.max(1, tilesContainer.width)
@@ -232,94 +222,99 @@ Item {
             tile.x = nx; tile.y = ny; tile.width = nw; tile.height = nh
         }
 
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 8
-            spacing: 1
-            Item {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                ColumnLayout {
-                    anchors.centerIn: parent
-                    spacing: 2
-                    Image {
-                        Layout.alignment: Qt.AlignHCenter
-                        Layout.preferredWidth: 16
-                        Layout.preferredHeight: 16
-                        visible: source !== ""
-                        source: root.iconSourceFor(app ? (app.exec || app.command) : "")
-                        fillMode: Image.PreserveAspectFit
-                        asynchronous: true
-                        cache: true
-                        onStatusChanged: if (status === Image.Error) source = ""
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        text: app ? (app.name || "App") : ""
-                        color: (app && app.enabled !== false) ? Color.foreground : Qt.darker(Color.foreground, 1.3)
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.caption - 1
-                        font.bold: true
-                        elide: Text.ElideRight
-                        maximumLineCount: 1
-                        horizontalAlignment: Text.AlignHCenter
-                    }
-                }
-            }
+        function finishDrag(didMove) {
+            if (didMove || root.customLayout) root.commitTiles()
+            root.dragging = false
+        }
+
+        Component.onCompleted: applyFrac(modelGeom())
+        onAppChanged: if (!root.dragging) applyFrac(modelGeom())
+        Connections {
+            target: tilesContainer
+            function onWidthChanged() { if (!root.dragging) tile.applyFrac(tile.modelGeom()) }
+            function onHeightChanged() { if (!root.dragging) tile.applyFrac(tile.modelGeom()) }
+        }
+
+        Text {
+            anchors.centerIn: parent
+            anchors.verticalCenterOffset: 8
+            width: parent.width - 16
+            text: app ? (app.name || "App") : ""
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption - 1
+            font.bold: true
+            elide: Text.ElideRight
+            horizontalAlignment: Text.AlignHCenter
+            z: 1
+        }
+        Image {
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.verticalCenter
+            anchors.bottomMargin: 2
+            width: 16
+            height: 16
+            visible: source !== ""
+            source: root.iconSourceFor(app ? (app.exec || app.command) : "")
+            fillMode: Image.PreserveAspectFit
+            asynchronous: true
+            cache: true
+            z: 1
+            onStatusChanged: if (status === Image.Error) source = ""
         }
 
         MouseArea {
             id: moveArea
             anchors.fill: parent
-            anchors.margins: 8
+            anchors.margins: 10
             cursorShape: Qt.SizeAllCursor
             hoverEnabled: true
+            preventStealing: true
             property real grabX: 0
             property real grabY: 0
             property real origX: 0
             property real origY: 0
+            property bool moved: false
             onPressed: function(mouse) {
                 var p = mapToItem(tilesContainer, mouse.x, mouse.y)
                 grabX = p.x; grabY = p.y
                 origX = tile.x; origY = tile.y
+                moved = false
                 root.dragging = true
                 tile.z = ++root.frontZ
+                mouse.accepted = true
             }
             onPositionChanged: function(mouse) {
                 if (!pressed) return
                 var p = mapToItem(tilesContainer, mouse.x, mouse.y)
                 var nx = origX + p.x - grabX
                 var ny = origY + p.y - grabY
-                if (Math.abs(nx - origX) > 2 || Math.abs(ny - origY) > 2) moveArea.moved = true
+                if (Math.abs(nx - origX) > 2 || Math.abs(ny - origY) > 2) moved = true
                 tile.clampPosSize(nx, ny, tile.width, tile.height)
             }
-            property bool moved: false
-            onReleased: {
-                root.dragging = false
-                if (moveArea.moved || root.customLayout) root.commitTiles()
-                moveArea.moved = false
-            }
+            onReleased: tile.finishDrag(moved)
         }
 
-        // Resize handles: edges + corners
         Repeater {
             model: [
-                { edge: "n",  xA: 8, yA: 0, w: -16, h: 8 },
-                { edge: "s",  xA: 8, yA: -8, w: -16, h: 8 },
-                { edge: "w",  xA: 0, yA: 8, w: 8, h: -16 },
-                { edge: "e",  xA: -8, yA: 8, w: 8, h: -16 },
-                { edge: "nw", xA: 0, yA: 0, w: 10, h: 10 },
-                { edge: "ne", xA: -10, yA: 0, w: 10, h: 10 },
-                { edge: "sw", xA: 0, yA: -10, w: 10, h: 10 },
-                { edge: "se", xA: -10, yA: -10, w: 10, h: 10 }
+                { edge: "n",  xA: 10, yA: -3, w: -20, h: 10 },
+                { edge: "s",  xA: 10, yA: -7, w: -20, h: 10 },
+                { edge: "w",  xA: -3, yA: 10, w: 10, h: -20 },
+                { edge: "e",  xA: -7, yA: 10, w: 10, h: -20 },
+                { edge: "nw", xA: -4, yA: -4, w: 12, h: 12 },
+                { edge: "ne", xA: -8, yA: -4, w: 12, h: 12 },
+                { edge: "sw", xA: -4, yA: -8, w: 12, h: 12 },
+                { edge: "se", xA: -8, yA: -8, w: 12, h: 12 }
             ]
             delegate: MouseArea {
                 required property var modelData
                 z: 20
                 x: modelData.xA >= 0 ? modelData.xA : tile.width + modelData.xA
                 y: modelData.yA >= 0 ? modelData.yA : tile.height + modelData.yA
-                width: modelData.w > 0 ? modelData.w : tile.width + modelData.w
-                height: modelData.h > 0 ? modelData.h : tile.height + modelData.h
+                width: modelData.w > 0 ? modelData.w : Math.max(12, tile.width + modelData.w)
+                height: modelData.h > 0 ? modelData.h : Math.max(12, tile.height + modelData.h)
+                preventStealing: true
+                hoverEnabled: true
                 cursorShape: {
                     var e = modelData.edge
                     if (e === "n" || e === "s") return Qt.SizeVerCursor
@@ -338,8 +333,10 @@ Item {
                     var p = mapToItem(tilesContainer, mouse.x, mouse.y)
                     grabX = p.x; grabY = p.y
                     origX = tile.x; origY = tile.y; origW = tile.width; origH = tile.height
+                    moved = false
                     root.dragging = true
                     tile.z = ++root.frontZ
+                    mouse.accepted = true
                 }
                 onPositionChanged: function(mouse) {
                     if (!pressed) return
@@ -356,11 +353,22 @@ Item {
                     if (Math.abs(nx - origX) > 1 || Math.abs(ny - origY) > 1 || Math.abs(nw - origW) > 1 || Math.abs(nh - origH) > 1)
                         moved = true
                 }
-                onReleased: {
-                    root.dragging = false
-                    if (moved || root.customLayout) root.commitTiles()
-                    moved = false
-                }
+                onReleased: tile.finishDrag(moved)
+            }
+        }
+
+        // Always-visible corner grips so the preview is obviously editable.
+        Repeater {
+            model: 4
+            delegate: Rectangle {
+                required property int index
+                z: 15
+                width: 8
+                height: 8
+                radius: 1
+                color: Color.accent
+                x: index % 2 === 0 ? 0 : tile.width - 8
+                y: index < 2 ? 0 : tile.height - 8
             }
         }
     }

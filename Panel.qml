@@ -749,7 +749,7 @@ Panel {
                         spacing: Style.space(10)
 
                         PanelSectionHeader {
-                            text: "PREVIEW · " + root.activeProfile.name
+                            text: "PREVIEW · drag tiles · " + root.activeProfile.name
                             foreground: root.foreground
                             fontFamily: root.fontFamily
                         }
