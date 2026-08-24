@@ -15,7 +15,7 @@ def default_gestures() -> dict:
         "workspaceSwipe": True,
         "fingers": 3,
         "skipEmpty": True,
-        "invert": False,
+        "invert": True,
         "createNew": False,
         "forever": False,
         "touch": False,
@@ -39,7 +39,7 @@ def normalize_gestures(raw: dict | None) -> dict:
     out["workspaceSwipe"] = src.get("workspaceSwipe") is not False
     out["fingers"] = 4 if int(src.get("fingers") or 3) == 4 else 3
     out["skipEmpty"] = src.get("skipEmpty") is not False
-    out["invert"] = src.get("invert") is True
+    out["invert"] = src.get("invert") is not False
     out["createNew"] = src.get("createNew") is True
     out["forever"] = src.get("forever") is True
     out["touch"] = src.get("touch") is True
@@ -89,6 +89,10 @@ def render_lua(g: dict) -> str:
         "",
     ]
     if g["workspaceSwipe"]:
+        if fingers == 4:
+            lines.append(
+                'hl.gesture({ fingers = 3, direction = "horizontal", action = "unset" })'
+            )
         lines.append(
             f'hl.gesture({{ fingers = {fingers}, direction = "horizontal", action = "workspace" }})'
         )
@@ -148,16 +152,25 @@ def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "") -> dict
 
 
 def persist_workspaces(enable: bool) -> None:
+    flag = "true" if enable else "false"
     for ws in range(1, 11):
-        if enable:
-            hypr_eval(f'hl.workspace_rule({{ workspace = "{ws}", persistent = true }})')
+        hypr_eval(f'hl.workspace_rule({{ workspace = "{ws}", persistent = {flag} }})')
+
+
+def safe_label(name: str) -> str:
+    out = []
+    for ch in str(name or "").strip()[:24]:
+        if ch.isalnum() or ch in " _-":
+            out.append(ch)
+    return "".join(out).strip()
 
 
 def apply_names(names: dict) -> None:
     for ws, name in (names or {}).items():
-        label = str(name or "").strip()[:24]
-        if not label:
+        label = safe_label(name)
+        if not label or not str(ws).isdigit():
             continue
+        hypr_eval(f'hl.workspace_rule({{ workspace = "{ws}", persistent = true }})')
         hypr_eval(
             f'hl.dispatch(hl.dsp.workspace.rename({{ workspace = "{ws}", name = "{label}" }}))'
         )
@@ -183,6 +196,7 @@ def main() -> int:
     p.add_argument("--config", required=True)
     p.add_argument("--profile-id", default="")
     p.add_argument("--apply", action="store_true")
+    p.add_argument("--extras", action="store_true")
     p.add_argument("--render", action="store_true")
     args = p.parse_args()
     with open(args.config, encoding="utf-8") as fh:
@@ -191,14 +205,15 @@ def main() -> int:
         print(render_lua(resolve_gestures(cfg, args.profile_id)))
         return 0
     result = write_and_apply(cfg, args.profile_id)
-    profile = None
-    pid = args.profile_id or ((cfg.get("settings") or {}).get("activeProfileId") or "")
-    for pr in cfg.get("profiles") or []:
-        if pr.get("id") == pid:
-            profile = pr
-            break
-    if profile:
-        apply_profile_extras(profile)
+    if args.extras:
+        profile = None
+        pid = args.profile_id or ((cfg.get("settings") or {}).get("activeProfileId") or "")
+        for pr in cfg.get("profiles") or []:
+            if pr.get("id") == pid:
+                profile = pr
+                break
+        if profile:
+            apply_profile_extras(profile)
     print(json.dumps(result))
     return 0 if result.get("ok") else 1
 

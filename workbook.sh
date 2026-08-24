@@ -698,7 +698,7 @@ cmd_apply() {
   restore_unpinned_workspaces "$ws_snap" "$bindings"
   apply_bindings "$bindings"
   live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --apply-ws-prefs >/dev/null || true
-  python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "$profile_id" --apply >/dev/null || true
+  python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "$profile_id" --apply --extras >/dev/null || true
   restore_unpinned_workspaces "$ws_snap" "$bindings"
   # Hotkey still bypasses "once per boot", but never relaunches a window
   # that is already on the workspace (duplicate Apply was stacking apps).

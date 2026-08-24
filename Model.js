@@ -47,7 +47,7 @@ function defaultGestures() {
         workspaceSwipe: true,
         fingers: 3,
         skipEmpty: true,
-        invert: false,
+        invert: true,
         createNew: false,
         forever: false,
         touch: false,
@@ -63,7 +63,7 @@ function normalizeGestures(raw) {
     out.workspaceSwipe = src.workspaceSwipe !== false
     out.fingers = parseInt(src.fingers, 10) === 4 ? 4 : 3
     out.skipEmpty = src.skipEmpty !== false
-    out.invert = src.invert === true
+    out.invert = src.invert !== false
     out.createNew = src.createNew === true
     out.forever = src.forever === true
     out.touch = src.touch === true

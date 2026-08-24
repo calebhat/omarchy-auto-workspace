@@ -8,6 +8,7 @@ g = SourceFileLoader("gestures", str(Path(__file__).resolve().parent.parent / "s
 def test_skip_empty_uses_m():
     lua = g.render_lua({"skipEmpty": True, "workspaceSwipe": True, "fingers": 3})
     assert "workspace_swipe_use_r = false" in lua
+    assert "workspace_swipe_invert = true" in lua
     assert 'action = "workspace"' in lua
 
 
@@ -22,6 +23,12 @@ def test_occupied_keyboard():
     lua = g.render_lua({"skipEmpty": True, "keyboard": True})
     assert 'workspace = "e-1"' in lua
     assert "SUPER + comma" in lua
+
+
+def test_four_fingers_unsets_omarchy_three():
+    lua = g.render_lua({"fingers": 4, "workspaceSwipe": True})
+    assert 'fingers = 3, direction = "horizontal", action = "unset"' in lua
+    assert 'fingers = 4, direction = "horizontal", action = "workspace"' in lua
 
 
 def test_scratchpad_and_touch():
@@ -42,6 +49,7 @@ def test_resolve_profile_vs_global():
 
 if __name__ == "__main__":
     test_skip_empty_uses_m()
+    test_four_fingers_unsets_omarchy_three()
     test_include_empty_uses_r()
     test_occupied_keyboard()
     test_scratchpad_and_touch()
