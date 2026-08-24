@@ -373,11 +373,14 @@ Panel {
             try {
                 var j = JSON.parse(txt)
                 var sane = Model.sanitizeConfig(j)
+                var repaired = Model.repairOverlappingLayouts(sane, "dwindle", 0.49)
+                sane = repaired.config
                 root.config = sane
                 var prof = Model.profileById(sane, sane.settings.activeProfileId)
                 root.assignments = (prof && prof.assignments) ? prof.assignments.slice() : []
                 root.formWorkspace = sane.settings.lastFormWorkspace
                 root.countsChanged()
+                if (repaired.changed) root.saveConfig()
             } catch (e) { root.errorText = "Invalid config JSON: " + e }
         }
     }

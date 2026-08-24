@@ -71,11 +71,7 @@ Item {
 
     function rebuild(force) {
         if (root.dragging && !force) return
-        var packed = packedFromApps()
-        liveGeoms = packed
-        var raw = rawGeoms()
-        if (Model.workspaceUsesCustomLayout(assignedApps) && Model.layoutHasOverlap(raw))
-            commitLive()
+        liveGeoms = packedFromApps()
     }
 
     function commitLive() {

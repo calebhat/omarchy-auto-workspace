@@ -177,6 +177,36 @@ function layoutHasOverlap(geoms) {
     return false
 }
 
+function repairOverlappingLayouts(cfg, layout, columnWidth) {
+    if (!cfg || !Array.isArray(cfg.profiles)) return { config: cfg, changed: false }
+    var out = clone(cfg)
+    var changed = false
+    for (var p = 0; p < out.profiles.length; p++) {
+        var assignments = out.profiles[p].assignments || []
+        var byWs = {}
+        for (var i = 0; i < assignments.length; i++) {
+            var ws = String(assignments[i].workspace)
+            if (!byWs[ws]) byWs[ws] = []
+            byWs[ws].push(assignments[i])
+        }
+        for (var wsKey in byWs) {
+            var group = byWs[wsKey]
+            var packed = packedGeomsForApps(group, layout || "dwindle", columnWidth)
+            for (var g = 0; g < group.length; g++) {
+                if (!assignmentHasGeom(group[g])) continue
+                var next = packed[g]
+                var cur = normalizeGeom(group[g].geom)
+                if (!next || !cur) continue
+                if (cur.x !== next.x || cur.y !== next.y || cur.w !== next.w || cur.h !== next.h) {
+                    group[g].geom = { x: next.x, y: next.y, w: next.w, h: next.h }
+                    changed = true
+                }
+            }
+        }
+    }
+    return { config: out, changed: changed }
+}
+
 function packedGeomsForApps(apps, layout, columnWidth) {
     var list = apps || []
     var n = list.length
