@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -136,5 +136,26 @@ const overlapped = m.placeMonitorNoOverlap(
 if (m.rectsOverlap(overlapped, { x: 0, y: 0, w: 1920, h: 1080 })) throw new Error("no overlap after place")
 if (overlapped.x !== 1920 && overlapped.x !== -1920 && overlapped.y !== 1080 && overlapped.y !== -1080)
   throw new Error("flush to a neighbor side")
+
+const a = { id: "a", x: 0, y: 0, w: 1920, h: 1080 }
+const b = { id: "b", x: 1920, y: 0, w: 1920, h: 1080 }
+const c = { id: "c", x: 1600, y: 40, w: 1440, h: 960 }
+const inserted = m.arrangeMonitorsAfterDrop(c, [a, b])
+if (inserted.c.x !== 1920) throw new Error("insert between packed pair")
+if (inserted.a.x !== 0) throw new Error("left stays")
+if (inserted.b.x !== 1920 + 1440) throw new Error("right shifts for insert")
+if (m.rectsOverlap({ x: inserted.c.x, y: inserted.c.y, w: 1440, h: 960 }, { x: inserted.a.x, y: inserted.a.y, w: 1920, h: 1080 }))
+  throw new Error("insert overlap a")
+if (m.rectsOverlap({ x: inserted.c.x, y: inserted.c.y, w: 1440, h: 960 }, { x: inserted.b.x, y: inserted.b.y, w: 1920, h: 1080 }))
+  throw new Error("insert overlap b")
+
+const far = m.placeMonitorNoOverlap(
+  { id: "c", x: 9000, y: 8000, w: 1440, h: 900 },
+  [a, b]
+)
+if (m.rectsOverlap(far, a) || m.rectsOverlap(far, b)) throw new Error("far drop overlap")
+const touchesA = Math.abs(far.x - (a.x + a.w)) < 2 || Math.abs(far.x + far.w - a.x) < 2 || Math.abs(far.y - (a.y + a.h)) < 2 || Math.abs(far.y + far.h - a.y) < 2
+const touchesB = Math.abs(far.x - (b.x + b.w)) < 2 || Math.abs(far.x + far.w - b.x) < 2 || Math.abs(far.y - (b.y + b.h)) < 2 || Math.abs(far.y + far.h - b.y) < 2
+if (!touchesA && !touchesB) throw new Error("far drop must dock to the cluster")
 
 console.log("model.test.js ok")

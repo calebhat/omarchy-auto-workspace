@@ -60,6 +60,32 @@ function rectsOverlap(a, b) {
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
 }
 
+function spanOverlap(a0, a1, b0, b1) {
+    return Math.min(a1, b1) - Math.max(a0, b0)
+}
+
+function edgesTouch(a, b, eps) {
+    if (eps == null) eps = 1.5
+    var yOv = spanOverlap(a.y, a.y + a.h, b.y, b.y + b.h)
+    var xOv = spanOverlap(a.x, a.x + a.w, b.x, b.x + b.w)
+    var flushR = Math.abs((a.x + a.w) - b.x) <= eps
+    var flushL = Math.abs((b.x + b.w) - a.x) <= eps
+    var flushB = Math.abs((a.y + a.h) - b.y) <= eps
+    var flushT = Math.abs((b.y + b.h) - a.y) <= eps
+    return ((flushR || flushL) && yOv > eps) || ((flushT || flushB) && xOv > eps)
+}
+
+function uniqueNums(vals) {
+    var seen = {}, out = []
+    for (var i = 0; i < vals.length; i++) {
+        var n = Math.round(Number(vals[i]))
+        if (seen[n]) continue
+        seen[n] = true
+        out.push(n)
+    }
+    return out
+}
+
 function flushSlots(dragged, o) {
     var w = dragged.w, h = dragged.h
     return [
@@ -78,36 +104,153 @@ function flushSlots(dragged, o) {
     ]
 }
 
-function placeMonitorNoOverlap(dragged, others) {
-    if (!dragged) return dragged
+function anyRectsOverlap(items) {
+    for (var i = 0; i < items.length; i++) {
+        for (var j = i + 1; j < items.length; j++) {
+            if (rectsOverlap(items[i], items[j])) return true
+        }
+    }
+    return false
+}
+
+function arrangeMonitorsAfterDrop(dragged, others) {
     var w = dragged.w, h = dragged.h
+    var dropCx = dragged.x + w / 2
+    var dropCy = dragged.y + h / 2
     var list = others || []
-    if (!list.length) return { x: dragged.x, y: dragged.y, w: w, h: h, id: dragged.id }
-    var candidates = []
-    var i, c, slots
+    var best = null
+    var bestD = Infinity
+
+    function consider(positions, draggedPos) {
+        if (!draggedPos) return
+        var items = []
+        var ids = Object.keys(positions)
+        var i
+        for (i = 0; i < ids.length; i++) {
+            var p = positions[ids[i]]
+            var src = ids[i] === dragged.id ? dragged : null
+            if (!src) {
+                for (var k = 0; k < list.length; k++) if (list[k].id === ids[i]) { src = list[k]; break }
+            }
+            if (!src) continue
+            items.push({ id: ids[i], x: p.x, y: p.y, w: src.w, h: src.h })
+        }
+        if (anyRectsOverlap(items)) return
+        var placed = positions[dragged.id]
+        if (!placed) return
+        var r = { x: placed.x, y: placed.y, w: w, h: h }
+        var touches = list.length === 0
+        for (i = 0; i < items.length; i++) {
+            if (items[i].id === dragged.id) continue
+            if (edgesTouch(r, items[i])) { touches = true; break }
+        }
+        if (!touches) return
+        var d = (placed.x + w / 2 - dropCx) * (placed.x + w / 2 - dropCx) + (placed.y + h / 2 - dropCy) * (placed.y + h / 2 - dropCy)
+        if (d < bestD) {
+            bestD = d
+            best = positions
+        }
+    }
+
+    function basePositions(dragX, dragY) {
+        var pos = {}
+        pos[dragged.id] = { x: dragX, y: dragY }
+        for (var i = 0; i < list.length; i++) pos[list[i].id] = { x: list[i].x, y: list[i].y }
+        return pos
+    }
+
+    if (!list.length) {
+        var only = {}
+        only[dragged.id] = { x: dragged.x, y: dragged.y }
+        return only
+    }
+
+    var xs = [], ys = [], i, j, o
     for (i = 0; i < list.length; i++) {
-        slots = flushSlots(dragged, list[i])
-        for (c = 0; c < slots.length; c++) candidates.push(slots[c])
+        o = list[i]
+        xs.push(o.x, o.x + o.w, o.x - w, o.x + o.w - w, o.x + (o.w - w) / 2)
+        ys.push(o.y, o.y + o.h, o.y - h, o.y + o.h - h, o.y + (o.h - h) / 2)
+        var slots = flushSlots(dragged, o)
+        for (j = 0; j < slots.length; j++) consider(basePositions(slots[j].x, slots[j].y), slots[j])
     }
-    function valid(p) {
-        var r = { x: p.x, y: p.y, w: w, h: h }
-        for (var j = 0; j < list.length; j++) if (rectsOverlap(r, list[j])) return false
-        return true
+    xs = uniqueNums(xs)
+    ys = uniqueNums(ys)
+    for (i = 0; i < xs.length; i++) {
+        for (j = 0; j < ys.length; j++) consider(basePositions(xs[i], ys[j]), { x: xs[i], y: ys[j] })
     }
-    var best = null, bestD = Infinity
-    for (i = 0; i < candidates.length; i++) {
-        if (!valid(candidates[i])) continue
-        var dx = candidates[i].x - dragged.x
-        var dy = candidates[i].y - dragged.y
-        var d = dx * dx + dy * dy
-        if (d < bestD) { bestD = d; best = candidates[i] }
+
+    // Insert between two horizontal neighbors (split them apart if needed).
+    for (i = 0; i < list.length; i++) {
+        for (j = 0; j < list.length; j++) {
+            if (i === j) continue
+            var a = list[i], b = list[j]
+            var yOv = spanOverlap(a.y, a.y + a.h, b.y, b.y + b.h)
+            if (yOv <= 8) continue
+            if (a.x + a.w > b.x + 2) continue
+            var seam = a.x + a.w
+            var gap = b.x - seam
+            var yOpts = uniqueNums([a.y, b.y, a.y + a.h - h, b.y + b.h - h, dragged.y, (a.y + b.y) / 2])
+            var yi
+            for (yi = 0; yi < yOpts.length; yi++) {
+                var shift = Math.max(0, w - gap)
+                var pos = {}
+                pos[dragged.id] = { x: seam, y: yOpts[yi] }
+                var k
+                for (k = 0; k < list.length; k++) {
+                    var n = list[k]
+                    var nx = n.x
+                    if (n.x >= b.x - 1) nx = n.x + shift
+                    pos[n.id] = { x: nx, y: n.y }
+                }
+                consider(pos, pos[dragged.id])
+            }
+        }
     }
+    // Insert between stacked neighbors.
+    for (i = 0; i < list.length; i++) {
+        for (j = 0; j < list.length; j++) {
+            if (i === j) continue
+            var a2 = list[i], b2 = list[j]
+            var xOv = spanOverlap(a2.x, a2.x + a2.w, b2.x, b2.x + b2.w)
+            if (xOv <= 8) continue
+            if (a2.y + a2.h > b2.y + 2) continue
+            var seamY = a2.y + a2.h
+            var gapY = b2.y - seamY
+            var xOpts = uniqueNums([a2.x, b2.x, a2.x + a2.w - w, b2.x + b2.w - w, dragged.x, (a2.x + b2.x) / 2])
+            var xi
+            for (xi = 0; xi < xOpts.length; xi++) {
+                var shiftY = Math.max(0, h - gapY)
+                var pos2 = {}
+                pos2[dragged.id] = { x: xOpts[xi], y: seamY }
+                var k2
+                for (k2 = 0; k2 < list.length; k2++) {
+                    var n2 = list[k2]
+                    var ny = n2.y
+                    if (n2.y >= b2.y - 1) ny = n2.y + shiftY
+                    pos2[n2.id] = { x: n2.x, y: ny }
+                }
+                consider(pos2, pos2[dragged.id])
+            }
+        }
+    }
+
     if (!best) {
-        var maxR = dragged.x
-        for (i = 0; i < list.length; i++) maxR = Math.max(maxR, list[i].x + list[i].w)
-        best = { x: maxR, y: dragged.y }
+        var maxR = list[0].x + list[0].w
+        var top = list[0].y
+        for (i = 1; i < list.length; i++) {
+            maxR = Math.max(maxR, list[i].x + list[i].w)
+            top = Math.min(top, list[i].y)
+        }
+        best = basePositions(maxR, top)
     }
-    return { x: best.x, y: best.y, w: w, h: h, id: dragged.id }
+    return best
+}
+
+function placeMonitorNoOverlap(dragged, others) {
+    var all = arrangeMonitorsAfterDrop(dragged, others)
+    var p = all && dragged && all[dragged.id]
+    if (!p) return dragged
+    return { x: p.x, y: p.y, w: dragged.w, h: dragged.h, id: dragged.id }
 }
 
 function snapLayoutRect(dragged, others, thresh) {

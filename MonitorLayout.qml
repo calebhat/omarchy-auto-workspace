@@ -77,16 +77,22 @@ Item {
             if (!item || !item.tileId) continue
             others.push({ id: item.tileId, x: item.layoutX, y: item.layoutY, w: item.layoutW, h: item.layoutH })
         }
-        var out = {}
+        var dragged = null
+        var rest = []
         for (i = 0; i < others.length; i++) {
-            var t = others[i]
-            var pos = { x: t.x, y: t.y, w: t.w, h: t.h, id: t.id }
-            if (draggedId && t.id === draggedId) {
-                var rest = []
-                for (var j = 0; j < others.length; j++) if (others[j].id !== t.id) rest.push(others[j])
-                pos = Model.placeMonitorNoOverlap(pos, rest)
-            }
-            out[t.id] = { x: Math.round(pos.x), y: Math.round(pos.y) }
+            if (draggedId && others[i].id === draggedId) dragged = others[i]
+            else rest.push(others[i])
+        }
+        if (!dragged) {
+            var keep = {}
+            for (i = 0; i < others.length; i++) keep[others[i].id] = { x: Math.round(others[i].x), y: Math.round(others[i].y) }
+            return keep
+        }
+        var arranged = Model.arrangeMonitorsAfterDrop(dragged, rest)
+        var out = {}
+        var ids = Object.keys(arranged)
+        for (i = 0; i < ids.length; i++) {
+            out[ids[i]] = { x: Math.round(arranged[ids[i]].x), y: Math.round(arranged[ids[i]].y) }
         }
         return out
     }
