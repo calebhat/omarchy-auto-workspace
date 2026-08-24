@@ -97,6 +97,24 @@ Panel {
         var map = activeProfile.workspaceMonitors || {}
         return String(map[String(formWorkspace)] || "")
     }
+    readonly property string workspaceMonitorSummary: {
+        var map = activeProfile.workspaceMonitors || {}
+        var opts = monitorOptions
+        var labelFor = function(id) {
+            for (var i = 0; i < opts.length; i++) if (opts[i].value === id) return opts[i].label
+            var m = Model.monitorById(config, id)
+            return m ? m.label : id
+        }
+        var parts = []
+        for (var ws = 1; ws <= 10; ws++) {
+            var id = String(map[String(ws)] || "")
+            if (!id) continue
+            parts.push(ws + ":" + labelFor(id))
+        }
+        return parts.length ? parts.join("  ·  ") : "No workspace → monitor pins yet"
+    }
+    onFormWorkspaceChanged: Qt.callLater(syncMonitorDropdown)
+    onActiveProfileIdChanged: Qt.callLater(syncMonitorDropdown)
     readonly property string matchedLabel: liveStatus.matchedProfileName ? ("matches " + liveStatus.matchedProfileName) : "no layout match"
     readonly property int totalCount: {
         var n = 0
@@ -123,6 +141,7 @@ Panel {
     function loadConfig() { loading=true; errorText=""; loadProc.running=true; if (!layoutProc.running) layoutProc.running = true; liveProc.running = true }
     function currentConfig() {
         var cfg = Model.sanitizeConfig(config)
+        cfg.settings.lastFormWorkspace = formWorkspace
         var pid = cfg.settings.activeProfileId
         for (var i = 0; i < cfg.profiles.length; i++) {
             if (cfg.profiles[i].id === pid) {
@@ -197,7 +216,18 @@ Panel {
         clearStatusTimer.restart()
         closeTransfer()
     }
+    function syncMonitorDropdown() {
+        if (monitorDropdown) monitorDropdown.value = root.workspaceMonitorId
+    }
+    function selectWorkspace(n) {
+        formWorkspace = n
+        workspacePicked = true
+        persistWsTimer.restart()
+        syncMonitorDropdown()
+    }
     function setWorkspaceMonitor(monitorId) {
+        monitorId = String(monitorId || "")
+        if (monitorId === root.workspaceMonitorId) return
         var cfg = root.currentConfig()
         if (monitorId && !Model.monitorById(cfg, monitorId)) {
             var live = root.liveMonitors || []
@@ -212,17 +242,24 @@ Panel {
             }
         }
         var pid = cfg.settings.activeProfileId
+        var wsKey = String(formWorkspace)
         for (var i = 0; i < cfg.profiles.length; i++) {
             if (cfg.profiles[i].id !== pid) continue
             var allowed = cfg.profiles[i].monitors || []
-            if (monitorId && allowed.length && allowed.indexOf(monitorId) < 0) continue
-            var map = cfg.profiles[i].workspaceMonitors || {}
-            if (!monitorId) delete map[String(formWorkspace)]
-            else map[String(formWorkspace)] = monitorId
+            if (monitorId && allowed.length && allowed.indexOf(monitorId) < 0) return
+            var map = {}
+            var prev = cfg.profiles[i].workspaceMonitors || {}
+            var keys = Object.keys(prev)
+            for (var k = 0; k < keys.length; k++) map[keys[k]] = prev[keys[k]]
+            if (!monitorId) delete map[wsKey]
+            else map[wsKey] = monitorId
             cfg.profiles[i].workspaceMonitors = map
         }
         config = cfg
         saveConfig()
+        statusText = "WS" + formWorkspace + (monitorId ? " → " + (Model.monitorById(cfg, monitorId) || { label: monitorId }).label : " unpinned")
+        clearStatusTimer.restart()
+        Qt.callLater(syncMonitorDropdown)
     }
     function addAssignment() {
         var name = formName.trim(), cmd = formCommand.trim()
@@ -256,8 +293,9 @@ Panel {
         else formExecPreview = formCommand
     }
     function persistFormWorkspace() {
-        var s = Model.clone(root.config); s.settings.lastFormWorkspace = root.formWorkspace; root.config = s; root.saveConfig()
+        persistWsTimer.restart()
     }
+    Timer { id: persistWsTimer; interval: 400; onTriggered: root.saveConfig() }
     function removeAssignment(id) {
         root.assignments = root.assignments.filter(function(a){ return a.id !== id })
         root.saveConfig()
@@ -466,6 +504,7 @@ Panel {
                 if (others.length) root.copyTargetId = others[0]
                 root.countsChanged()
                 if (repaired.changed) root.saveConfig()
+                Qt.callLater(root.syncMonitorDropdown)
             } catch (e) { root.errorText = "Invalid config JSON: " + e }
         }
     }
@@ -726,7 +765,7 @@ Panel {
                                     selected: root.workspacePicked && root.formWorkspace === (index + 1)
                                     horizontalPadding: 0
                                     verticalPadding: 0
-                                    onClicked: { root.workspacePicked = true; root.formWorkspace = index + 1; root.persistFormWorkspace() }
+                                    onClicked: root.selectWorkspace(index + 1)
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: Style.space(30)
                                 }
@@ -738,30 +777,43 @@ Panel {
                             Layout.fillWidth: true
                             spacing: Style.space(8)
                             Text {
-                                text: "Monitor"
+                                text: "WS " + root.formWorkspace
                                 color: root.dim
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
                                 font.bold: true
                             }
                             Dropdown {
+                                id: monitorDropdown
                                 Layout.fillWidth: true
                                 label: ""
                                 showLabel: false
                                 foreground: root.foreground
                                 value: root.workspaceMonitorId
                                 options: root.monitorOptions
-                                onChanged: function(v) { root.setWorkspaceMonitor(v) }
+                                onChanged: function(v) {
+                                    if (v === root.workspaceMonitorId) return
+                                    root.setWorkspaceMonitor(v)
+                                }
                             }
                         }
                         Text {
                             visible: !root.showMonitorPicker && root.monitorOptions.length === 1
                             Layout.fillWidth: true
-                            text: "WS " + root.formWorkspace + " → " + root.monitorOptions[0].label
+                            text: "All workspaces → " + root.monitorOptions[0].label
                             color: root.dim
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
                             elide: Text.ElideRight
+                        }
+                        Text {
+                            visible: root.showMonitorPicker
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: root.workspaceMonitorSummary
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption - 1
                         }
 
                         Button {
