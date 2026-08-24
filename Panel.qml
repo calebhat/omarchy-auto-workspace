@@ -605,8 +605,11 @@ Panel {
             var seen = {}
             var uniq = []
             for (var u = 0; u < list.length; u++) {
-                if (seen[list[u].exec]) continue
-                seen[list[u].exec] = true
+                var key = String(list[u].exec || "")
+                var nkey = "name:" + String(list[u].name || "").toLowerCase()
+                if (seen[key] || seen[nkey]) continue
+                seen[key] = true
+                seen[nkey] = true
                 uniq.push(list[u])
             }
             uniq.sort(function(a, b){
@@ -619,12 +622,18 @@ Panel {
             return uniq.slice(0, 24)
         }
         var exact = [], prefix = [], sub = []
+        var seen = {}
         for (var j = 0; j < list.length; j++) {
             var b = list[j]
             var n = b.name.toLowerCase(), e = b.exec.toLowerCase()
+            var nkey = "name:" + n
+            if (seen[e] || seen[nkey]) continue
             if (n === f || e === f) exact.push(b)
             else if (n.indexOf(f) === 0) prefix.push(b)
             else if (n.indexOf(f) !== -1 || e.indexOf(f) !== -1) sub.push(b)
+            else continue
+            seen[e] = true
+            seen[nkey] = true
         }
         exact.sort(root.alphabeticalCompare)
         prefix.sort(root.alphabeticalCompare)

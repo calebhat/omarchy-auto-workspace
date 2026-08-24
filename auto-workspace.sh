@@ -144,6 +144,8 @@ cmd_list_apps() {
   # panel can show commonly used apps first. IconPath lets the UI render
   # real icons instead of glyphs.
   local seen=""
+  local -A seen_desk
+  local -A seen_name
   # Extra / TUI apps that are not .desktop files (Herdr, custom extras).
   ensure_config
   local extra_line extra_name extra_exec extra_icon
@@ -155,6 +157,7 @@ cmd_list_apps() {
     [[ -n $extra_name && -n $extra_exec ]] || continue
     printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$extra_name" "$extra_exec" "${extra_icon:-utilities-terminal}" "" "extra" "9999"
     seen+="|$extra_exec|"
+    seen_name["${extra_name,,}"]=1
   done < <(jq -c '.extraApps[]?' "$CONFIG_FILE" 2>/dev/null)
 
   local herdr_cmd=""
@@ -168,6 +171,7 @@ cmd_list_apps() {
   if [[ -n $herdr_cmd && $seen != *"|$herdr_cmd|"* ]]; then
     printf "%s\t%s\t%s\t%s\t%s\t%s\n" "ShopHawk Herdr" "$herdr_cmd" "utilities-terminal" "" "extra-herdr" "10000"
     seen+="|$herdr_cmd|"
+    seen_name["shophawk herdr"]=1
   fi
 
   # Skip walking the icon themes here — the panel resolves Icon= via Quickshell.
@@ -203,7 +207,14 @@ cmd_list_apps() {
       fi
       exec_line=$(echo "$exec_line" | sed -E 's/ \%[UuFfDdNnickvm]//g' | xargs)
       [[ -z $exec_line ]] && continue
+      local desk_base="${file##*/}"
+      desk_base="${desk_base,,}"
+      local name_key="${name,,}"
+      if [[ -n ${seen_desk[$desk_base]:-} ]]; then continue; fi
+      if [[ -n ${seen_name[$name_key]:-} ]]; then continue; fi
       if [[ $seen == *"|$exec_line|"* ]]; then continue; fi
+      seen_desk["$desk_base"]=1
+      seen_name["$name_key"]=1
       seen+="|$exec_line|"
       local base="${exec_line%% *}"
       local appname="${base##*/}"
