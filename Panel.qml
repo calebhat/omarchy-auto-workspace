@@ -46,6 +46,7 @@ Panel {
     property string customName: ""
     property var liveStatus: ({ live: [], profiles: [], matchedProfileId: "", bindings: {} })
     property var liveMonitors: []
+    property bool applyBusy: false
     onFormTypeChanged: { updateFormPreview(); updateAutofillName() }
 
     property string hyprLayout: "dwindle"
@@ -293,8 +294,22 @@ Panel {
         autoName = n
         if (!formNameEdited) { fillingName = true; formName = n; fillingName = false }
     }
-    function applyMatching() { applyProc.command = ["bash", root.script, "--apply-matching"]; applyProc.running = true; statusText = "Applying matching profile…"; clearStatusTimer.restart() }
-    function applyProfile(id) { applyProc.command = ["bash", root.script, "--apply-profile", id]; applyProc.running = true; statusText = "Applying profile…"; clearStatusTimer.restart() }
+    function applyMatching() {
+        if (root.applyBusy || applyProc.running) return
+        root.applyBusy = true
+        applyProc.command = ["bash", root.script, "--apply-matching"]
+        applyProc.running = true
+        statusText = "Applying matching profile…"
+        clearStatusTimer.restart()
+    }
+    function applyProfile(id) {
+        if (root.applyBusy || applyProc.running) return
+        root.applyBusy = true
+        applyProc.command = ["bash", root.script, "--apply-profile", id]
+        applyProc.running = true
+        statusText = "Applying profile…"
+        clearStatusTimer.restart()
+    }
     function addProfileFromLive() {
         var cfg = root.currentConfig()
         var live = root.liveMonitors || []
@@ -477,7 +492,12 @@ Panel {
         id: applyProc
         stdout: SplitParser { onRead: function(d){ console.log("[auto-workspace] " + d) } }
         stderr: SplitParser { onRead: function(d){ console.warn("[auto-workspace] " + d) } }
-        onExited: function(code) { root.statusText = code === 0 ? "Applied" : "Apply failed"; clearStatusTimer.restart(); liveProc.running = true }
+        onExited: function(code) {
+            root.applyBusy = false
+            root.statusText = code === 0 ? "Applied" : "Apply failed"
+            clearStatusTimer.restart()
+            liveProc.running = true
+        }
     }
     Process {
         id: layoutProc
@@ -637,8 +657,9 @@ Panel {
                     }
                     trailingControl: Component {
                         Button {
-                            text: "Apply matching"
+                            text: root.applyBusy ? "Applying…" : "Apply matching"
                             tooltipText: "Detect connected monitors and load that profile (SUPER+ALT+W)"
+                            enabled: !root.applyBusy
                             onClicked: root.applyMatching()
                         }
                     }

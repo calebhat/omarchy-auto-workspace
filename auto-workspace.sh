@@ -28,8 +28,8 @@ default_config() {
   "settings": {
     "enabled": true,
     "applyOnBoot": false,
-    "launchDelayMs": 1500,
-    "staggerMs": 400,
+    "launchDelayMs": 800,
+    "staggerMs": 80,
     "silent": true,
     "onlyOnBoot": true,
     "lastFormWorkspace": 1,
@@ -170,13 +170,7 @@ cmd_list_apps() {
     seen+="|$herdr_cmd|"
   fi
 
-  local -A icon_idx
-  local ipath
-  while IFS= read -r -d '' ipath; do
-    local ibase="${ipath##*/}"
-    ibase="${ibase%.*}"
-    [[ -n ${icon_idx[$ibase]:-} ]] || icon_idx["$ibase"]="$ipath"
-  done < <(find "$HOME/.local/share/icons" "$HOME/.icons" "/usr/share/icons" "/var/lib/flatpak/exports/share/icons" "$HOME/.local/share/flatpak/exports/share/icons" -type f \( -name "*.png" -o -name "*.svg" \) \( -path "*/16x16/*" -o -path "*/22x22/*" -o -path "*/24x24/*" -o -path "*/32x32/*" -o -path "*/48x48/*" -o -path "*/64x64/*" -o -path "*/128x128/*" -o -path "*/256x256/*" -o -path "*/512x512/*" -o -path "*/scalable/*" -o -path "*/flatpak/*" \) -print0 2>/dev/null)
+  # Skip walking the icon themes here — the panel resolves Icon= via Quickshell.
   local hist_txt="" h
   for h in "$HOME/.bash_history" "$HOME/.zsh_history" "$HOME/.local/share/fish/fish_history"; do
     [[ -f $h ]] || continue
@@ -204,12 +198,8 @@ cmd_list_apps() {
       [[ $hidden == "true" || $nodisplay == "true" ]] && continue
       [[ -z $name || -z $exec_line ]] && continue
       local icon_path=""
-      if [[ -n $icon ]]; then
-        if [[ $icon == /* ]]; then
-          [[ -f $icon ]] && icon_path="$icon"
-        else
-          icon_path="${icon_idx[$icon]:-}"
-        fi
+      if [[ -n $icon && $icon == /* && -f $icon ]]; then
+        icon_path="$icon"
       fi
       exec_line=$(echo "$exec_line" | sed -E 's/ \%[UuFfDdNnickvm]//g' | xargs)
       [[ -z $exec_line ]] && continue
@@ -339,17 +329,21 @@ cmd_launch() {
 
   local target_ws="$workspace"
   local ok=false
-  local tries=40
+  local tries=12
   local placed_addrs=()
+  local clients_json
   for _try in $(seq 1 $tries); do
-    local now_addrs new_addrs moved=0
-    now_addrs=$(hyprctl clients -j 2>/dev/null | jq -r '.[].address' 2>/dev/null | sort -u)
-    new_addrs=$(comm -13 <(printf '%s' "$before" | tr ' ' '\n' | sort -u) <(printf '%s' "$now_addrs" | tr ' ' '\n' | sort -u) 2>/dev/null)
+    local new_addrs moved=0
+    clients_json=$(hyprctl clients -j 2>/dev/null || echo "[]")
+    new_addrs=$(printf '%s' "$clients_json" | jq -r --arg before "$before" '
+      ($before | split(" ") | map(select(length>0))) as $old |
+      [.[].address] | map(select(. as $a | ($old | index($a) | not))) | .[]
+    ' 2>/dev/null)
     if [[ -n $new_addrs ]]; then
       while IFS= read -r addr; do
         [[ -z $addr ]] && continue
-        local cls
-        cls=$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr" '.[] | select(.address==$a) | .class' 2>/dev/null)
+        local cls on_ws
+        cls=$(printf '%s' "$clients_json" | jq -r --arg a "$addr" '.[] | select(.address==$a) | .class // empty' 2>/dev/null)
         if [[ $is_browser_like == "true" ]]; then
           if ! [[ $cls =~ chrome|chromium ]] && ! [[ ${cls,,} =~ chrome|chromium ]]; then
             continue
@@ -359,15 +353,14 @@ cmd_launch() {
             continue
           fi
         fi
-        local on_ws
-        on_ws=$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr" --arg ws "$target_ws" '
+        on_ws=$(printf '%s' "$clients_json" | jq -r --arg a "$addr" --arg ws "$target_ws" '
           def ws_ok($ws):
             if ($ws|test("^[0-9]+$")) then
               (.workspace.id == ($ws|tonumber) or .workspace.name == $ws)
             else
               .workspace.name == $ws
             end;
-          .[] | select(.address == $a) | ws_ok($ws)
+          .[] | select(.address == $a) | if ws_ok($ws) then "true" else "false" end
         ' 2>/dev/null)
         if [[ $on_ws != "true" ]]; then
           hyprctl eval "hl.dispatch(hl.dsp.window.move({workspace=\"$target_ws\", window=\"address:$addr\", follow=false}))" >/dev/null 2>&1 \
@@ -381,54 +374,9 @@ cmd_launch() {
         break
       fi
     fi
-    sleep 0.3
+    sleep 0.08
   done
-  # Geometry is applied in a second pass after every assignment has launched,
-  # so adjacent panes can be packed with real min-sizes.
-
-  if [[ $is_browser_like == "true" ]]; then
-    (
-      sleep 2.5
-      for _bg in $(seq 1 20); do
-        local now2 new2 m2=0
-        now2=$(hyprctl clients -j 2>/dev/null | jq -r '.[].address' 2>/dev/null | sort -u)
-        new2=$(comm -13 <(printf '%s' "$before" | tr ' ' '\n' | sort -u) <(printf '%s' "$now2" | tr ' ' '\n' | sort -u) 2>/dev/null)
-        if [[ -n $new2 ]]; then
-          while IFS= read -r addr; do
-            [[ -z $addr ]] && continue
-            local cls2
-            cls2=$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr" '.[] | select(.address==$a) | .class' 2>/dev/null)
-            if [[ $is_browser_like == "true" ]]; then
-              if ! [[ $cls2 =~ chrome|chromium ]] && ! [[ ${cls2,,} =~ chrome|chromium ]]; then
-                continue
-              fi
-            elif [[ $is_tui_like == "true" ]]; then
-              if ! [[ $cls2 =~ foot|org\.omarchy ]] && ! [[ ${cls2,,} =~ foot|nvim ]]; then
-                continue
-              fi
-            fi
-            local on_ws2
-            on_ws2=$(hyprctl clients -j 2>/dev/null | jq -r --arg a "$addr" --arg ws "$target_ws" '
-              def ws_ok($ws):
-                if ($ws|test("^[0-9]+$")) then
-                  (.workspace.id == ($ws|tonumber) or .workspace.name == $ws)
-                else
-                  .workspace.name == $ws
-                end;
-              .[] | select(.address == $a) | ws_ok($ws)
-            ' 2>/dev/null)
-            if [[ $on_ws2 != "true" ]]; then
-              hyprctl eval "hl.dispatch(hl.dsp.window.move({workspace=\"$target_ws\", window=\"address:$addr\", follow=false}))" >/dev/null 2>&1 \
-                || true
-              m2=$((m2 + 1))
-            fi
-          done <<< "$new2"
-        fi
-        [[ $m2 -eq 0 ]] && break
-        sleep 0.3
-      done
-    ) & disown
-  fi
+  # Geometry is applied in a second pass after every assignment has launched.
 
   if [[ $ok != "true" ]]; then
     echo "warn: no new window detected for workspace $workspace: $final_cmd (may have reused existing window)" >&2
@@ -445,6 +393,35 @@ default_only_on_boot_for_type() {
   fi
 }
 
+already_running() {
+  local ws=$1 exec_cmd=$2 name=$3 clients_json=$4
+  local needle=""
+  needle=$(printf '%s' "$exec_cmd" | awk '{print $1}' | xargs basename 2>/dev/null)
+  needle=$(basename "$needle" 2>/dev/null || echo "$needle")
+  local app_id=""
+  if [[ $exec_cmd =~ --app-id=([^[:space:]]+) ]]; then
+    app_id="${BASH_REMATCH[1]}"
+  fi
+  printf '%s' "$clients_json" | jq -e --arg ws "$ws" --arg n "${needle,,}" --arg appid "${app_id,,}" --arg name "${name,,}" --arg exec "${exec_cmd,,}" '
+    def ws_ok($ws):
+      if ($ws|test("^[0-9]+$")) then
+        (.workspace.id == ($ws|tonumber) or .workspace.name == $ws)
+      else
+        .workspace.name == $ws
+      end;
+    def hay: ((.class // "") + " " + (.initialClass // "") + " " + (.title // "") | ascii_downcase);
+    any(.[];
+      ws_ok($ws) and (
+        ($appid != "" and hay | contains($appid)) or
+        ($n != "" and $n != "." and (hay | contains($n))) or
+        ($name != "" and (hay | contains($name))) or
+        (($exec | contains("herdr")) and (hay | contains("herdr"))) or
+        (($exec | contains("shophawk-panel")) and (hay | contains("shophawk")))
+      )
+    )
+  ' >/dev/null 2>&1
+}
+
 launch_profile_assignments() {
   local profile_id=$1
   local force=${2:-false}
@@ -455,8 +432,10 @@ launch_profile_assignments() {
   last_boot_file="$STATE_DIR/last_boot_id"
   last_boot=""
   [[ -f $last_boot_file ]] && last_boot=$(cat "$last_boot_file" 2>/dev/null || echo "")
-  stagger=$(jq -r '.settings.staggerMs // 400' "$CONFIG_FILE")
+  stagger=$(jq -r '.settings.staggerMs // 80' "$CONFIG_FILE")
   silent=$(jq -r '.settings.silent // true' "$CONFIG_FILE")
+  local clients_json
+  clients_json=$(hyprctl clients -j 2>/dev/null || echo "[]")
 
   local boot_log="$STATE_DIR/launch-$boot_id.log"
   : > "$boot_log" 2>/dev/null || true
@@ -493,42 +472,9 @@ launch_profile_assignments() {
       continue
     fi
 
-    local basename app_id=""
-    basename=$(echo "$exec_cmd" | awk '{print $1}' | xargs basename 2>/dev/null | cut -d' ' -f1)
-    basename=$(basename "$basename" 2>/dev/null || echo "$basename")
-    if [[ $exec_cmd =~ --app-id=([^[:space:]]+) ]]; then
-      app_id="${BASH_REMATCH[1]}"
-    fi
-    if [[ $force != "true" ]]; then
-      if [[ $exec_cmd == omarchy-launch-webapp* || $exec_cmd == chromium* || $exec_cmd == google-chrome* || $exec_cmd == firefox* ]]; then
-        :
-      elif [[ -n $app_id ]]; then
-        if hyprctl clients -j 2>/dev/null | jq -e --arg ws "$ws" --arg appid "$app_id" '
-          def ws_ok($ws):
-            if ($ws|test("^[0-9]+$")) then
-              (.workspace.id == ($ws|tonumber) or .workspace.name == $ws)
-            else
-              .workspace.name == $ws
-            end;
-          any(.[]; ws_ok($ws) and ((.class|ascii_downcase)==($appid|ascii_downcase) or (.initialClass|ascii_downcase)==($appid|ascii_downcase)))
-        ' >/dev/null 2>&1; then
-          echo "skip $name on ws $ws — already running ($app_id)"
-          continue
-        fi
-      elif [[ -n $basename && $basename != "." ]]; then
-        if hyprctl clients -j 2>/dev/null | jq -e --arg ws "$ws" --arg bn "$basename" '
-          def ws_ok($ws):
-            if ($ws|test("^[0-9]+$")) then
-              (.workspace.id == ($ws|tonumber) or .workspace.name == $ws)
-            else
-              .workspace.name == $ws
-            end;
-          any(.[]; ws_ok($ws) and ((.class|ascii_downcase)==($bn|ascii_downcase) or (.initialClass|ascii_downcase)==($bn|ascii_downcase)))
-        ' >/dev/null 2>&1; then
-          echo "skip $name on ws $ws — already running ($basename)"
-          continue
-        fi
-      fi
+    if already_running "$ws" "$exec_cmd" "$name" "$clients_json"; then
+      echo "skip $name on ws $ws — already running"
+      continue
     fi
 
     echo "launching [$ws] $name: $exec_cmd (silent=$silent)"
@@ -558,6 +504,12 @@ cmd_apply() {
   local mode=$1
   local requested_id=${2:-}
   local force=${3:-false}
+  mkdir -p "$STATE_DIR"
+  exec 9>"$STATE_DIR/apply.lock"
+  if ! flock -n 9; then
+    echo "apply already in progress"
+    exit 0
+  fi
   ensure_config
   wait_for_hyprland || exit 1
 
@@ -597,6 +549,8 @@ cmd_apply() {
 
   echo "applying profile $profile_name ($profile_id)"
   apply_bindings "$bindings"
+  # Hotkey still bypasses "once per boot", but never relaunches a window
+  # that is already on the workspace (duplicate Apply was stacking apps).
   local launch_force=$force
   if [[ $mode == "hotkey" ]]; then
     launch_force=true

@@ -106,6 +106,7 @@ Item {
     }
 
     function launchAll(force) {
+        if (launchProc.running) return
         if (force) {
             launchProc.command = ["bash", root.script, "--force-launch-all"]
         } else {
@@ -115,11 +116,13 @@ Item {
     }
 
     function applyMatching() {
+        if (launchProc.running) return
         launchProc.command = ["bash", root.script, "--apply-matching"]
         launchProc.running = true
     }
 
     function applyProfile(profileId) {
+        if (launchProc.running) return
         launchProc.command = ["bash", root.script, "--apply-profile", String(profileId || "")]
         launchProc.running = true
     }

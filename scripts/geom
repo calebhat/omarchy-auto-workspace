@@ -14,9 +14,21 @@ import time
 from typing import Any
 
 
-def hypr_j(cmd: str) -> Any:
+_json_cache: dict[str, Any] = {}
+
+
+def hypr_j(cmd: str, cached: bool = False) -> Any:
+    if cached and cmd in _json_cache:
+        return _json_cache[cmd]
     out = subprocess.check_output(["hyprctl", "-j", cmd], text=True)
-    return json.loads(out)
+    data = json.loads(out)
+    if cached:
+        _json_cache[cmd] = data
+    return data
+
+
+def cache_clear() -> None:
+    _json_cache.clear()
 
 
 def hypr_eval(lua: str) -> None:
@@ -26,7 +38,7 @@ def hypr_eval(lua: str) -> None:
 def gaps_out() -> tuple[int, int, int, int]:
     """Return top, right, bottom, left gaps_out."""
     try:
-        raw = hypr_j("getoption general:gaps_out")
+        raw = hypr_j("getoption general:gaps_out", cached=True)
         css = str(raw.get("css") or "8")
         parts = [int(float(p)) for p in css.replace("px", "").split()]
         if len(parts) == 1:
@@ -98,7 +110,7 @@ def resize_relative(addr: str, dx: int, dy: int) -> None:
 
 
 def client_by_addr(addr: str) -> dict[str, Any] | None:
-    for c in hypr_j("clients"):
+    for c in hypr_j("clients", cached=True):
         if c.get("address") == addr:
             return c
     return None
@@ -117,7 +129,8 @@ def apply_tiled_split(items: list[dict[str, Any]], metrics: dict[str, float]) ->
     """Keep windows tiled and set the shared dwindle/master split from geoms."""
     for it in items:
         force_tiled(it["addr"])
-    time.sleep(0.08)
+    cache_clear()
+    time.sleep(0.03)
     if len(items) < 2:
         box = actual_box(items[0]["addr"]) if items else None
         return [{**items[0], "place": box or items[0]["px"]}] if items else []
@@ -150,7 +163,8 @@ def apply_tiled_split(items: list[dict[str, Any]], metrics: dict[str, float]) ->
             b = live[i + 1][axis]
             if a > b + 4:
                 swap_windows(ordered[i]["addr"], ordered[i + 1]["addr"])
-                time.sleep(0.05)
+                cache_clear()
+                time.sleep(0.03)
                 swapped = True
                 break
         if not swapped:
@@ -168,7 +182,8 @@ def apply_tiled_split(items: list[dict[str, Any]], metrics: dict[str, float]) ->
             resize_relative(left["addr"], delta, 0)
         else:
             resize_relative(left["addr"], 0, delta)
-        time.sleep(0.08)
+        cache_clear()
+        time.sleep(0.03)
 
     out = []
     for it in ordered:
@@ -184,8 +199,9 @@ def apply_items(items: list[dict[str, Any]], metrics: dict[str, float]) -> list[
 
 def apply_one(addr: str, geom_json: str, ws: str) -> dict[str, Any]:
     geom = json.loads(geom_json)
-    monitors = hypr_j("monitors")
-    workspaces = hypr_j("workspaces")
+    cache_clear()
+    monitors = hypr_j("monitors", cached=True)
+    workspaces = hypr_j("workspaces", cached=True)
     mon = monitor_for_workspace(ws, monitors, workspaces)
     if not mon:
         return {"ok": False, "error": "no monitor"}
@@ -236,6 +252,7 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
         profile = profiles[0]
     if not profile:
         return {"ok": False, "error": "no profile"}
+    cache_clear()
     clients = hypr_j("clients")
     by_ws: dict[str, list[dict[str, Any]]] = {}
     used: set[str] = set()
@@ -258,8 +275,9 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
 
 def apply_many(payload: dict[str, Any]) -> dict[str, Any]:
     ws = str(payload.get("workspace") or "1")
-    monitors = hypr_j("monitors")
-    workspaces = hypr_j("workspaces")
+    cache_clear()
+    monitors = hypr_j("monitors", cached=True)
+    workspaces = hypr_j("workspaces", cached=True)
     mon = monitor_for_workspace(ws, monitors, workspaces)
     if not mon:
         return {"ok": False, "error": "no monitor"}
@@ -272,6 +290,7 @@ def apply_many(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         items.append({"addr": addr, "geom": geom, "px": geom_pixels(geom, metrics)})
     placed = apply_items(items, metrics)
+    cache_clear()
     actual = []
     for it in placed:
         box = actual_box(it["addr"])

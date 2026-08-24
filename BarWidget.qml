@@ -44,6 +44,7 @@ BarWidget {
     }
 
     function applyMatching() {
+        if (applyProc.running) return
         applyProc.command = ["bash", root.script, "--apply-matching"]
         applyProc.running = true
     }
@@ -76,10 +77,10 @@ BarWidget {
 
     Timer {
         id: pollTimer
-        interval: 2500
-        repeat: true
-        running: true
-        triggeredOnStart: true
+        interval: 8000
+        repeat: false
+        running: false
+        triggeredOnStart: false
         onTriggered: root.refreshCounts()
     }
 
