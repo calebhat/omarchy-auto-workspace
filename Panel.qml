@@ -447,6 +447,8 @@ Panel {
         saveConfig()
     }
     function setGestureField(field, value) {
+        var cur = root.currentGestures
+        if (cur && cur[field] === value) return
         var cfg = root.currentConfig()
         var g
         if (cfg.settings.gestureSource === "global") {
@@ -1428,7 +1430,10 @@ Panel {
                                 { value: "profile", label: "This profile" },
                                 { value: "global", label: "Global" }
                             ]
-                            onChanged: function(v) { root.setGestureSource(v) }
+                            onChanged: function(v) {
+                                var cur = (root.config.settings && root.config.settings.gestureSource) === "global" ? "global" : "profile"
+                                if (v !== cur) root.setGestureSource(v)
+                            }
                         }
                         Toggle {
                             Layout.fillWidth: true
@@ -1447,8 +1452,8 @@ Panel {
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
                             }
-                            Button { text: "3"; selected: root.currentGestures.fingers === 3; onClicked: root.setGestureField("fingers", 3) }
-                            Button { text: "4"; selected: root.currentGestures.fingers === 4; onClicked: root.setGestureField("fingers", 4) }
+                            Button { text: "3"; selected: root.currentGestures.fingers === 3; onClicked: { if (root.currentGestures.fingers !== 3) root.setGestureField("fingers", 3) } }
+                            Button { text: "4"; selected: root.currentGestures.fingers === 4; onClicked: { if (root.currentGestures.fingers !== 4) root.setGestureField("fingers", 4) } }
                         }
                         Toggle {
                             visible: root.currentGestures.workspaceSwipe
@@ -1485,7 +1490,10 @@ Panel {
                                 { value: "natural", label: "Natural (Hyprland default)" },
                                 { value: "swapped", label: "Swap left / right" }
                             ]
-                            onChanged: function(v) { root.setGestureField("invert", v === "natural") }
+                            onChanged: function(v) {
+                                var want = v === "natural"
+                                if (want !== root.currentGestures.invert) root.setGestureField("invert", want)
+                            }
                         }
                         Text {
                             visible: root.currentGestures.workspaceSwipe

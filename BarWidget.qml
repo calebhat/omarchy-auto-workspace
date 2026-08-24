@@ -93,7 +93,7 @@ BarWidget {
     Loader {
         id: panelLoader
         active: true
-        source: Qt.resolvedUrl("Panel.qml") + "?v=gestures-apply-3"
+        source: Qt.resolvedUrl("Panel.qml") + "?v=gestures-apply-4"
         visible: false
         onLoaded: {
             root.injectPanel()
