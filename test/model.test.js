@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePrefs, assignmentIsLocked, normalizeAssignment, sameAppExec, canonicalExec }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, layoutDescription, visibleCountHelp, clampVisibleCount }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -183,10 +183,31 @@ const prefCfg = m.sanitizeConfig({
 const pref = prefCfg.profiles[0].workspacePrefs["2"]
 if (pref.layout !== "scrolling" || pref.visibleCount !== 3 || pref.lockSizes !== true || pref.extras !== "block")
   throw new Error("workspace prefs")
+if (m.layoutDescription("master").indexOf("stack") < 0) throw new Error("master layout copy")
+if (m.layoutDescription("scrolling").indexOf("column") < 0) throw new Error("scrolling layout copy")
+if (m.layoutDescription("dwindle").indexOf("split") < 0) throw new Error("dwindle layout copy")
+if (m.layoutDescription("dwindle", true).indexOf("clip") < 0) throw new Error("lock uses scrolling copy")
+if (m.visibleCountHelp(2, true).indexOf("1/2") < 0) throw new Error("visible extra width")
+if (m.clampVisibleCount(10) !== 10) throw new Error("visible 10")
+if (m.clampVisibleCount(21) !== 20) throw new Error("visible max 20")
+if (m.clampVisibleCount(0) !== 1) throw new Error("visible min 1")
+const widePref = m.sanitizeConfig({
+  version: 2,
+  profiles: [{ id: "p", name: "P", workspacePrefs: { "1": { layout: "scrolling", visibleCount: 10 } } }]
+})
+if (widePref.profiles[0].workspacePrefs["1"].visibleCount !== 10) throw new Error("persist visible 10")
 if (prefCfg.profiles[0].workspacePrefs["99"]) throw new Error("invalid ws pref dropped")
 const lockedApp = m.normalizeAssignment({ workspace: 2, name: "Herdr", exec: "herdr", lockPlace: true })
 if (!lockedApp.lockPlace) throw new Error("per-app lock")
 if (!m.assignmentIsLocked(lockedApp, prefCfg.profiles[0])) throw new Error("effective lock")
+if (!m.workspaceHasLockedApp({ assignments: [lockedApp], workspacePrefs: {} }, 2)) throw new Error("ws has lock")
+if (m.workspaceHasLockedApp({ assignments: [{ workspace: 2, lockPlace: false }], workspacePrefs: {} }, 2)) throw new Error("ws unlocked")
+const needGeom = m.ensureAssignmentGeoms([
+  { workspace: 2, name: "Herdr", exec: "herdr", lockPlace: true },
+  { workspace: 2, name: "Panel", exec: "panel", lockPlace: false }
+], 2, { layout: "dwindle", visibleCount: 2 })
+if (!needGeom[0].geom || needGeom[0].geom.x !== 0) throw new Error("lock captures left geom")
+if (!needGeom[1].geom || needGeom[1].geom.x < 0.4) throw new Error("lock captures right geom")
 const wrap = 'sh -c if echo "%u" | grep -q "^mailto:"; then exec omarchy-launch-webapp "https://outlook.office.com/mail/deeplink/compose?to=x"; else exec omarchy-launch-webapp "https://outlook.office.com/mail/"; fi'
 if (!m.sameAppExec(wrap, "omarchy-launch-webapp 'https://outlook.office.com/mail/'")) throw new Error("outlook exec match")
 if (m.canonicalExec(wrap).indexOf("outlook.office.com/mail") < 0) throw new Error("canonical outlook exec")

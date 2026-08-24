@@ -1,12 +1,13 @@
 #!/bin/bash
 set -uo pipefail
 
-PLUGIN_ID="io.github.calebhat.auto-workspace"
+PLUGIN_ID="io.github.calebhat.scenebook"
 # Config lives OUTSIDE the plugin dir: the shell watches the plugin folder and
 # reloads the whole plugin on any file change there, which would close the
 # panel and restart the service on every settings save.
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-workspace"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/scenebook"
 CONFIG_FILE="$STATE_DIR/config.json"
+PREV_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-workspace"
 LEGACY_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/tenzin.auto-workspace/config.json"
 STATE_FILE="$STATE_DIR/state.json"
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,7 +17,14 @@ GEOM="$PLUGIN_DIR/scripts/geom"
 mkdir -p "$STATE_DIR"
 
 migrate_config() {
-  if [[ ! -f $CONFIG_FILE && -f $LEGACY_CONFIG_FILE ]]; then
+  if [[ -f $CONFIG_FILE ]]; then
+    return 0
+  fi
+  if [[ -f $PREV_STATE_DIR/config.json ]]; then
+    cp -a "$PREV_STATE_DIR/." "$STATE_DIR/" 2>/dev/null || true
+    return 0
+  fi
+  if [[ -f $LEGACY_CONFIG_FILE ]]; then
     cp "$LEGACY_CONFIG_FILE" "$CONFIG_FILE" 2>/dev/null || true
   fi
 }
@@ -89,7 +97,7 @@ cmd_match_id() {
 notify() {
   local title=$1 body=$2
   if command -v notify-send >/dev/null 2>&1; then
-    notify-send -a "Auto Workspace" "$title" "$body" >/dev/null 2>&1 || true
+    notify-send -a "SceneBook" "$title" "$body" >/dev/null 2>&1 || true
   fi
 }
 
@@ -661,7 +669,7 @@ cmd_apply() {
 
   if [[ -z $profile_id || $profile_id == "null" ]]; then
     echo "no matching profile for the current monitor layout"
-    notify "Auto Workspace" "No profile matches the current monitors"
+    notify "SceneBook" "No profile matches the current monitors"
     exit 0
   fi
 
@@ -686,7 +694,7 @@ cmd_apply() {
     launch_force=true
   fi
   launch_profile_assignments "$profile_id" "$launch_force"
-  notify "Auto Workspace" "Applied $profile_name"
+  notify "SceneBook" "Applied $profile_name"
 }
 
 cmd_launch_all() {
@@ -708,7 +716,7 @@ case "${1:-}" in
   --watch-extras) exec python3 "$PLUGIN_DIR/scripts/watch" ;;
   --default-config) default_config ;;
   --help|-h|"") cat <<'HELP'
-auto-workspace.sh — helper for io.github.calebhat.auto-workspace
+scenebook.sh — helper for io.github.calebhat.scenebook
 
   --ensure-config              ensure config exists and print it
   --list-apps                  list .desktop + extra apps as TSV
@@ -720,7 +728,7 @@ auto-workspace.sh — helper for io.github.calebhat.auto-workspace
   --force-launch-all           launch matching profile regardless of boot flag
   --apply-matching             detect layout, bind workspaces, launch apps
   --apply-profile <id>         bind + launch a specific profile
-  --watch-extras               send extra windows away when extras=block
+  --watch-extras               keep locked panes pinned; send extras away when extras=block
   --default-config             print default config
 HELP
   ;;

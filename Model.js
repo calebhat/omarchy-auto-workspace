@@ -1,6 +1,6 @@
 .pragma library
 
-// Shared helpers for Auto Workspace panel + service.
+// Shared helpers for SceneBook panel + service.
 // Config lives outside the plugin dir so saves do not reload the plugin.
 
 function defaultConfig() {
@@ -36,14 +36,36 @@ function defaultProfile() {
     }
 }
 
+function layoutDescription(layout, hasLock) {
+    if (layout === "master" && !hasLock)
+        return "One large main window, with the rest stacked in a column beside it. New windows join the stack."
+    if (layout === "scrolling" || hasLock)
+        return "Windows sit in a row of columns. Locked panes keep their width; extra windows use the Visible size. Focusing a column to the right can clip a wider locked pane off the left."
+    return "Each new window splits the current one in half (Hyprland’s default tiling)."
+}
+
+function clampVisibleCount(n) {
+    var v = parseInt(n, 10)
+    if (isNaN(v)) return 2
+    if (v < 1) return 1
+    if (v > 20) return 20
+    return v
+}
+
+function visibleCountHelp(visibleCount, hasLock) {
+    var n = clampVisibleCount(visibleCount)
+    if (hasLock)
+        return "Extra columns are 1/" + n + " of the screen (1–20). Locked panes keep the size you set."
+    return n + " extra columns fit on screen before you scroll. Ultrawides can go up to 20."
+}
+
 function normalizeWorkspacePref(p) {
     if (!p || typeof p !== "object") {
         return { layout: "dwindle", visibleCount: 2, lockSizes: false, extras: "around" }
     }
     var layout = p.layout
     if (layout !== "scrolling" && layout !== "master") layout = "dwindle"
-    var vis = parseInt(p.visibleCount, 10)
-    if (!(vis >= 2 && vis <= 4)) vis = 2
+    var vis = clampVisibleCount(p.visibleCount)
     var extras = p.extras === "block" ? "block" : "around"
     return {
         layout: layout,
@@ -768,6 +790,37 @@ function assignmentIsLocked(a, profile) {
     if (a.lockPlace === true) return true
     var pref = workspacePref(profile, a.workspace)
     return pref.lockSizes === true
+}
+
+function workspaceHasLockedApp(profile, ws) {
+    var pref = workspacePref(profile, ws)
+    if (pref.lockSizes === true) return true
+    var list = (profile && profile.assignments) || []
+    for (var i = 0; i < list.length; i++) {
+        if (Number(list[i].workspace) === Number(ws) && list[i].lockPlace === true) return true
+    }
+    return false
+}
+
+function ensureAssignmentGeoms(assignments, ws, pref) {
+    var list = assignments || []
+    var idxs = []
+    var group = []
+    for (var i = 0; i < list.length; i++) {
+        if (Number(list[i].workspace) === Number(ws)) {
+            idxs.push(i)
+            group.push(list[i])
+        }
+    }
+    if (!group.length) return list
+    var packed = packedGeomsForApps(group, (pref && pref.layout) || "dwindle", 1 / Math.max(1, (pref && pref.visibleCount) || 2))
+    for (var g = 0; g < group.length; g++) {
+        if (assignmentHasGeom(group[g])) continue
+        var pg = packed[g]
+        if (!pg) continue
+        list[idxs[g]].geom = { x: pg.x, y: pg.y, w: pg.w, h: pg.h }
+    }
+    return list
 }
 
 function normalizeExtraApp(a) {

@@ -81,4 +81,24 @@ assert m.safe_connector("eDP-1; rm -rf /") is None
 print("disable_plan ok")
 PY
 
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+calls = []
+m.safe_connector = lambda n: n or ""
+m.workspace_bindings = lambda cfg, profile, live: {"2": "DVI-I-1"}
+m.subprocess.run = lambda *a, **k: calls.append(a)
+profile = {
+    "workspacePrefs": {"2": {"layout": "dwindle", "visibleCount": 2, "lockSizes": False, "extras": "block"}},
+    "assignments": [{"workspace": 2, "exec": "herdr", "lockPlace": True}],
+    "workspaceMonitors": {"2": "desk-right"},
+}
+m.apply_ws_prefs({"monitors": []}, profile, [])
+lua = " ".join(str(c) for c in calls)
+assert "layout = \"scrolling\"" in lua, lua
+assert "fullscreen_on_one_column = false" in lua, lua
+print("lock forces scrolling ok")
+PY
+
 echo "match.test.sh ok"

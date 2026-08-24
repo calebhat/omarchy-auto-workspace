@@ -30,8 +30,8 @@ Item {
     readonly property string layoutLabel: {
         if (customLayout) return "tiled · drag the splitters"
         if (hyprLayout === "scrolling") return "scrolling • " + Math.round(columnWidth * 100) + "% columns"
-        if (hyprLayout === "master") return "master"
-        if (hyprLayout === "dwindle") return "dwindle"
+        if (hyprLayout === "master") return "master · large pane + stack"
+        if (hyprLayout === "dwindle") return "dwindle · split tree"
         return hyprLayout
     }
 

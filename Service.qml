@@ -8,7 +8,7 @@ Item {
     id: root
 
     property QtObject bar: null
-    property string moduleName: "io.github.calebhat.auto-workspace"
+    property string moduleName: "io.github.calebhat.scenebook"
     property var settings: ({})
     property var shell: null
     property var manifest: null
@@ -16,9 +16,9 @@ Item {
     readonly property string home: Quickshell.env("HOME")
     readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || home + "/.config"
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
-    readonly property string pluginId: "io.github.calebhat.auto-workspace"
-    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/auto-workspace.sh"
-    readonly property string configFile: stateHome + "/omarchy/auto-workspace/config.json"
+    readonly property string pluginId: "io.github.calebhat.scenebook"
+    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/scenebook.sh"
+    readonly property string configFile: stateHome + "/omarchy/scenebook/config.json"
 
     property bool autoEnabled: true
     property bool applyOnBoot: false
@@ -28,7 +28,7 @@ Item {
     property string lastStatus: ""
 
     function log(msg) {
-        console.log("[auto-workspace] " + msg)
+        console.log("[scenebook] " + msg)
     }
 
     Process {
@@ -63,8 +63,8 @@ Item {
 
     Process {
         id: launchProc
-        stdout: SplitParser { onRead: function(d){ console.log("[auto-workspace launch] " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[auto-workspace launch err] " + d) } }
+        stdout: SplitParser { onRead: function(d){ console.log("[scenebook] launch] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[scenebook] launch err] " + d) } }
         onExited: function(code) {
             root.lastStatus = code === 0 ? "launched" : "failed:" + code
             root.launchedThisSession = true
@@ -85,13 +85,13 @@ Item {
         command: ["python3", root.home + "/.config/omarchy/plugins/" + root.pluginId + "/scripts/watch"]
         running: true
         stdout: SplitParser { onRead: function(d){ root.log("extras " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[auto-workspace extras] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[scenebook] extras] " + d) } }
     }
 
     Process {
         id: manualLaunchProc
-        stdout: SplitParser { onRead: function(d){ console.log("[auto-workspace manual] " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[auto-workspace manual err] " + d) } }
+        stdout: SplitParser { onRead: function(d){ console.log("[scenebook] manual] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[scenebook] manual err] " + d) } }
     }
 
     Timer {

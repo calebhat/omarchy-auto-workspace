@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send extra windows away when a workspace is set to extras=block."""
+"""Keep locked panes pinned and send extras away when extras=block."""
 from __future__ import annotations
 
 import json
@@ -7,12 +7,13 @@ import os
 import subprocess
 import sys
 import time
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 
 def config_path() -> Path:
     state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
-    return Path(state) / "omarchy/auto-workspace/config.json"
+    return Path(state) / "omarchy/scenebook/config.json"
 
 
 def lock_path() -> Path:
@@ -27,6 +28,10 @@ def apply_in_progress() -> bool:
         return subprocess.call(["flock", "-n", str(lock), "-c", "true"]) != 0
     except Exception:
         return False
+
+
+def geom_mod():
+    return SourceFileLoader("aw_geom", str(Path(__file__).resolve().parent / "geom")).load_module()
 
 
 def load_block_map() -> dict[str, int]:
@@ -55,7 +60,7 @@ def load_block_map() -> dict[str, int]:
             continue
         n = counts.get(str(ws), 0)
         vis = int(pref.get("visibleCount") or 2)
-        out[str(ws)] = max(n, 1) if n else max(1, min(4, vis))
+        out[str(ws)] = max(n, 1) if n else max(1, min(20, vis))
     return out
 
 
@@ -105,18 +110,77 @@ def socket_path() -> Path | None:
     return None
 
 
+def locked_workspaces() -> list[str]:
+    path = config_path()
+    if not path.exists():
+        return []
+    try:
+        cfg = json.loads(path.read_text())
+    except Exception:
+        return []
+    g = geom_mod()
+    profile = g.active_profile(cfg)
+    if not profile:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    prefs = profile.get("workspacePrefs") or {}
+    for ws, pref in prefs.items():
+        if isinstance(pref, dict) and pref.get("lockSizes") is True:
+            seen.add(str(ws))
+    for a in profile.get("assignments") or []:
+        if a.get("enabled") is False:
+            continue
+        if a.get("lockPlace") is True:
+            seen.add(str(a.get("workspace") or ""))
+    for ws in seen:
+        if ws and ws != "None":
+            out.append(ws)
+    return out
+
+
+_restoring = False
+_last_restore: dict[str, float] = {}
+
+
+def restore_locks(ws: str, addr: str = "") -> None:
+    global _restoring
+    if _restoring:
+        return
+    _restoring = True
+    _last_restore[str(ws)] = time.monotonic()
+    try:
+        result = geom_mod().restore_locks_for_workspace(str(ws), prefer_addr=addr or "")
+        if result and not result.get("skipped"):
+            print(json.dumps({"restore": str(ws), "ok": result.get("ok"), "closeEnough": result.get("closeEnough")}), flush=True)
+    except Exception as exc:
+        print(json.dumps({"restore": str(ws), "ok": False, "error": str(exc)}), flush=True)
+    finally:
+        _restoring = False
+
+
 def handle_open(addr: str, ws: str) -> None:
     if apply_in_progress():
         return
     blocked = load_block_map()
-    if ws not in blocked:
-        return
-    time.sleep(0.05)
-    if window_count(ws) <= blocked[ws]:
-        return
-    dest = next_open_ws(blocked, ws)
-    if dest:
-        move_to_ws(addr, dest)
+    time.sleep(0.12)
+    if ws in blocked:
+        if window_count(ws) > blocked[ws]:
+            dest = next_open_ws(blocked, ws)
+            if dest:
+                move_to_ws(addr, dest)
+                time.sleep(0.05)
+                if str(ws) in locked_workspaces():
+                    restore_locks(ws, "")
+                return
+    if str(ws) in locked_workspaces():
+        restore_locks(ws, addr)
+
+
+def handle_close_or_move(ws: str | None) -> None:
+    # closewindow / our own swapcol must not re-enter restore (that fight
+    # squeezed extras to width -3). Only admit extras on openwindow.
+    return
 
 
 def main() -> int:
@@ -132,15 +196,23 @@ def main() -> int:
     assert proc.stdout
     for line in proc.stdout:
         line = line.strip()
-        if not line.startswith("openwindow>>"):
+        if line.startswith("openwindow>>"):
+            payload = line.split(">>", 1)[1]
+            parts = payload.split(",", 3)
+            if len(parts) < 2:
+                continue
+            addr, ws = parts[0], parts[1]
+            if addr and ws and ws.isdigit():
+                handle_open(addr, ws)
             continue
-        payload = line.split(">>", 1)[1]
-        parts = payload.split(",", 3)
-        if len(parts) < 2:
+        if line.startswith("movewindow>>") or line.startswith("movewindowv2>>"):
+            payload = line.split(">>", 1)[1]
+            parts = payload.split(",", 2)
+            if len(parts) >= 2 and parts[1].isdigit():
+                handle_close_or_move(parts[1])
             continue
-        addr, ws = parts[0], parts[1]
-        if addr and ws and ws.isdigit():
-            handle_open(addr, ws)
+        if line.startswith("closewindow>>"):
+            handle_close_or_move(None)
     return 0
 
 

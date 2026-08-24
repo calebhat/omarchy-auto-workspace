@@ -6,16 +6,16 @@ import qs.Ui
 
 BarWidget {
     id: root
-    moduleName: "io.github.calebhat.auto-workspace"
+    moduleName: "io.github.calebhat.scenebook"
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
-    readonly property string pluginId: "io.github.calebhat.auto-workspace"
+    readonly property string pluginId: "io.github.calebhat.scenebook"
     readonly property string home: Quickshell.env("HOME")
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
-    readonly property string configFile: stateHome + "/omarchy/auto-workspace/config.json"
-    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/auto-workspace.sh"
+    readonly property string configFile: stateHome + "/omarchy/scenebook/config.json"
+    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/scenebook.sh"
 
     property int totalCount: 0
     property int enabledCount: 0
@@ -71,8 +71,8 @@ BarWidget {
 
     Process {
         id: applyProc
-        stdout: SplitParser { onRead: function(d){ console.log("[auto-workspace] " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[auto-workspace] " + d) } }
+        stdout: SplitParser { onRead: function(d){ console.log("[scenebook] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[scenebook] " + d) } }
     }
 
     Timer {
@@ -108,8 +108,8 @@ BarWidget {
         text: "󱂬"
         slotSize: Style.bar.statusSlot
         tooltipText: root.pluginEnabled
-            ? ("Auto Workspace • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching")
-            : "Auto Workspace • disabled • click to enable"
+            ? ("SceneBook • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching")
+            : "SceneBook • disabled • click to enable"
         onPressed: function(btn){
             if (btn === Qt.LeftButton) root.toggle()
             else if (btn === Qt.MiddleButton) root.applyMatching()

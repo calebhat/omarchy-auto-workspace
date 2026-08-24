@@ -86,6 +86,75 @@ def geom_pixels(geom: dict[str, Any], metrics: dict[str, float]) -> dict[str, in
     return {"x": int(round(x)), "y": int(round(y)), "w": int(round(w)), "h": int(round(h))}
 
 
+def box_to_geom(box: dict[str, int], metrics: dict[str, float]) -> dict[str, float]:
+    mw = float(metrics.get("w") or 1) or 1.0
+    mh = float(metrics.get("h") or 1) or 1.0
+    x = (float(box.get("x") or 0) - float(metrics.get("x") or 0)) / mw
+    y = (float(box.get("y") or 0) - float(metrics.get("y") or 0)) / mh
+    w = float(box.get("w") or 0) / mw
+    h = float(box.get("h") or 0) / mh
+    return {
+        "x": max(0.0, min(1.0, round(x, 4))),
+        "y": max(0.0, min(1.0, round(y, 4))),
+        "w": max(0.12, min(1.0, round(w, 4))),
+        "h": max(0.12, min(1.0, round(h, 4))),
+    }
+
+
+def assignment_is_locked(assignment: dict[str, Any], prefs: dict[str, Any] | None) -> bool:
+    if assignment.get("lockPlace") is True:
+        return True
+    ws = str(assignment.get("workspace") or "")
+    pref = (prefs or {}).get(ws) or {}
+    return pref.get("lockSizes") is True
+
+
+def lock_plan_for_workspace(profile: dict[str, Any], ws: str) -> dict[str, Any]:
+    prefs = profile.get("workspacePrefs") or {}
+    pref = prefs.get(str(ws)) or {}
+    vis = clamp_visible_count(pref.get("visibleCount") or 2)
+    extras = "block" if pref.get("extras") == "block" else "around"
+    lock_all = pref.get("lockSizes") is True
+    locked = []
+    for a in profile.get("assignments") or []:
+        if a.get("enabled") is False:
+            continue
+        if str(a.get("workspace") or "") != str(ws):
+            continue
+        if lock_all or a.get("lockPlace") is True:
+            locked.append(a)
+    return {
+        "workspace": str(ws),
+        "locked": locked,
+        "lock_all": lock_all,
+        "extras": extras,
+        "visibleCount": vis,
+        "prefs": prefs,
+    }
+
+
+def load_config(path: str) -> dict[str, Any]:
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def active_profile(cfg: dict[str, Any], profile_id: str = "") -> dict[str, Any] | None:
+    profiles = cfg.get("profiles") or []
+    pid = profile_id or ((cfg.get("settings") or {}).get("activeProfileId")) or ""
+    if pid:
+        hit = next((p for p in profiles if p.get("id") == pid), None)
+        if hit:
+            return hit
+    return profiles[0] if profiles else None
+
+
+def config_path() -> str:
+    import os
+    from pathlib import Path
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
+    return str(Path(state) / "omarchy/scenebook/config.json")
+
+
 def force_tiled(addr: str) -> None:
     a = f"address:{addr}"
     hypr_eval(
@@ -107,6 +176,108 @@ def swap_windows(a_addr: str, b_addr: str) -> None:
 def resize_relative(addr: str, dx: int, dy: int) -> None:
     a = f"address:{addr}"
     hypr_eval(f'hl.dispatch(hl.dsp.window.resize({{window="{a}", x={int(dx)}, y={int(dy)}, relative=true}}))')
+
+
+def clear_size_lock(addr: str) -> None:
+    a = f"address:{addr}"
+    hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="min_size", value="0 0" }}))')
+    hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="max_size", value="0 0" }}))')
+
+
+def set_size_lock(addr: str, w: int, h: int) -> None:
+    if w <= 0 or h <= 0:
+        return
+    a = f"address:{addr}"
+    # min_size only — max_size makes Hyprland shove locked panes when an extra
+    # window needs space. Restore-on-open puts the size back if min is ignored.
+    hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="min_size", value="{int(w)} {int(h)}" }}))')
+    hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="max_size", value="0 0" }}))')
+
+
+def clamp_visible_count(visible_count: int | str | None) -> int:
+    try:
+        vis = 2 if visible_count is None or visible_count == "" else int(visible_count)
+    except Exception:
+        vis = 2
+    return min(20, max(1, vis))
+
+
+def extra_column_frac(visible_count: int) -> float:
+    vis = clamp_visible_count(visible_count)
+    return round(1.0 / vis, 4)
+
+
+def column_width_frac(it: dict[str, Any], extra_frac: float) -> float:
+    """Locked / assigned geoms keep their width; extras use Visible 1/N."""
+    g = it.get("geom") or {}
+    w = float(g.get("w") or 0)
+    if it.get("lock") is True or w >= 0.1:
+        if w >= 0.1:
+            return max(0.1, min(1.0, round(w, 4)))
+    return max(0.05, min(1.0, float(extra_frac)))
+
+
+def scrolling_layout_opts(visible_count: int, lock: bool = False) -> str:
+    col = max(0.1, extra_column_frac(visible_count))
+    if lock:
+        return f"column_width = {col}, fullscreen_on_one_column = false"
+    return f"column_width = {col}"
+
+
+def force_scrolling(ws: str, visible_count: int = 2, lock: bool = True) -> None:
+    opts = scrolling_layout_opts(visible_count, lock=lock)
+    hypr_eval(
+        f'hl.workspace_rule({{ workspace = "{ws}", persistent = true, layout = "scrolling", '
+        f"layout_opts = {{ {opts} }} }})"
+    )
+
+
+def active_window_addr() -> str | None:
+    try:
+        w = hypr_j("activewindow")
+        if isinstance(w, dict):
+            addr = w.get("address")
+            return str(addr) if addr else None
+    except Exception:
+        return None
+    return None
+
+
+def focus_window(addr: str) -> None:
+    if not addr:
+        return
+    # Hyprland 0.56: layoutmsg hits the *active* workspace layout. Focus first
+    # so colresize/expel go to scrolling on the target workspace, not dwindle.
+    hypr_eval(f'hl.dispatch(hl.dsp.focus({{ window = "address:{addr}" }}))')
+
+
+def focus_workspace(ws: str) -> None:
+    if not ws:
+        return
+    hypr_eval(f'hl.dispatch(hl.dsp.focus({{ workspace = "{ws}" }}))')
+
+
+def layout_msg(msg: str) -> None:
+    safe = str(msg).replace("\\", "\\\\").replace('"', '\\"')
+    hypr_eval(f'hl.dispatch(hl.dsp.layout("{safe}"))')
+
+
+def client_workspace_id(addr: str) -> str:
+    c = client_by_addr(addr)
+    if not c:
+        return ""
+    w = c.get("workspace") or {}
+    return str(w.get("id") or w.get("name") or "")
+
+
+def ensure_width(addr: str, want_w: int) -> None:
+    cache_clear()
+    box = actual_box(addr)
+    if not box:
+        return
+    dx = int(want_w) - int(box.get("w") or 0)
+    if abs(dx) >= 4:
+        resize_relative(addr, dx, 0)
 
 
 def client_by_addr(addr: str) -> dict[str, Any] | None:
@@ -132,8 +303,20 @@ def apply_tiled_split(items: list[dict[str, Any]], metrics: dict[str, float]) ->
     cache_clear()
     time.sleep(0.03)
     if len(items) < 2:
-        box = actual_box(items[0]["addr"]) if items else None
-        return [{**items[0], "place": box or items[0]["px"]}] if items else []
+        if not items:
+            return []
+        it = items[0]
+        box = actual_box(it["addr"])
+        want = it.get("px") or {}
+        if box and want:
+            dx = int(want.get("w") or 0) - int(box.get("w") or 0)
+            dy = int(want.get("h") or 0) - int(box.get("h") or 0)
+            if abs(dx) >= 4 or abs(dy) >= 4:
+                resize_relative(it["addr"], dx, dy)
+                cache_clear()
+                time.sleep(0.03)
+                box = actual_box(it["addr"]) or box
+        return [{**it, "place": box or it["px"]}]
 
     geoms = [it.get("geom") or {} for it in items]
     side_by_side = all(abs(float(g.get("h") or 1) - 1) < 0.08 and float(g.get("y") or 0) < 0.08 for g in geoms)
@@ -191,10 +374,277 @@ def apply_tiled_split(items: list[dict[str, Any]], metrics: dict[str, float]) ->
     return out
 
 
-def apply_items(items: list[dict[str, Any]], metrics: dict[str, float]) -> list[dict[str, Any]]:
+def workspace_is_scrolling(ws: str, workspaces: list[dict[str, Any]] | None = None) -> bool:
+    for w in workspaces if workspaces is not None else hypr_j("workspaces", cached=True):
+        if str(w.get("id")) == str(ws) or str(w.get("name")) == str(ws):
+            return str(w.get("tiledLayout") or "") == "scrolling"
+    return False
+
+
+def apply_items(items: list[dict[str, Any]], metrics: dict[str, float], ws: str = "") -> list[dict[str, Any]]:
     if not items:
         return []
+    if ws and workspace_is_scrolling(ws):
+        return place_scrolling_columns(items, metrics, ws, 0.5)
     return apply_tiled_split(items, metrics)
+
+
+def clients_on_workspace(ws: str) -> list[dict[str, Any]]:
+    out = []
+    for c in hypr_j("clients", cached=True):
+        w = c.get("workspace") or {}
+        if str(w.get("id")) == str(ws) or str(w.get("name")) == str(ws):
+            out.append(c)
+    return out
+
+
+def sort_clients_axis(clients: list[dict[str, Any]], axis: str) -> list[dict[str, Any]]:
+    idx = 0 if axis == "x" else 1
+    return sorted(clients, key=lambda c: ((c.get("at") or [0, 0]) + [0, 0])[idx])
+
+
+def pin_locked_order(ordered: list[dict[str, Any]], ws: str, axis: str) -> None:
+    """Put locked panes at the front of the axis so extras land after them."""
+    for rank, it in enumerate(ordered):
+        cache_clear()
+        live = sort_clients_axis(clients_on_workspace(ws), axis)
+        if rank >= len(live):
+            break
+        current = live[rank].get("address")
+        if current == it["addr"]:
+            continue
+        swap_windows(it["addr"], current)
+        time.sleep(0.03)
+
+
+def column_rank(addr: str, ws: str, tol: int = 24) -> int | None:
+    live = [c for c in clients_on_workspace(ws) if not c.get("floating")]
+    if not live:
+        return None
+    ordered = sorted(live, key=lambda c: int(((c.get("at") or [0, 0]) + [0, 0])[0]))
+    cols: list[list[dict[str, Any]]] = []
+    for c in ordered:
+        x = int(((c.get("at") or [0, 0]) + [0, 0])[0])
+        if cols and abs(x - int(((cols[-1][0].get("at") or [0, 0]) + [0, 0])[0])) <= tol:
+            cols[-1].append(c)
+        else:
+            cols.append([c])
+    for i, group in enumerate(cols):
+        if any(c.get("address") == addr for c in group):
+            return i
+    return None
+
+
+def column_collapsed(addr: str) -> bool:
+    box = actual_box(addr)
+    return not box or int(box.get("w") or 0) < 40
+
+
+def stacked_with_other(addr: str, ws: str, tol: int = 24) -> bool:
+    box = actual_box(addr)
+    if not box:
+        return False
+    x = int(box.get("x") or 0)
+    for c in clients_on_workspace(ws):
+        other = c.get("address")
+        if not other or other == addr or c.get("floating"):
+            continue
+        at = c.get("at") or [0, 0]
+        if abs(int(at[0]) - x) <= tol:
+            return True
+    return False
+
+
+def place_scrolling_columns(
+    items: list[dict[str, Any]],
+    metrics: dict[str, float],
+    ws: str,
+    extra_frac: float,
+    prefer_addr: str = "",
+) -> list[dict[str, Any]]:
+    """Locked columns keep geom width; extras become new tape columns at extra_frac.
+
+    Never pixel-resize when extras exist: relative resize steals from the extra
+    until its width goes negative and the window vanishes.
+    """
+    extra_frac = max(0.05, min(1.0, float(extra_frac)))
+    cache_clear()
+    locked_addrs = {it["addr"] for it in items if it.get("addr")}
+    extras: list[dict[str, Any]] = []
+    for c in clients_on_workspace(ws):
+        addr = c.get("address")
+        if not addr or addr in locked_addrs or c.get("floating"):
+            continue
+        g = {"x": 1.0, "y": 0.0, "w": extra_frac, "h": 1.0}
+        extras.append({"addr": addr, "geom": g, "px": geom_pixels(g, metrics), "lock": False})
+    ordered_locked = sorted(
+        items,
+        key=lambda it: (
+            float((it.get("geom") or {}).get("x") or 0),
+            float((it.get("geom") or {}).get("y") or 0),
+        ),
+    )
+    sequence = ordered_locked + extras
+    if not sequence:
+        return []
+    prev = active_window_addr()
+    has_extras = bool(extras)
+    extra_addrs = {it["addr"] for it in extras}
+    anchor = ""
+    if prefer_addr and prefer_addr in extra_addrs:
+        anchor = prefer_addr
+    elif prev and prev in extra_addrs:
+        anchor = prev
+    elif extras:
+        anchor = extras[-1]["addr"]
+    # Keep the new extra focused. inhibit_scroll before touching locked
+    # columns so follow_focus does not pan to Herdr then jump back.
+    if anchor:
+        focus_window(anchor)
+    elif prev and client_workspace_id(prev) == str(ws):
+        focus_window(prev)
+    else:
+        focus_workspace(str(ws))
+    layout_msg("inhibit_scroll true")
+    try:
+        for it in extras:
+            force_tiled(it["addr"])
+            clear_size_lock(it["addr"])
+            if stacked_with_other(it["addr"], ws) or column_collapsed(it["addr"]):
+                focus_window(it["addr"])
+                layout_msg("expel")
+                time.sleep(0.04)
+        for it in ordered_locked:
+            force_tiled(it["addr"])
+            clear_size_lock(it["addr"])
+            if stacked_with_other(it["addr"], ws):
+                focus_window(it["addr"])
+                layout_msg("expel")
+                time.sleep(0.04)
+        last_locked = len(ordered_locked)
+        for it in extras:
+            for _ in range(6):
+                cache_clear()
+                rank = column_rank(it["addr"], ws)
+                if rank is None or rank >= last_locked:
+                    break
+                focus_window(it["addr"])
+                layout_msg("swapcol r")
+                time.sleep(0.03)
+                cache_clear()
+                new_rank = column_rank(it["addr"], ws)
+                # wrap_swapcol sends the last column to the start — undo that.
+                if new_rank is not None and rank is not None and new_rank < rank:
+                    layout_msg("swapcol l")
+                    break
+        for it in ordered_locked:
+            frac = column_width_frac(it, extra_frac)
+            focus_window(it["addr"])
+            layout_msg(f"colresize {frac}")
+            time.sleep(0.04)
+        for it in extras:
+            focus_window(it["addr"])
+            layout_msg(f"colresize {extra_frac}")
+            time.sleep(0.04)
+            if column_collapsed(it["addr"]):
+                focus_window(it["addr"])
+                layout_msg("expel")
+                layout_msg(f"colresize {extra_frac}")
+                time.sleep(0.04)
+        if not has_extras:
+            cache_clear()
+            for it in ordered_locked:
+                want = it.get("px") or {}
+                if want.get("w"):
+                    ensure_width(it["addr"], int(want["w"]))
+                    time.sleep(0.03)
+        if anchor:
+            focus_window(anchor)
+        elif prefer_addr:
+            focus_window(prefer_addr)
+        elif prev:
+            focus_window(prev)
+    finally:
+        layout_msg("inhibit_scroll false")
+    cache_clear()
+    return [{**it, "place": actual_box(it["addr"]) or it.get("px") or {}} for it in sequence]
+
+
+def place_locked_windows(items: list[dict[str, Any]], metrics: dict[str, float], ws: str, extra_frac: float = 0.5) -> list[dict[str, Any]]:
+    """Restore locked panes as scrolling columns so they cannot cover each other."""
+    return place_scrolling_columns(items, metrics, ws, extra_frac)
+
+
+def fallback_geom(index: int, count: int) -> dict[str, float]:
+    n = max(1, int(count))
+    w = round(1.0 / n, 4)
+    return {"x": round(index * w, 4), "y": 0.0, "w": w, "h": 1.0}
+
+
+def close_enough(box: dict[str, int] | None, want: dict[str, int] | None, tol: int = 12) -> bool:
+    if not box or not want:
+        return False
+    return abs(int(box.get("w") or 0) - int(want.get("w") or 0)) <= tol and abs(
+        int(box.get("h") or 0) - int(want.get("h") or 0)
+    ) <= tol
+
+
+def restore_locks_for_workspace(ws: str, cfg: dict[str, Any] | None = None, profile_id: str = "", prefer_addr: str = "") -> dict[str, Any]:
+    """Re-apply locked pane sizes after Hyprland splits on a new window."""
+    if cfg is None:
+        path = config_path()
+        try:
+            cfg = load_config(path)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+    profile = active_profile(cfg, profile_id)
+    if not profile:
+        return {"ok": False, "error": "no profile"}
+    plan = lock_plan_for_workspace(profile, str(ws))
+    locked = plan["locked"]
+    if not locked:
+        return {"ok": True, "skipped": True, "workspace": str(ws)}
+    force_scrolling(str(ws), plan["visibleCount"], lock=True)
+    cache_clear()
+    monitors = hypr_j("monitors", cached=True)
+    workspaces = hypr_j("workspaces", cached=True)
+    mon = monitor_for_workspace(str(ws), monitors, workspaces)
+    if not mon:
+        return {"ok": False, "error": "no monitor", "workspace": str(ws)}
+    metrics = layout_metrics(mon)
+    clients = clients_on_workspace(str(ws))
+    used: set[str] = set()
+    items: list[dict[str, Any]] = []
+    for i, a in enumerate(locked):
+        hit = match_client(a, clients, used)
+        if not hit:
+            continue
+        used.add(hit["address"])
+        g = a.get("geom")
+        if not g:
+            box = actual_box(hit["address"])
+            g = box_to_geom(box, metrics) if box else fallback_geom(i, len(locked))
+        items.append({
+            "addr": hit["address"],
+            "geom": g,
+            "px": geom_pixels(g, metrics),
+            "name": a.get("name"),
+            "lock": True,
+        })
+    if not items:
+        return {"ok": True, "skipped": True, "workspace": str(ws), "reason": "no clients"}
+    extra_frac = extra_column_frac(plan["visibleCount"])
+    last = place_scrolling_columns(items, metrics, str(ws), extra_frac, prefer_addr=prefer_addr)
+    locked_placed = [it for it in last if it.get("lock")]
+    extras_placed = [it for it in last if not it.get("lock")]
+    extra_ok = all(int((it.get("place") or {}).get("w") or 0) >= 40 for it in extras_placed) if extras_placed else True
+    ok = bool(locked_placed) and all(close_enough(it.get("place"), it.get("px"), tol=32) for it in locked_placed) and extra_ok
+    return {
+        "ok": True,
+        "workspace": str(ws),
+        "closeEnough": ok,
+        "windows": [{"addr": it.get("addr"), "actual": it.get("place"), "requested": it.get("px"), "lock": it.get("lock") is True} for it in last],
+    }
 
 
 def apply_one(addr: str, geom_json: str, ws: str) -> dict[str, Any]:
@@ -207,7 +657,7 @@ def apply_one(addr: str, geom_json: str, ws: str) -> dict[str, Any]:
         return {"ok": False, "error": "no monitor"}
     metrics = layout_metrics(mon)
     px = geom_pixels(geom, metrics)
-    items = apply_items([{"addr": addr, "geom": geom, "px": px}], metrics)
+    items = apply_items([{"addr": addr, "geom": geom, "px": px}], metrics, ws)
     box = actual_box(addr)
     return {"ok": True, "metrics": metrics, "requested": px, "actual": box, "placed": items[0]["place"] if items else px}
 
@@ -228,8 +678,14 @@ def match_client(assignment: dict[str, Any], clients: list[dict[str, Any]], used
         score = 0
         if "herdr" in exec_cmd.lower() and "herdr" in cls:
             score += 12
-        if "shophawk-panel" in exec_cmd.lower() and "shophawk" in title and "herdr" not in cls:
-            score += 12
+        shophawk_slot = "shophawk-panel" in exec_cmd.lower() or (
+            "shophawk" in name and "herdr" not in name and "herdr" not in exec_cmd.lower()
+        )
+        if shophawk_slot and "herdr" not in cls:
+            if "shophawk" in title:
+                score += 12
+            if "quickshell" in cls:
+                score += 10
         host = ""
         if "https://" in exec_cmd:
             try:
@@ -259,26 +715,27 @@ def match_client(assignment: dict[str, Any], clients: list[dict[str, Any]], used
 
 
 def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
-    with open(config_path, encoding="utf-8") as fh:
-        cfg = json.load(fh)
-    profiles = cfg.get("profiles") or []
-    profile = None
-    if profile_id:
-        profile = next((p for p in profiles if p.get("id") == profile_id), None)
-    if not profile and profiles:
-        profile = profiles[0]
+    cfg = load_config(config_path)
+    profile = active_profile(cfg, profile_id)
     if not profile:
         return {"ok": False, "error": "no profile"}
     cache_clear()
     clients = hypr_j("clients")
+    prefs = profile.get("workspacePrefs") or {}
     by_ws: dict[str, list[dict[str, Any]]] = {}
     used: set[str] = set()
     for a in profile.get("assignments") or []:
+        if a.get("enabled") is False:
+            continue
+        locked = assignment_is_locked(a, prefs)
         geom = a.get("geom")
-        if not geom:
+        if not geom and not locked:
             continue
         ws = str(a.get("workspace") or "1")
-        on_ws = [c for c in clients if str((c.get("workspace") or {}).get("id")) == ws or str((c.get("workspace") or {}).get("name")) == ws]
+        on_ws = [
+            c for c in clients
+            if str((c.get("workspace") or {}).get("id")) == ws or str((c.get("workspace") or {}).get("name")) == ws
+        ]
         hit = match_client(a, on_ws, used)
         if not hit:
             continue
@@ -287,38 +744,40 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
             "addr": hit["address"],
             "geom": geom,
             "name": a.get("name"),
-            "lock": a.get("lockPlace") is True,
+            "lock": locked,
         })
     results = []
-    prefs = profile.get("workspacePrefs") or {}
     for ws, windows in by_ws.items():
-        result = apply_many({"workspace": ws, "windows": windows})
+        cache_clear()
+        monitors = hypr_j("monitors", cached=True)
+        workspaces = hypr_j("workspaces", cached=True)
+        mon = monitor_for_workspace(ws, monitors, workspaces)
+        if mon:
+            metrics = layout_metrics(mon)
+            for i, win in enumerate(windows):
+                if win.get("geom"):
+                    continue
+                box = actual_box(win["addr"])
+                win["geom"] = box_to_geom(box, metrics) if box else fallback_geom(i, len(windows))
         pref = prefs.get(str(ws)) or {}
-        lock_all = pref.get("lockSizes") is True
-        placed = {it.get("addr"): it for it in (result.get("windows") or []) if it.get("addr")}
-        for win in windows:
-            addr = win.get("addr")
-            it = placed.get(addr) or {}
-            box = it.get("actual") or {}
-            w = int(box.get("w") or 0)
-            h = int(box.get("h") or 0)
-            if not addr:
-                continue
-            if lock_all or win.get("lock"):
-                if w > 0 and h > 0:
-                    hypr_eval(
-                        f'hl.dispatch(hl.dsp.window.set_prop({{ window="address:{addr}", prop="min_size", value="{w} {h}" }}))'
-                    )
-                    hypr_eval(
-                        f'hl.dispatch(hl.dsp.window.set_prop({{ window="address:{addr}", prop="max_size", value="{w} {h}" }}))'
-                    )
-            else:
-                hypr_eval(
-                    f'hl.dispatch(hl.dsp.window.set_prop({{ window="address:{addr}", prop="min_size", value="0 0" }}))'
-                )
-                hypr_eval(
-                    f'hl.dispatch(hl.dsp.window.set_prop({{ window="address:{addr}", prop="max_size", value="0 0" }}))'
-                )
+        vis = clamp_visible_count(pref.get("visibleCount"))
+        lock_any = any(w.get("lock") for w in windows) or pref.get("lockSizes") is True
+        scrolling = lock_any or pref.get("layout") == "scrolling"
+        if scrolling:
+            force_scrolling(ws, vis, lock=lock_any)
+            metrics = layout_metrics(mon) if mon else {"x": 0, "y": 0, "w": 1, "h": 1}
+            for win in windows:
+                win["px"] = geom_pixels(win["geom"], metrics) if win.get("geom") else win.get("px")
+            placed_list = place_scrolling_columns(windows, metrics, ws, extra_column_frac(vis))
+            result = {"ok": True, "metrics": metrics, "windows": [{"addr": it.get("addr"), "place": it.get("place"), "actual": it.get("place")} for it in placed_list]}
+        else:
+            result = apply_many({"workspace": ws, "windows": windows})
+            placed = {it.get("addr"): it for it in (result.get("windows") or []) if it.get("addr")}
+            for win in windows:
+                addr = win.get("addr")
+                if not addr:
+                    continue
+                clear_size_lock(addr)
         results.append(result)
     return {"ok": True, "workspaces": results}
 
@@ -338,8 +797,12 @@ def apply_many(payload: dict[str, Any]) -> dict[str, Any]:
         geom = it.get("geom") or {}
         if not addr or not geom:
             continue
-        items.append({"addr": addr, "geom": geom, "px": geom_pixels(geom, metrics)})
-    placed = apply_items(items, metrics)
+        items.append({"addr": addr, "geom": geom, "px": geom_pixels(geom, metrics), "lock": it.get("lock") is True})
+    vis = clamp_visible_count(payload.get("visibleCount"))
+    if workspace_is_scrolling(ws, workspaces) or payload.get("scrolling") is True:
+        placed = place_scrolling_columns(items, metrics, ws, extra_column_frac(vis))
+    else:
+        placed = apply_items(items, metrics, ws)
     cache_clear()
     actual = []
     for it in placed:
@@ -353,6 +816,7 @@ def main() -> int:
     parser.add_argument("--apply-one", action="store_true")
     parser.add_argument("--apply-many", action="store_true")
     parser.add_argument("--apply-config", action="store_true")
+    parser.add_argument("--restore-locks", action="store_true")
     parser.add_argument("--config", default="")
     parser.add_argument("--profile-id", default="")
     parser.add_argument("--addr", default="")
@@ -367,6 +831,11 @@ def main() -> int:
         mon = monitor_for_workspace(args.workspace, monitors, workspaces)
         print(json.dumps(layout_metrics(mon) if mon else {}))
         return 0
+    if args.restore_locks:
+        cfg = load_config(args.config) if args.config else None
+        result = restore_locks_for_workspace(args.workspace, cfg, args.profile_id, prefer_addr=args.addr)
+        print(json.dumps(result))
+        return 0 if result.get("ok") else 1
     if args.apply_config:
         result = apply_config(args.config, args.profile_id)
         print(json.dumps(result))

@@ -9,7 +9,7 @@ import "Model.js" as Model
 
 Panel {
     id: root
-    moduleName: "io.github.calebhat.auto-workspace"
+    moduleName: "io.github.calebhat.scenebook"
     manageIpc: false
 
     property var anchorItem: null
@@ -18,9 +18,9 @@ Panel {
     readonly property string home: Quickshell.env("HOME")
     readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || home + "/.config"
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
-    readonly property string pluginId: "io.github.calebhat.auto-workspace"
-    readonly property string configFile: stateHome + "/omarchy/auto-workspace/config.json"
-    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/auto-workspace.sh"
+    readonly property string pluginId: "io.github.calebhat.scenebook"
+    readonly property string configFile: stateHome + "/omarchy/scenebook/config.json"
+    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/scenebook.sh"
 
     signal countsChanged()
 
@@ -115,7 +115,11 @@ Panel {
         }
         return parts.length ? parts.join("  ·  ") : "No workspace → monitor pins yet"
     }
-    onFormWorkspaceChanged: Qt.callLater(syncMonitorDropdown)
+    onFormWorkspaceChanged: {
+        Qt.callLater(syncMonitorDropdown)
+        if (visibleCountField && !visibleCountField.activeFocus)
+            visibleCountField.text = String(root.currentWsPref.visibleCount)
+    }
     onActiveProfileIdChanged: Qt.callLater(syncMonitorDropdown)
     readonly property string matchedLabel: liveStatus.matchedProfileName ? ("matches " + liveStatus.matchedProfileName) : "no layout match"
     readonly property int totalCount: {
@@ -336,6 +340,13 @@ Panel {
             }
             config = cfg
         }
+        var anyLock = unlockingFromAll
+        if (!anyLock) {
+            for (var n = 0; n < next.length; n++) {
+                if (next[n].workspace === ws && next[n].lockPlace === true) { anyLock = true; break }
+            }
+        }
+        if (anyLock) next = Model.ensureAssignmentGeoms(next, ws, pref)
         assignments = next
         saveConfig()
         statusText = (root.isAppLocked(execStr) ? "Locked " : "Unlocked ") + a.name
@@ -360,6 +371,9 @@ Panel {
             pref[field] = value
             prefs[ws] = Model.normalizeWorkspacePref(pref)
             cfg.profiles[i].workspacePrefs = prefs
+            if (field === "lockSizes" && prefs[ws].lockSizes === true) {
+                assignments = Model.ensureAssignmentGeoms(assignments, formWorkspace, prefs[ws])
+            }
         }
         config = cfg
         saveConfig()
@@ -628,7 +642,7 @@ Panel {
 
     Process {
         id: loadProc
-        command: ["bash", "-c", "mkdir -p \"$(dirname \"$1\")\"; [[ -f \"$1\" || ! -f \"$3\" ]] || cp \"$3\" \"$1\"; [[ -f \"$1\" ]] || echo '{\"version\":2,\"settings\":{\"enabled\":true,\"applyOnBoot\":false,\"launchDelayMs\":800,\"staggerMs\":400,\"silent\":true,\"onlyOnBoot\":true,\"lastFormWorkspace\":1,\"activeProfileId\":\"default\"},\"monitors\":[],\"extraApps\":[],\"profiles\":[{\"id\":\"default\",\"name\":\"Default\",\"matchMode\":\"exact\",\"monitors\":[],\"workspaceMonitors\":{},\"assignments\":[]}]}' > \"$1\"; cat \"$1\"", "_", root.configFile, "", root.configHome + "/omarchy/plugins/tenzin.auto-workspace/config.json"]
+        command: ["bash", "-c", "mkdir -p \"$(dirname \"$1\")\"; [[ -f \"$1\" ]] || { [[ -f \"$2\" ]] && cp -a \"$2\" \"$1\"; }; [[ -f \"$1\" ]] || { [[ -f \"$3\" ]] && cp \"$3\" \"$1\"; }; [[ -f \"$1\" ]] || echo '{\"version\":2,\"settings\":{\"enabled\":true,\"applyOnBoot\":false,\"launchDelayMs\":800,\"staggerMs\":400,\"silent\":true,\"onlyOnBoot\":true,\"lastFormWorkspace\":1,\"activeProfileId\":\"default\"},\"monitors\":[],\"extraApps\":[],\"profiles\":[{\"id\":\"default\",\"name\":\"Default\",\"matchMode\":\"exact\",\"monitors\":[],\"workspaceMonitors\":{},\"assignments\":[]}]}' > \"$1\"; cat \"$1\"", "_", root.configFile, root.stateHome + "/omarchy/auto-workspace/config.json", root.configHome + "/omarchy/plugins/tenzin.auto-workspace/config.json"]
         stdout: StdioCollector { id: loadOut; waitForEnd: true }
         stderr: StdioCollector { id: loadErr; waitForEnd: true }
         onExited: function(code){
@@ -671,11 +685,11 @@ Panel {
             }
         }
     }
-    Process { id: refreshServiceProc; command: ["bash", "-c", "omarchy-shell -q io.github.calebhat.auto-workspace refreshConfig >/dev/null 2>&1 || true"] }
+    Process { id: refreshServiceProc; command: ["bash", "-c", "omarchy-shell -q io.github.calebhat.scenebook refreshConfig >/dev/null 2>&1 || true"] }
     Process {
         id: applyProc
-        stdout: SplitParser { onRead: function(d){ console.log("[auto-workspace] " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[auto-workspace] " + d) } }
+        stdout: SplitParser { onRead: function(d){ console.log("[scenebook] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[scenebook] " + d) } }
         onExited: function(code) {
             root.applyBusy = false
             root.statusText = code === 0 ? "Applied" : "Apply failed"
@@ -816,7 +830,7 @@ Panel {
         PanelKeyCatcher {
             id: keyCatcher
             anchors.fill: parent
-            blocked: root.transferOpen || filterField.activeFocus || customField.activeFocus || customNameField.activeFocus
+            blocked: root.transferOpen || filterField.activeFocus || customField.activeFocus || customNameField.activeFocus || (typeof visibleCountField !== "undefined" && visibleCountField.activeFocus)
             onMoveRequested: function(dx, dy) { if (!root.transferOpen) root.moveCursor(dx, dy) }
             onActivateRequested: { if (!root.transferOpen) root.activateCursor() }
             onCloseRequested: { if (root.transferOpen) root.closeTransfer(); else root.close() }
@@ -836,7 +850,7 @@ Panel {
 
                 PanelHero {
                     Layout.fillWidth: true
-                    title: "Auto Workspace"
+                    title: "SceneBook"
                     meta: root.totalCount + " apps · " + (root.config.profiles || []).length + " profiles · " + root.matchedLabel
                     foreground: root.foreground
                     fontFamily: root.fontFamily
@@ -982,39 +996,75 @@ Panel {
                             ]
                             onChanged: function(v) { if (v !== root.currentWsPref.layout) root.setWorkspacePref("layout", v) }
                         }
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: Model.layoutDescription(root.currentWsPref.layout, root.currentWsPref.lockSizes === true || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace))
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption - 1
+                        }
                         RowLayout {
-                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.lockSizes
+                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.lockSizes || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace)
                             Layout.fillWidth: true
                             spacing: Style.space(6)
                             Text {
-                                text: "Visible"
+                                text: "Visible columns"
                                 color: root.dim
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
                             }
-                            Repeater {
-                                model: [2, 3, 4]
-                                delegate: Button {
-                                    required property int modelData
-                                    text: String(modelData)
-                                    selected: root.currentWsPref.visibleCount === modelData
-                                    onClicked: root.setWorkspacePref("visibleCount", modelData)
-                                    Layout.preferredHeight: Style.space(28)
+                            Button {
+                                text: "−"
+                                enabled: root.currentWsPref.visibleCount > 1
+                                Layout.preferredHeight: Style.space(28)
+                                Layout.preferredWidth: Style.space(28)
+                                onClicked: root.setWorkspacePref("visibleCount", root.currentWsPref.visibleCount - 1)
+                            }
+                            TextField {
+                                id: visibleCountField
+                                Layout.preferredWidth: Style.space(52)
+                                Layout.preferredHeight: Style.space(28)
+                                foreground: root.foreground
+                                horizontalAlignment: Text.AlignHCenter
+                                validator: IntValidator { bottom: 1; top: 20 }
+                                inputMethodHints: Qt.ImhDigitsOnly
+                                text: String(root.currentWsPref.visibleCount)
+                                onEditingFinished: {
+                                    var n = Model.clampVisibleCount(text)
+                                    text = String(n)
+                                    if (n !== root.currentWsPref.visibleCount) root.setWorkspacePref("visibleCount", n)
                                 }
                             }
+                            Button {
+                                text: "+"
+                                enabled: root.currentWsPref.visibleCount < 20
+                                Layout.preferredHeight: Style.space(28)
+                                Layout.preferredWidth: Style.space(28)
+                                onClicked: root.setWorkspacePref("visibleCount", root.currentWsPref.visibleCount + 1)
+                            }
+                        }
+                        Text {
+                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.lockSizes || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace)
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: Model.visibleCountHelp(root.currentWsPref.visibleCount, root.currentWsPref.lockSizes === true || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace))
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption - 1
                         }
                         Toggle {
                             Layout.fillWidth: true
                             label: "Lock all assigned sizes"
                             description: root.currentWsPref.lockSizes
-                                ? "Every assigned app on this workspace keeps its size."
-                                : "Lock one app with 🔒 in the list to pin it (e.g. always left)."
+                                ? "Assigned apps keep their column width. Extra windows follow Visible; they do not cover locked panes."
+                                : "Lock one app with 🔒 to pin its width. Extra windows follow Visible and scroll instead of covering it."
                             checked: root.currentWsPref.lockSizes === true
                             foreground: root.foreground
                             onClicked: root.setWorkspacePref("lockSizes", !(root.currentWsPref.lockSizes === true))
                         }
                         Dropdown {
-                            visible: root.currentWsPref.lockSizes === true
+                            visible: root.currentWsPref.lockSizes === true || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace)
                             Layout.fillWidth: true
                             label: "Extra windows"
                             foreground: root.foreground
@@ -1132,7 +1182,7 @@ Panel {
                             screenW: panel.screenW
                             screenH: panel.screenH
                             hyprLayout: root.currentWsPref.layout
-                            columnWidth: 1 / Math.max(2, root.currentWsPref.visibleCount)
+                            columnWidth: 1 / Math.max(1, root.currentWsPref.visibleCount)
                             onLayoutChanged: function(tiles) { root.applyPreviewLayout(tiles) }
                             onLayoutCleared: root.resetPreviewLayout()
                             onAppLockToggled: function(id) { root.toggleAppLockById(id) }

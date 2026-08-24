@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Match Auto Workspace profiles to currently connected Hyprland monitors.
+"""Match SceneBook profiles to currently connected Hyprland monitors.
 
 Identities prefer EDID serial, then description (make+model+serial), and only
 then the Hyprland connector name (DP-1 / DVI-I-1), which is unstable on docks.
@@ -332,17 +332,17 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
         pref = prefs.get(ws) or {}
         layout = pref.get("layout") if pref.get("layout") in ("dwindle", "scrolling", "master") else ""
         vis = int(pref.get("visibleCount") or 2)
-        if vis < 2:
-            vis = 2
-        if vis > 4:
-            vis = 4
+        if vis < 1:
+            vis = 1
+        if vis > 20:
+            vis = 20
         lock = pref.get("lockSizes") is True
         extras = pref.get("extras") if pref.get("extras") == "block" else "around"
         any_app_lock = lock or any(
             str(a.get("workspace")) == str(ws) and a.get("lockPlace") is True
             for a in (profile.get("assignments") or [])
         )
-        if any_app_lock and extras == "around" and layout != "scrolling":
+        if any_app_lock:
             layout = "scrolling"
         mon = pins.get(ws) or ""
         mon = safe_connector(mon) or ""
@@ -353,7 +353,10 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
             parts.append(f'layout = "{layout}"')
         if layout == "scrolling":
             col = round(1.0 / vis, 4)
-            parts.append(f"layout_opts = {{ column_width = {col} }}")
+            if any_app_lock:
+                parts.append(f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false }}")
+            else:
+                parts.append(f"layout_opts = {{ column_width = {col} }}")
         lua = "hl.workspace_rule({ " + ", ".join(parts) + " })"
         subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if mon:
@@ -366,7 +369,7 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Match Auto Workspace profiles to live monitors")
+    parser = argparse.ArgumentParser(description="Match SceneBook profiles to live monitors")
     parser.add_argument("--config", required=True)
     parser.add_argument("--live-json", default="")
     parser.add_argument("--profile-id", default="")
