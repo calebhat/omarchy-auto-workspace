@@ -55,36 +55,63 @@ function normalizeMonitorLayout(raw) {
     return out
 }
 
-function snapLayoutRect(dragged, others, thresh) {
-    if (!dragged) return dragged
-    var t = thresh > 0 ? thresh : 48
-    var x = dragged.x, y = dragged.y
+function rectsOverlap(a, b) {
+    if (!a || !b) return false
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+}
+
+function flushSlots(dragged, o) {
     var w = dragged.w, h = dragged.h
-    var bestX = x, bestY = y, dx = t + 1, dy = t + 1
-    function considerX(v) {
-        var d = Math.abs(x - v)
-        if (d < dx && d <= t) { dx = d; bestX = v }
-    }
-    function considerY(v) {
-        var d = Math.abs(y - v)
-        if (d < dy && d <= t) { dy = d; bestY = v }
-    }
-    considerX(0)
-    considerY(0)
+    return [
+        { x: o.x + o.w, y: o.y },
+        { x: o.x + o.w, y: o.y + o.h - h },
+        { x: o.x + o.w, y: o.y + (o.h - h) / 2 },
+        { x: o.x - w, y: o.y },
+        { x: o.x - w, y: o.y + o.h - h },
+        { x: o.x - w, y: o.y + (o.h - h) / 2 },
+        { x: o.x, y: o.y + o.h },
+        { x: o.x + o.w - w, y: o.y + o.h },
+        { x: o.x + (o.w - w) / 2, y: o.y + o.h },
+        { x: o.x, y: o.y - h },
+        { x: o.x + o.w - w, y: o.y - h },
+        { x: o.x + (o.w - w) / 2, y: o.y - h }
+    ]
+}
+
+function placeMonitorNoOverlap(dragged, others) {
+    if (!dragged) return dragged
+    var w = dragged.w, h = dragged.h
     var list = others || []
-    for (var i = 0; i < list.length; i++) {
-        var o = list[i]
-        if (!o) continue
-        considerX(o.x)
-        considerX(o.x + o.w)
-        considerX(o.x - w)
-        considerX(o.x + o.w - w)
-        considerY(o.y)
-        considerY(o.y + o.h)
-        considerY(o.y - h)
-        considerY(o.y + o.h - h)
+    if (!list.length) return { x: dragged.x, y: dragged.y, w: w, h: h, id: dragged.id }
+    var candidates = []
+    var i, c, slots
+    for (i = 0; i < list.length; i++) {
+        slots = flushSlots(dragged, list[i])
+        for (c = 0; c < slots.length; c++) candidates.push(slots[c])
     }
-    return { x: bestX, y: bestY, w: w, h: h, id: dragged.id }
+    function valid(p) {
+        var r = { x: p.x, y: p.y, w: w, h: h }
+        for (var j = 0; j < list.length; j++) if (rectsOverlap(r, list[j])) return false
+        return true
+    }
+    var best = null, bestD = Infinity
+    for (i = 0; i < candidates.length; i++) {
+        if (!valid(candidates[i])) continue
+        var dx = candidates[i].x - dragged.x
+        var dy = candidates[i].y - dragged.y
+        var d = dx * dx + dy * dy
+        if (d < bestD) { bestD = d; best = candidates[i] }
+    }
+    if (!best) {
+        var maxR = dragged.x
+        for (i = 0; i < list.length; i++) maxR = Math.max(maxR, list[i].x + list[i].w)
+        best = { x: maxR, y: dragged.y }
+    }
+    return { x: best.x, y: best.y, w: w, h: h, id: dragged.id }
+}
+
+function snapLayoutRect(dragged, others, thresh) {
+    return placeMonitorNoOverlap(dragged, others)
 }
 
 function liveLogicalSize(live) {

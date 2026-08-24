@@ -46,17 +46,21 @@ Item {
                 maxY = Math.max(maxY, t.y + t.h)
             }
         }
-        var bw = Math.max(400, maxX - minX)
-        var bh = Math.max(300, maxY - minY)
-        // Extra margin so you can drag past the current cluster in any direction.
-        var sx = stage.width / (bw * 1.8)
-        var sy = stage.height / (bh * 1.8)
+        var bw = Math.max(200, maxX - minX)
+        var bh = Math.max(200, maxY - minY)
+        var cx = (minX + maxX) / 2
+        var cy = (minY + maxY) / 2
+        var sw = Math.max(1, stage.width)
+        var sh = Math.max(1, stage.height)
+        // Pad so there is empty space above/beside after each snap.
+        var sx = sw / (bw * 2.2)
+        var sy = sh / (bh * 2.2)
         var s = Math.min(sx, sy)
-        if (!(s > 0) || s > 1) s = Math.min(sx, sy, 0.4)
         if (!(s > 0)) s = 0.08
+        if (s > 0.55) s = 0.55
         dragScale = s
-        originX = minX - bw * 0.4
-        originY = minY - bh * 0.4
+        originX = cx - sw / (2 * s)
+        originY = cy - sh / (2 * s)
     }
 
     property real originX: 0
@@ -65,8 +69,7 @@ Item {
     onTilesChanged: rebuild()
     Component.onCompleted: rebuild()
 
-    function collectPositions(snap) {
-        var out = {}
+    function collectPositions(draggedId) {
         var others = []
         var i
         for (i = 0; i < tileRepeater.count; i++) {
@@ -74,21 +77,22 @@ Item {
             if (!item || !item.tileId) continue
             others.push({ id: item.tileId, x: item.layoutX, y: item.layoutY, w: item.layoutW, h: item.layoutH })
         }
+        var out = {}
         for (i = 0; i < others.length; i++) {
             var t = others[i]
             var pos = { x: t.x, y: t.y, w: t.w, h: t.h, id: t.id }
-            if (snap) {
+            if (draggedId && t.id === draggedId) {
                 var rest = []
                 for (var j = 0; j < others.length; j++) if (others[j].id !== t.id) rest.push(others[j])
-                pos = Model.snapLayoutRect(pos, rest, 32)
+                pos = Model.placeMonitorNoOverlap(pos, rest)
             }
             out[t.id] = { x: Math.round(pos.x), y: Math.round(pos.y) }
         }
         return out
     }
 
-    function commit(doSnap) {
-        var positions = collectPositions(!!doSnap)
+    function commit(draggedId) {
+        var positions = collectPositions(draggedId)
         if (Object.keys(positions).length) root.layoutChanged(positions)
     }
 
@@ -180,7 +184,7 @@ Item {
                         }
                         onReleased: {
                             root.dragging = false
-                            root.commit(true)
+                            root.commit(tile.tileId)
                             Qt.callLater(root.rebuild)
                         }
                     }

@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -124,11 +124,17 @@ const oneScreen = m.sanitizeConfig({
 if ((oneScreen.profiles[0].disabledMonitors || []).length !== 0)
   throw new Error("cannot disable the only display in a profile")
 
-const snapped = m.snapLayoutRect(
+const snapped = m.placeMonitorNoOverlap(
   { id: "a", x: 1905, y: 3, w: 1920, h: 1080 },
-  [{ id: "b", x: 0, y: 0, w: 1920, h: 1080 }],
-  48
+  [{ id: "b", x: 0, y: 0, w: 1920, h: 1080 }]
 )
 if (snapped.x !== 1920 || snapped.y !== 0) throw new Error("snap to neighbor edge")
+const overlapped = m.placeMonitorNoOverlap(
+  { id: "a", x: 400, y: 100, w: 1920, h: 1080 },
+  [{ id: "b", x: 0, y: 0, w: 1920, h: 1080 }]
+)
+if (m.rectsOverlap(overlapped, { x: 0, y: 0, w: 1920, h: 1080 })) throw new Error("no overlap after place")
+if (overlapped.x !== 1920 && overlapped.x !== -1920 && overlapped.y !== 1080 && overlapped.y !== -1080)
+  throw new Error("flush to a neighbor side")
 
 console.log("model.test.js ok")
