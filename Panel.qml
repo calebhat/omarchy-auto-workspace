@@ -463,6 +463,7 @@ Panel {
         }
         config = cfg
         saveConfig()
+        Qt.callLater(root.applyGestures)
     }
     function setWorkspaceName(ws, name) {
         var cfg = root.currentConfig()
@@ -1553,6 +1554,7 @@ Panel {
                         }
                         Button {
                             text: "Apply gestures now"
+                            tooltipText: "Finger count and other toggles apply automatically. Use this if a swipe did not pick up."
                             onClicked: root.applyGestures()
                         }
                     }

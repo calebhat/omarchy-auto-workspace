@@ -89,13 +89,13 @@ def render_lua(g: dict) -> str:
         "",
     ]
     if g["workspaceSwipe"]:
-        if fingers == 4:
-            lines.append(
-                'hl.gesture({ fingers = 3, direction = "horizontal", action = "unset" })'
-            )
         lines.append(
             f'hl.gesture({{ fingers = {fingers}, direction = "horizontal", action = "workspace" }})'
         )
+        lines.append(f"WORKBOOK_SWIPE_FINGERS = {fingers}")
+        lines.append("")
+    else:
+        lines.append("WORKBOOK_SWIPE_FINGERS = 0")
         lines.append("")
     if g["scratchpadSwipe"]:
         sf = g["scratchpadFingers"]
