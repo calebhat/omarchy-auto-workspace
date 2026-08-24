@@ -158,10 +158,10 @@ def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "", reload:
         prev = int(stamp.read_text().strip() or "0")
     except Exception:
         prev = 0
-    if g["workspaceSwipe"] and g["fingers"] == 4:
-        hypr_eval('hl.gesture({ fingers = 3, direction = "horizontal", action = "unset" })')
-    elif prev in (3, 4) and (not g["workspaceSwipe"] or prev != g["fingers"]):
-        hypr_eval(f'hl.gesture({{ fingers = {prev}, direction = "horizontal", action = "unset" }})')
+    # Hyprland lets one HORIZONTAL workspace gesture shadow another. Always
+    # drop 3- and 4-finger swipes first, then register only the chosen one.
+    hypr_eval('hl.gesture({ fingers = 3, direction = "horizontal", action = "unset" })')
+    hypr_eval('hl.gesture({ fingers = 4, direction = "horizontal", action = "unset" })')
     if g["workspaceSwipe"]:
         hypr_eval(
             f'hl.gesture({{ fingers = {g["fingers"]}, direction = "horizontal", action = "workspace" }})'
