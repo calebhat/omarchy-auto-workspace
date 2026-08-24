@@ -98,12 +98,10 @@ bind_workspace_to_monitor() {
   [[ $ws =~ ^[0-9]+$ ]] || return 0
   [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || return 0
   [[ $name != *HEADLESS* ]] || return 0
-  hyprctl keyword workspace "$ws,monitor:$name,persistent:true" >/dev/null 2>&1 || true
-  local lua
-  lua=$(printf 'hl.dispatch(hl.dsp.workspace.move({workspace="%s", monitor="%s"}))' "$ws" "$name")
-  hyprctl eval "$lua" >/dev/null 2>&1 \
-    || hyprctl dispatch moveworkspacetomonitor "$ws" "$name" >/dev/null 2>&1 \
-    || true
+  # Hyprland 0.56: `hyprctl keyword` is rejected. Persistent bind is a Lua rule.
+  hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s", persistent = true })' "$ws" "$name")" >/dev/null 2>&1 || true
+  hyprctl eval "$(printf 'hl.dispatch(hl.dsp.workspace.move({workspace="%s", monitor="%s"}))' "$ws" "$name")" >/dev/null 2>&1 || true
+  echo "bound workspace $ws → $name"
 }
 
 # geom JSON {x,y,w,h} is 0–1 of the workspace's *layout* area (backend pixels / scale).
@@ -241,6 +239,12 @@ cmd_list_apps() {
         fi
       fi
       [[ -n ${xbel_count[$file]:-} ]] && score=$((score + xbel_count["$file"]))
+      if [[ $exec_line == *omarchy-launch-webapp* ]]; then
+        local weburl=""
+        weburl=$(printf '%s' "$exec_line" | grep -oE 'https://[^[:space:]\"'\'']+' | grep -v deeplink | tail -1)
+        [[ -z $weburl ]] && weburl=$(printf '%s' "$exec_line" | grep -oE 'https://[^[:space:]\"'\'']+' | tail -1)
+        [[ -n $weburl ]] && exec_line="omarchy-launch-webapp '$weburl'"
+      fi
       printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$name" "$exec_line" "$icon" "$icon_path" "$file" "$score"
     done < <(find "$dir" -maxdepth 1 -name "*.desktop" -print0 2>/dev/null)
   done
@@ -301,6 +305,14 @@ cmd_launch() {
     prefix+="]"
   fi
   local final_cmd="$exec_cmd"
+  if [[ $exec_cmd == *omarchy-launch-webapp* ]]; then
+    local weburl=""
+    weburl=$(printf '%s' "$exec_cmd" | grep -oE 'https://[^[:space:]\"'\'']+' | grep -v deeplink | tail -1)
+    [[ -z $weburl ]] && weburl=$(printf '%s' "$exec_cmd" | grep -oE 'https://[^[:space:]\"'\'']+' | tail -1)
+    if [[ -n $weburl ]]; then
+      final_cmd="omarchy-launch-webapp '$weburl'"
+    fi
+  fi
   local base_for_tui
   base_for_tui=$(printf '%s' "$exec_cmd" | awk '{print $1}' | xargs basename 2>/dev/null)
   case "$base_for_tui" in
@@ -316,7 +328,7 @@ cmd_launch() {
       fi
       ;;
     *)
-      if [[ $exec_cmd != uwsm-app* && $exec_cmd != omarchy-launch* && $exec_cmd != "chromium"* && $exec_cmd != "google-chrome"* && $exec_cmd != "firefox"* ]]; then
+      if [[ $final_cmd != uwsm-app* && $final_cmd != omarchy-launch* && $final_cmd != "chromium"* && $final_cmd != "google-chrome"* && $final_cmd != "brave"* && $final_cmd != "firefox"* ]]; then
         if [[ $exec_cmd =~ ^[a-zA-Z0-9._-]+$ || $exec_cmd =~ ^[a-zA-Z0-9._-]+[[:space:]] ]]; then
           final_cmd="uwsm-app -- $exec_cmd"
         fi
@@ -328,7 +340,7 @@ cmd_launch() {
   lua_escaped=$(printf '%s' "$dispatch_cmd" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
   local is_browser_like="false"
   local is_tui_like="false"
-  if [[ $final_cmd == *"chromium"* || $final_cmd == *"chrome"* || $final_cmd == *"omarchy-launch-webapp"* ]]; then
+  if [[ $final_cmd == *"chromium"* || $final_cmd == *"chrome"* || $final_cmd == *"brave"* || $final_cmd == *"omarchy-launch-webapp"* ]]; then
     is_browser_like="true"
   fi
   case "$base_for_tui" in
@@ -363,7 +375,7 @@ cmd_launch() {
         local cls on_ws
         cls=$(printf '%s' "$clients_json" | jq -r --arg a "$addr" '.[] | select(.address==$a) | .class // empty' 2>/dev/null)
         if [[ $is_browser_like == "true" ]]; then
-          if ! [[ $cls =~ chrome|chromium ]] && ! [[ ${cls,,} =~ chrome|chromium ]]; then
+          if ! [[ ${cls,,} =~ chrome|chromium|brave|vivaldi|edge ]]; then
             continue
           fi
         elif [[ $is_tui_like == "true" ]]; then
@@ -411,33 +423,40 @@ default_only_on_boot_for_type() {
   fi
 }
 
-already_running() {
-  local ws=$1 exec_cmd=$2 name=$3 clients_json=$4
+find_existing_addr() {
+  local exec_cmd=$1 name=$2 clients_json=$3
   local needle=""
   needle=$(printf '%s' "$exec_cmd" | awk '{print $1}' | xargs basename 2>/dev/null)
   needle=$(basename "$needle" 2>/dev/null || echo "$needle")
-  local app_id=""
+  needle="${needle,,}"
+  case "$needle" in
+    sh|bash|uwsm-app|omarchy-launch-webapp|omarchy-launch-tui|omarchy-launch-or-focus-tui) needle="" ;;
+  esac
+  local app_id="" host=""
   if [[ $exec_cmd =~ --app-id=([^[:space:]]+) ]]; then
-    app_id="${BASH_REMATCH[1]}"
+    app_id="${BASH_REMATCH[1],,}"
   fi
-  printf '%s' "$clients_json" | jq -e --arg ws "$ws" --arg n "${needle,,}" --arg appid "${app_id,,}" --arg name "${name,,}" --arg exec "${exec_cmd,,}" '
-    def ws_ok($ws):
-      if ($ws|test("^[0-9]+$")) then
-        (.workspace.id == ($ws|tonumber) or .workspace.name == $ws)
-      else
-        .workspace.name == $ws
-      end;
+  if [[ $exec_cmd =~ https://([^/\"\']+) ]]; then
+    host="${BASH_REMATCH[1],,}"
+    host="${host#www.}"
+  fi
+  printf '%s' "$clients_json" | jq -r --arg n "$needle" --arg appid "$app_id" --arg name "${name,,}" --arg exec "${exec_cmd,,}" --arg host "$host" '
     def hay: ((.class // "") + " " + (.initialClass // "") + " " + (.title // "") | ascii_downcase);
-    any(.[];
-      ws_ok($ws) and (
-        ($appid != "" and hay | contains($appid)) or
-        ($n != "" and $n != "." and (hay | contains($n))) or
-        ($name != "" and (hay | contains($name))) or
-        (($exec | contains("herdr")) and (hay | contains("herdr"))) or
-        (($exec | contains("shophawk-panel")) and (hay | contains("shophawk")))
-      )
-    )
-  ' >/dev/null 2>&1
+    def hit:
+      ($appid != "" and (hay | contains($appid))) or
+      ($host != "" and (hay | contains($host))) or
+      ($n != "" and $n != "." and (hay | contains($n))) or
+      ($name != "" and (hay | contains($name))) or
+      (($exec | contains("herdr")) and (hay | contains("herdr"))) or
+      (($exec | contains("shophawk-panel")) and (hay | contains("shophawk")));
+    [.[] | select(hit) | .address][0] // empty
+  ' 2>/dev/null
+}
+
+move_window_to_ws() {
+  local addr=$1 ws=$2
+  [[ -n $addr && -n $ws ]] || return 0
+  hyprctl eval "$(printf 'hl.dispatch(hl.dsp.window.move({workspace="%s", window="address:%s", follow=false}))' "$ws" "$addr")" >/dev/null 2>&1 || true
 }
 
 launch_profile_assignments() {
@@ -490,8 +509,12 @@ launch_profile_assignments() {
       continue
     fi
 
-    if already_running "$ws" "$exec_cmd" "$name" "$clients_json"; then
-      echo "skip $name on ws $ws — already running"
+    local existing
+    existing=$(find_existing_addr "$exec_cmd" "$name" "$clients_json")
+    if [[ -n $existing ]]; then
+      echo "reuse $name ($existing) → ws $ws"
+      move_window_to_ws "$existing" "$ws"
+      clients_json=$(hyprctl clients -j 2>/dev/null || echo "[]")
       continue
     fi
 
