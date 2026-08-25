@@ -141,9 +141,9 @@ Panel {
     onFormWorkspaceChanged: {
         Qt.callLater(syncMonitorDropdown)
         root.syncVisibleCountField()
-        Qt.callLater(function() { if (rightStack) rightStack.forceLayout() })
+        Qt.callLater(function() { })
     }
-    onAnyLockOnWsChanged: Qt.callLater(function() { if (rightStack) rightStack.forceLayout() })
+    onAnyLockOnWsChanged: Qt.callLater(function() { })
     onActiveProfileIdChanged: Qt.callLater(syncMonitorDropdown)
     readonly property string matchedLabel: liveStatus.matchedProfileName ? ("matches " + liveStatus.matchedProfileName) : "no layout match"
     readonly property int totalCount: {
@@ -612,6 +612,14 @@ Panel {
         applyProc.command = ["bash", root.script, "--apply-profile", id]
         applyProc.running = true
         statusText = "Applying profile…"
+        clearStatusTimer.restart()
+    }
+    function applyFreshProfile(id) {
+        if (root.applyBusy || applyProc.running) return
+        root.applyBusy = true
+        applyProc.command = ["bash", root.script, "--fresh-apply-profile", id]
+        applyProc.running = true
+        statusText = "Closing preset workspaces, then applying fresh…"
         clearStatusTimer.restart()
     }
     function openNewProfile() {
@@ -1663,7 +1671,7 @@ Panel {
                             checked: root.currentWsPref.extras === "block"
                             foreground: root.foreground
                             onClicked: root.setWorkspacePref("extras", root.currentWsPref.extras === "block" ? "around" : "block")
-                            onImplicitHeightChanged: if (rightStack) rightStack.forceLayout()
+                            onImplicitHeightChanged: { }
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -1677,7 +1685,7 @@ Panel {
                                 checked: root.overflowEnabled()
                                 foreground: root.foreground
                                 onClicked: root.setOverflowEnabled(!root.overflowEnabled())
-                                onImplicitHeightChanged: if (rightStack) rightStack.forceLayout()
+                                onImplicitHeightChanged: { }
                             }
                             Button {
                                 text: "−"
@@ -1785,6 +1793,11 @@ Panel {
                         }
                         Item { Layout.fillWidth: true }
                         Button { text: "Apply this profile"; onClicked: root.applyProfile(root.activeProfileId) }
+                        Button {
+                            text: "Fresh set"
+                            tooltipText: "Close windows on this profile’s preset workspaces, then apply empty so apps and layouts load from scratch. Leaves other workspaces alone."
+                            onClicked: root.applyFreshProfile(root.activeProfileId)
+                        }
                     }
                     Repeater {
                         model: (root.activeProfile.monitors || []).length > 1 ? (root.activeProfile.monitors || []) : []
@@ -2161,6 +2174,11 @@ Panel {
                                             Button { text: "Workspaces"; onClicked: { root.setActiveProfile(modelData.id); root.mainView = "workspaces" } }
                                             Button { text: "Displays"; onClicked: { root.setActiveProfile(modelData.id); root.mainView = "displays" } }
                                             Button { text: "Apply"; onClicked: root.applyProfile(modelData.id) }
+                                            Button {
+                                                text: "Fresh set"
+                                                tooltipText: "Close windows on this profile’s preset workspaces, then apply from scratch"
+                                                onClicked: root.applyFreshProfile(modelData.id)
+                                            }
                                             Item { Layout.fillWidth: true }
                                             Button {
                                                 text: Model.networkConfigured(root.profileRecord(modelData.id).network) ? "Rebind now" : "Bind this network"

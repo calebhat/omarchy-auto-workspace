@@ -194,7 +194,10 @@ def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "", reload:
 
 def persist_workspaces(enable: bool) -> None:
     flag = "true" if enable else "false"
+    occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
     for ws in range(1, 11):
+        if str(ws) in occupied:
+            continue
         hypr_eval(f'hl.workspace_rule({{ workspace = "{ws}", persistent = {flag} }})')
 
 

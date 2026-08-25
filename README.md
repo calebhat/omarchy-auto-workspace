@@ -104,7 +104,7 @@ SSID names can be spoofed. Treat network matching as home vs office convenience,
 
 **Apply matching profile at login** is **off** by default. When on, login waits for Hyprland; if this layout has no any-network fallback it also waits up to 45s for Wi‑Fi/LAN, then applies the unique match.
 
-**Apply matching** (or middle-click the bar chip) does the same match any time. **Apply** on a profile card runs that profile as saved, even if it is not the match.
+**Apply matching** (or middle-click the bar chip) does the same match any time. **Apply** on a profile card runs that profile as saved, even if it is not the match. Workspaces that already have windows are left alone entirely (no launches, no scrolling/master/stage rules, no geometry). Empty assigned workspaces still get their apps and layouts. **Fresh set** closes windows on this profile’s preset workspaces, then applies from scratch; workspaces that are not part of the profile (for example a terminal on WS 8) stay put.
 
 ### 2. Displays — monitors for this profile
 
@@ -180,7 +180,7 @@ workscape.sh --apply-profile desk-dock
 omarchy-shell -q io.github.calebhat.workscape applyMatching
 omarchy-shell -q io.github.calebhat.workscape applyProfile laptop
 omarchy-shell -q io.github.calebhat.workscape status
-omarchy-shell -q io.github.calebhat.workscape toggle
+omarchy-shell -q io.github.calebhat.workscape.panel toggle
 ```
 
 ---

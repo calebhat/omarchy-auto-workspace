@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -840,6 +841,7 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
         return {"ok": False, "error": "no profile"}
     cache_clear()
     clients = hypr_j("clients")
+    occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
     prefs = profile.get("workspacePrefs") or {}
     by_ws: dict[str, list[dict[str, Any]]] = {}
     used: set[str] = set()
@@ -851,6 +853,8 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
         if not geom and not locked:
             continue
         ws = str(a.get("workspace") or "1")
+        if ws in occupied:
+            continue
         on_ws = [
             c for c in clients
             if str((c.get("workspace") or {}).get("id")) == ws or str((c.get("workspace") or {}).get("name")) == ws
@@ -887,9 +891,21 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
         result = {"ok": True, "windows": []}
         lock_any = any(w.get("lock") for w in windows) or pref.get("lockSizes") is True
         stage = pref.get("layout") == "stage" and not lock_any
-        scrolling = lock_any or pref.get("layout") in ("scrolling", "stage")
+        geoms = [w.get("geom") or {} for w in windows if w.get("geom")]
+        cols = bool(geoms) and all(abs(float(g.get("h") or 1) - 1) < 0.08 and float(g.get("y") or 0) < 0.08 for g in geoms)
+        rows = bool(geoms) and all(abs(float(g.get("w") or 1) - 1) < 0.08 and float(g.get("x") or 0) < 0.08 for g in geoms)
+        scrolling = (lock_any or pref.get("layout") in ("scrolling", "stage")) and cols
         if not windows:
             pass
+        elif rows and not cols:
+            metrics = layout_metrics(mon) if mon else {"x": 0, "y": 0, "w": 1, "h": 1}
+            items = []
+            for win in windows:
+                if not win.get("geom"):
+                    continue
+                items.append({"addr": win["addr"], "geom": win["geom"], "px": geom_pixels(win["geom"], metrics), "lock": win.get("lock") is True})
+            placed_list = apply_tiled_split(items, metrics)
+            result = {"ok": True, "metrics": metrics, "windows": [{"addr": it.get("addr"), "place": it.get("place"), "actual": it.get("place")} for it in placed_list]}
         elif scrolling:
             force_scrolling(ws, vis, lock=lock_any, stage=stage)
             if stage:

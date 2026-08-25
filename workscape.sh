@@ -164,6 +164,10 @@ restore_unpinned_workspaces() {
     if printf '%s' "$pinned_json" | jq -e --arg ws "$ws" 'has($ws)' >/dev/null 2>&1; then
       continue
     fi
+    if [[ " ${WORKSCAPE_OCCUPIED_WS:-} " == *" $ws "* ]]; then
+      echo "leave workspace $ws — already has windows"
+      continue
+    fi
     printf '%s\n' "$enabled" | grep -qx -- "$mon" || continue
     echo "keep workspace $ws on $mon"
     move_workspace_to_monitor "$ws" "$mon"
@@ -192,6 +196,10 @@ for ws, name in b.items():
     if ws and name:
         print(f"{ws}\t{name}")
 ' "$bindings_json" | while IFS=$'\t' read -r ws name; do
+    if [[ " ${WORKSCAPE_OCCUPIED_WS:-} " == *" $ws "* ]]; then
+      echo "leave workspace $ws — already has windows"
+      continue
+    fi
     bind_workspace_to_monitor "$ws" "$name"
     echo "bound workspace $ws → $name"
   done
@@ -560,6 +568,11 @@ launch_profile_assignments() {
   silent=$(jq -r '.settings.silent // true' "$CONFIG_FILE")
   local clients_json used_addrs=""
   clients_json=$(hyprctl clients -j 2>/dev/null || echo "[]")
+  local occupied_ws="${WORKSCAPE_OCCUPIED_WS:-}"
+  if [[ -z $occupied_ws ]]; then
+    occupied_ws=$(printf '%s' "$clients_json" | jq -r '[.[] | (.workspace.id|tostring)] | unique | join(" ")' 2>/dev/null || echo "")
+    export WORKSCAPE_OCCUPIED_WS="$occupied_ws"
+  fi
   local pinned_ws
   pinned_ws=$(jq -c --arg id "$profile_id" '([.profiles[] | select(.id==$id) | .workspaceMonitors][0] // {})' "$CONFIG_FILE" 2>/dev/null || echo "{}")
 
@@ -610,13 +623,16 @@ launch_profile_assignments() {
       continue
     fi
 
+    if [[ " $occupied_ws " == *" $ws "* ]]; then
+      echo "skip $name on ws $ws — workspace already has windows"
+      continue
+    fi
+
     local existing
     existing=$(find_existing_addr "$exec_cmd" "$name" "$clients_json" "$ws" "$used_addrs")
     if [[ -n $existing ]]; then
-      echo "reuse $name ($existing) → ws $ws"
-      move_window_to_ws "$existing" "$ws"
+      echo "reuse $name ($existing) — leave on its current workspace"
       used_addrs+="$existing "
-      clients_json=$(hyprctl clients -j 2>/dev/null || echo "[]")
       continue
     fi
 
@@ -725,6 +741,10 @@ cmd_apply() {
   fi
 
   echo "applying profile $profile_name ($profile_id)"
+  local clients_now occupied_ws
+  clients_now=$(hyprctl clients -j 2>/dev/null || echo "[]")
+  occupied_ws=$(printf '%s' "$clients_now" | jq -r '[.[] | (.workspace.id|tostring)] | unique | join(" ")' 2>/dev/null || echo "")
+  export WORKSCAPE_OCCUPIED_WS="$occupied_ws"
   local ws_snap
   ws_snap=$(snapshot_workspaces)
   apply_profile_outputs "$profile_id"
@@ -749,6 +769,43 @@ cmd_apply() {
   notify "WorkScape" "Applied $profile_name"
 }
 
+close_preset_workspaces() {
+  local profile_id=$1
+  local ws addr
+  while IFS= read -r ws; do
+    [[ $ws =~ ^([1-9]|10)$ ]] || continue
+    while IFS= read -r addr; do
+      [[ $addr =~ ^0x[0-9a-fA-F]+$ ]] || continue
+      hyprctl eval "$(printf 'hl.dispatch(hl.dsp.window.close({ window = "address:%s" }))' "$addr")" >/dev/null 2>&1 || true
+      echo "close $addr on ws $ws"
+    done < <(hyprctl clients -j 2>/dev/null | jq -r --arg ws "$ws" '.[] | select((.workspace.id|tostring) == $ws) | .address // empty' 2>/dev/null)
+  done < <(jq -r --arg id "$profile_id" '
+    [.profiles[]? | select(.id==$id) |
+      ((.assignments[]? | .workspace | tostring),
+       ((.workspaceMonitors // {}) | keys[]?),
+       ((.workspacePrefs // {}) | keys[]?))
+    ] | unique | .[]
+  ' "$CONFIG_FILE" 2>/dev/null)
+}
+
+cmd_fresh_apply() {
+  local profile_id=${1:-}
+  ensure_config || exit 1
+  wait_for_hyprland || exit 1
+  if [[ -z $profile_id ]]; then
+    profile_id=$(cmd_live_status | jq -r '.matchedProfileId // empty')
+  fi
+  if [[ -z $profile_id || $profile_id == "null" ]]; then
+    echo "no profile to refresh"
+    exit 1
+  fi
+  echo "closing windows on $profile_id preset workspaces…"
+  close_preset_workspaces "$profile_id"
+  sleep 0.5
+  unset WORKSCAPE_OCCUPIED_WS
+  cmd_apply hotkey "$profile_id" true
+}
+
 cmd_launch_all() {
   local force="${1:-false}"
   cmd_apply boot "" "$force"
@@ -765,6 +822,7 @@ case "${1:-}" in
   --force-launch-all) cmd_launch_all "true" ;;
   --apply-matching) cmd_apply hotkey "" true ;;
   --apply-profile) cmd_apply hotkey "${2:-}" true ;;
+  --fresh-apply-profile) cmd_fresh_apply "${2:-}" ;;
   --watch-extras) exec python3 "$PLUGIN_DIR/scripts/watch" ;;
   --apply-gestures) python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "${2:-}" --apply ;;
   --default-config) default_config ;;
@@ -781,6 +839,7 @@ workscape.sh — helper for io.github.calebhat.workscape
   --force-launch-all           launch matching profile regardless of boot flag
   --apply-matching             detect layout, bind workspaces, launch apps
   --apply-profile <id>         bind + launch a specific profile
+  --fresh-apply-profile [id]   close that profile’s preset workspaces, then apply empty
   --watch-extras               keep locked panes pinned; send extras away when extras=block
   --apply-gestures             write trackpad / swipe prefs and hyprctl eval them
   --default-config             print default config

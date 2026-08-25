@@ -1127,28 +1127,29 @@ function fillHole(geoms, hole, skip) {
     if (!hole) return next
     var hx0 = Number(hole.x), hy0 = Number(hole.y)
     var hx1 = hx0 + Number(hole.w), hy1 = hy0 + Number(hole.h)
-    var i, g
+    var i, g, oy, ox
     for (i = 0; i < next.length; i++) {
         if (skip && skip[i]) continue
         g = next[i]
         if (!g) continue
-        if (Math.abs(geomRight(g) - hx0) < GEOM_EPS && overlapLen(g.y, geomBottom(g), hy0, hy1) > hole.h * 0.45) {
+        oy = overlapLen(g.y, geomBottom(g), hy0, hy1)
+        ox = overlapLen(g.x, geomRight(g), hx0, hx1)
+        if (Math.abs(geomRight(g) - hx0) < GEOM_EPS && oy > g.h * 0.45) {
             g.w = round4(g.w + hole.w)
-            return next
+            continue
         }
-        if (Math.abs(g.x - hx1) < GEOM_EPS && overlapLen(g.y, geomBottom(g), hy0, hy1) > hole.h * 0.45) {
+        if (Math.abs(g.x - hx1) < GEOM_EPS && oy > g.h * 0.45) {
             g.w = round4(g.w + hole.w)
             g.x = round4(g.x - hole.w)
-            return next
+            continue
         }
-        if (Math.abs(geomBottom(g) - hy0) < GEOM_EPS && overlapLen(g.x, geomRight(g), hx0, hx1) > hole.w * 0.45) {
+        if (Math.abs(geomBottom(g) - hy0) < GEOM_EPS && ox > g.w * 0.45) {
             g.h = round4(g.h + hole.h)
-            return next
+            continue
         }
-        if (Math.abs(g.y - hy1) < GEOM_EPS && overlapLen(g.x, geomRight(g), hx0, hx1) > hole.w * 0.45) {
+        if (Math.abs(g.y - hy1) < GEOM_EPS && ox > g.w * 0.45) {
             g.h = round4(g.h + hole.h)
             g.y = round4(g.y - hole.h)
-            return next
         }
     }
     return next
@@ -1172,10 +1173,7 @@ function splitDrop(geoms, fromIdx, toIdx, dir) {
     if (!cut) return geoms
     next[toIdx] = normalizeGeom(cut.stay)
     next[fromIdx] = normalizeGeom(cut.incoming)
-    var skip = {}
-    skip[fromIdx] = true
-    skip[toIdx] = true
-    return fillHole(next, hole, skip)
+    return fillHole(next, hole, {})
 }
 
 function dropZone(nx, ny) {

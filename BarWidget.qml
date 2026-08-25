@@ -97,7 +97,7 @@ BarWidget {
     }
 
     IpcHandler {
-        target: root.pluginId
+        target: root.pluginId + ".panel"
         function toggle(): void { root.toggle() }
         function open(): void { root.open() }
         function close(): void { root.close() }

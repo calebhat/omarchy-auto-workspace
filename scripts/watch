@@ -345,8 +345,11 @@ def sweep_block_extras() -> list[dict]:
         clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
     except Exception:
         return []
+    occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
     moved: list[dict] = []
     for ws, cap in blocked.items():
+        if str(ws) in occupied:
+            continue
         on_ws = [c for c in clients if str((c.get("workspace") or {}).get("id")) == str(ws)]
         if len(on_ws) <= cap:
             continue
