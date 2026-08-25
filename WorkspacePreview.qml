@@ -31,6 +31,7 @@ Item {
     readonly property string layoutLabel: {
         if (customLayout) return "tiled · drag the splitters"
         if (hyprLayout === "scrolling") return "scrolling • " + Math.round(columnWidth * 100) + "% columns"
+        if (hyprLayout === "set-width") return "set width · every window is 1/visible"
         if (hyprLayout === "stage") return "stage · first window full width"
         if (hyprLayout === "master") return "master · large pane + stack"
         if (hyprLayout === "dwindle") return "dwindle · split tree"
@@ -41,6 +42,7 @@ Item {
     signal layoutCleared()
     signal appLockToggled(string assignmentId)
     signal organizerRequested()
+    signal windowRemoved(string assignmentId)
 
     function iconSourceFor(exec) {
         for (var i = 0; i < appList.length; i++) {
@@ -132,7 +134,7 @@ Item {
                 color: Qt.darker(Color.foreground, 1.6)
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption - 2
-                elide: Text.ElideRight
+                wrapMode: Text.WordWrap
                 Layout.fillWidth: true
             }
             Button {
@@ -218,13 +220,37 @@ Item {
                             font.family: Style.font.family
                             font.pixelSize: Style.font.caption - 1
                             font.bold: true
-                            elide: Text.ElideRight
+                            wrapMode: Text.WordWrap
                             horizontalAlignment: Text.AlignHCenter
                         }
                         MouseArea {
                             anchors.fill: parent
                             acceptedButtons: Qt.RightButton
                             onClicked: if (modelData && modelData.id) root.appLockToggled(modelData.id)
+                        }
+                        MouseArea {
+                            z: 5
+                            anchors.top: parent.top
+                            anchors.right: parent.right
+                            width: 18
+                            height: 18
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (modelData && modelData.id) root.windowRemoved(modelData.id)
+                            }
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: 4
+                                color: Qt.rgba(0, 0, 0, parent.containsMouse ? 0.45 : 0.25)
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "×"
+                                    color: Color.foreground
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                            }
                         }
                     }
                 }

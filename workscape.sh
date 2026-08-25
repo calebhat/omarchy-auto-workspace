@@ -361,6 +361,9 @@ cmd_launch() {
   local exec_cmd="$2"
   local silent="${3:-true}"
   local geom_json="${4:-}"
+  local cwd="${5:-}"
+  local url="${6:-}"
+  local app_name="${7:-}"
   if [[ -z $workspace || -z $exec_cmd ]]; then
     echo "usage: $0 --launch <workspace> <exec> [silent] [geom-json]" >&2
     exit 1
@@ -369,17 +372,51 @@ cmd_launch() {
     echo "invalid workspace: $workspace" >&2
     exit 1
   fi
-  local prefix="[workspace $workspace"
-  if [[ $silent == "true" ]]; then
-    prefix+=" silent]"
-  else
-    prefix+="]"
-  fi
+  # hl.exec_cmd does not honor Hyprland's "[workspace N silent]" exec prefix —
+  # that string is run as a command. Focus the target workspace, then exec.
   local final_cmd="$exec_cmd"
+  if [[ -n $url ]]; then
+    if [[ $url == https://* ]] && [[ $url != *"'"* ]] && [[ $url != *'$'* ]] && [[ $url != *'`'* ]] && [[ $url != *$'\n'* ]]; then
+      :
+    else
+      url=""
+    fi
+  fi
+  if [[ -n $cwd ]]; then
+    if [[ $cwd == /* && $cwd != *..* && -d $cwd && $cwd =~ ^/[A-Za-z0-9._/+\ -]+$ ]]; then
+      :
+    else
+      cwd=""
+    fi
+  fi
+  if [[ -n $url ]]; then
+    if [[ $final_cmd == *omarchy-launch-webapp* ]]; then
+      final_cmd="omarchy-launch-webapp '$url'"
+    elif [[ $final_cmd == *brave* || $final_cmd == *chromium* ]]; then
+      if [[ $final_cmd != *"$url"* ]]; then
+        final_cmd="$final_cmd $url"
+      fi
+    else
+      final_cmd="omarchy-launch-webapp '$url'"
+    fi
+  fi
+  if [[ -n $cwd && $final_cmd != *"--app-id="* ]]; then
+    local qcwd
+    printf -v qcwd '%q' "$cwd"
+    if [[ $final_cmd == foot || $final_cmd == foot\ * ]]; then
+      final_cmd="foot --working-directory=$qcwd${final_cmd#foot}"
+    elif [[ $final_cmd == ghostty || $final_cmd == ghostty\ * ]]; then
+      if [[ $final_cmd != *working-directory* ]]; then
+        final_cmd="ghostty --working-directory=$qcwd${final_cmd#ghostty}"
+      fi
+    fi
+  fi
   if [[ $exec_cmd == *omarchy-launch-webapp* ]]; then
-    local weburl=""
-    weburl=$(printf '%s' "$exec_cmd" | grep -oE 'https://[^[:space:]\"'\'']+' | grep -v deeplink | tail -1)
-    [[ -z $weburl ]] && weburl=$(printf '%s' "$exec_cmd" | grep -oE 'https://[^[:space:]\"'\'']+' | tail -1)
+    local weburl="${url:-}"
+    if [[ -z $weburl ]]; then
+      weburl=$(printf '%s' "$exec_cmd" | grep -oE 'https://[^[:space:]\"'\'']+' | grep -v deeplink | tail -1)
+      [[ -z $weburl ]] && weburl=$(printf '%s' "$exec_cmd" | grep -oE 'https://[^[:space:]\"'\'']+' | tail -1)
+    fi
     if [[ -n $weburl ]]; then
       final_cmd="omarchy-launch-webapp '$weburl'"
     fi
@@ -406,7 +443,7 @@ cmd_launch() {
       fi
       ;;
   esac
-  local dispatch_cmd="$prefix $final_cmd"
+  local dispatch_cmd="$final_cmd"
   local lua_escaped
   lua_escaped=$(printf '%s' "$dispatch_cmd" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
   local is_browser_like="false"
@@ -418,12 +455,14 @@ cmd_launch() {
     nvim|vim|vi|nano|helix|hx|emacs|micro|btop|htop|yazi|ranger|lf|herdr) is_tui_like="true" ;;
   esac
 
-  local before
-  before=$(hyprctl clients -j 2>/dev/null | jq -r '.[].address' 2>/dev/null | sort -u | tr '\n' ' ')
+  local before prev_ws
+  before=$(hyprctl clients -j </dev/null 2>/dev/null | jq -r '.[].address' 2>/dev/null | sort -u | tr '\n' ' ')
+  prev_ws=$(hyprctl -j activeworkspace </dev/null 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)
+  hyprctl eval "$(printf 'hl.dispatch(hl.dsp.focus({ workspace = "%s" }))' "$workspace")" </dev/null >/dev/null 2>&1 || true
 
-  if ! hyprctl eval "hl.exec_cmd(\"$lua_escaped\")" >/dev/null 2>&1 \
-    && ! hyprctl eval "hl.dsp.exec_cmd(\"$lua_escaped\")" >/dev/null 2>&1 \
-    && ! hyprctl dispatch exec "$dispatch_cmd" >/dev/null 2>&1; then
+  if ! hyprctl eval "hl.exec_cmd(\"$lua_escaped\")" </dev/null >/dev/null 2>&1 \
+    && ! hyprctl eval "hl.dsp.exec_cmd(\"$lua_escaped\")" </dev/null >/dev/null 2>&1 \
+    && ! hyprctl dispatch exec "$dispatch_cmd" </dev/null >/dev/null 2>&1; then
     echo "failed to execute launch command on workspace $workspace: $final_cmd" >&2
     return 1
   fi
@@ -431,11 +470,19 @@ cmd_launch() {
   local target_ws="$workspace"
   local ok=false
   local tries=12
+  local delay=0.08
+  if [[ ${exec_cmd,,} == *grok-bot* ]]; then
+    tries=20
+    delay=0.1
+  fi
+  if [[ -z $app_name ]]; then
+    app_name=$(printf '%s' "$exec_cmd" | awk '{print $1}' | xargs basename 2>/dev/null || echo "")
+  fi
   local placed_addrs=()
   local clients_json
   for _try in $(seq 1 $tries); do
     local new_addrs moved=0
-    clients_json=$(hyprctl clients -j 2>/dev/null || echo "[]")
+    clients_json=$(hyprctl clients -j </dev/null 2>/dev/null || echo "[]")
     new_addrs=$(printf '%s' "$clients_json" | jq -r --arg before "$before" '
       ($before | split(" ") | map(select(length>0))) as $old |
       [.[].address] | map(select(. as $a | ($old | index($a) | not))) | .[]
@@ -464,10 +511,7 @@ cmd_launch() {
           .[] | select(.address == $a) | if ws_ok($ws) then "true" else "false" end
         ' 2>/dev/null)
         if [[ $on_ws != "true" ]]; then
-          if [[ $target_ws =~ ^([1-9]|10)$ && $addr =~ ^0x[0-9a-fA-F]+$ ]]; then
-            hyprctl eval "hl.dispatch(hl.dsp.window.move({workspace=\"$target_ws\", window=\"address:$addr\", follow=false}))" >/dev/null 2>&1 \
-              || true
-          fi
+          move_window_to_ws "$addr" "$target_ws"
         fi
         moved=$((moved + 1))
         placed_addrs+=("$addr")
@@ -477,12 +521,26 @@ cmd_launch() {
         break
       fi
     fi
-    sleep 0.08
+    # Unique apps (Grok Bot) often map after we would have left this workspace.
+    local existing
+    existing=$(find_existing_addr "$exec_cmd" "$app_name" "$clients_json" "$target_ws" "")
+    if [[ -z $existing && $(browser_reuse_only_on_target "$exec_cmd") != "true" ]]; then
+      existing=$(find_existing_addr "$exec_cmd" "$app_name" "$clients_json" "" "")
+    fi
+    if [[ -n $existing ]]; then
+      move_window_to_ws "$existing" "$target_ws"
+      ok=true
+      break
+    fi
+    sleep "$delay"
   done
   # Geometry is applied in a second pass after every assignment has launched.
 
   if [[ $ok != "true" ]]; then
     echo "warn: no new window detected for workspace $workspace: $final_cmd (may have reused existing window)" >&2
+  fi
+  if [[ ${WORKSCAPE_RESTORE_FOCUS:-1} != "0" && -n $prev_ws && $prev_ws != "$workspace" ]]; then
+    hyprctl eval "$(printf 'hl.dispatch(hl.dsp.focus({ workspace = "%s" }))' "$prev_ws")" </dev/null >/dev/null 2>&1 || true
   fi
   return 0
 }
@@ -520,11 +578,13 @@ find_existing_addr() {
     def hay: (cls + " " + ((.initialClass // "") | ascii_downcase) + " " + ((.title // "") | ascii_downcase));
     def is_site_app: cls | test("^(brave|chrome|chromium|google-chrome)-[a-z0-9].*\\.");
     def browser_main: cls == "brave-browser" or cls == "brave" or cls == "chromium" or cls == "google-chrome" or cls == "chromium-browser";
+    def on_target:
+      ($ws == "") or ((.workspace.id|tostring) == $ws) or (.workspace.name == $ws);
     def hit:
       if $host != "" then
-        (hay | contains($host))
+        (hay | contains($host)) and on_target
       elif ($n == "brave" or $n == "brave-browser" or $n == "chromium" or $n == "chrome" or $n == "google-chrome") then
-        browser_main and (is_site_app | not)
+        browser_main and (is_site_app | not) and on_target
       elif ($exec | contains("herdr")) then
         hay | contains("herdr")
       elif ($exec | contains("shophawk-panel")) then
@@ -545,11 +605,80 @@ find_existing_addr() {
   ' 2>/dev/null
 }
 
+# Browsers and site webapps can have extras on unassigned workspaces.
+# Reuse must not steal those. Unique apps (Grok Bot, Herdr, …) may.
+browser_reuse_only_on_target() {
+  local exec_cmd=$1
+  local needle=""
+  needle=$(printf '%s' "$exec_cmd" | awk '{print $1}' | xargs basename 2>/dev/null)
+  needle=$(basename "$needle" 2>/dev/null || echo "$needle")
+  needle="${needle,,}"
+  if [[ $exec_cmd =~ https:// ]]; then
+    echo "true"
+    return
+  fi
+  case "$needle" in
+    brave|brave-browser|chromium|chrome|google-chrome|firefox) echo "true" ;;
+    *) echo "false" ;;
+  esac
+}
+
+place_existing_on_ws() {
+  local exec_cmd=$1 name=$2 clients_json=$3 ws=$4 used=$5
+  local existing protected
+  existing=$(find_existing_addr "$exec_cmd" "$name" "$clients_json" "$ws" "$used")
+  if [[ -z $existing ]]; then
+    protected=$(browser_reuse_only_on_target "$exec_cmd")
+    if [[ $protected == "true" ]]; then
+      return 1
+    fi
+    existing=$(find_existing_addr "$exec_cmd" "$name" "$clients_json" "" "$used")
+  fi
+  if [[ -z $existing ]]; then
+    return 1
+  fi
+  move_window_to_ws "$existing" "$ws"
+  printf '%s\n' "$existing"
+  return 0
+}
+
 move_window_to_ws() {
   local addr=$1 ws=$2
   [[ $ws =~ ^([1-9]|10)$ ]] || return 0
   [[ $addr =~ ^0x[0-9a-fA-F]+$ ]] || return 0
   hyprctl eval "$(printf 'hl.dispatch(hl.dsp.window.move({workspace="%s", window="address:%s", follow=false}))' "$ws" "$addr")" >/dev/null 2>&1 || true
+}
+
+ensure_profile_windows() {
+  local profile_id=$1
+  local attempt item ws exec_cmd name existing clients_json missing used
+  for attempt in 1 2 3 4; do
+    missing=0
+    used=""
+    clients_json=$(hyprctl clients -j </dev/null 2>/dev/null || echo "[]")
+    while IFS= read -r item; do
+      [[ -n $item ]] || continue
+      ws=$(echo "$item" | jq -r '.workspace')
+      exec_cmd=$(echo "$item" | jq -r '.exec // .command // empty')
+      name=$(echo "$item" | jq -r '.name // empty')
+      if [[ $(echo "$item" | jq -r '.enabled // true') != "true" ]]; then
+        continue
+      fi
+      [[ -n $ws && -n $exec_cmd ]] || continue
+      existing=$(place_existing_on_ws "$exec_cmd" "$name" "$clients_json" "$ws" "$used")
+      if [[ -z $existing ]]; then
+        missing=1
+        echo "wait $name for ws $ws (attempt $attempt)" >&2
+        continue
+      fi
+      used+="$existing "
+    done < <(profile_assignments "$profile_id")
+    if ((missing == 0)); then
+      return 0
+    fi
+    sleep 0.15
+  done
+  return 0
 }
 
 launch_profile_assignments() {
@@ -579,6 +708,9 @@ launch_profile_assignments() {
   local boot_log="$STATE_DIR/launch-$boot_id.log"
   : > "$boot_log" 2>/dev/null || true
   echo "$(date -u) boot_id=$boot_id profile=$profile_id force=$force" >> "$boot_log" 2>/dev/null || true
+  local apply_prev_ws
+  apply_prev_ws=$(hyprctl -j activeworkspace </dev/null 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)
+  export WORKSCAPE_RESTORE_FOCUS=0
 
   local idx=0 item
   while IFS= read -r item; do
@@ -625,14 +757,17 @@ launch_profile_assignments() {
 
     if [[ " $occupied_ws " == *" $ws "* ]]; then
       echo "skip $name on ws $ws — workspace already has windows"
+      echo "$(date -u) SKIP occupied ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true
       continue
     fi
 
     local existing
-    existing=$(find_existing_addr "$exec_cmd" "$name" "$clients_json" "$ws" "$used_addrs")
+    existing=$(place_existing_on_ws "$exec_cmd" "$name" "$clients_json" "$ws" "$used_addrs")
     if [[ -n $existing ]]; then
-      echo "reuse $name ($existing) — leave on its current workspace"
+      echo "reuse $name ($existing) on ws $ws"
+      echo "$(date -u) REUSE ws=$ws name=$name addr=$existing" >> "$boot_log" 2>/dev/null || true
       used_addrs+="$existing "
+      clients_json=$(hyprctl clients -j </dev/null 2>/dev/null || echo "[]")
       continue
     fi
 
@@ -643,20 +778,38 @@ launch_profile_assignments() {
     fi
     local geom_json
     geom_json=$(echo "$item" | jq -c '.geom // empty')
-    if cmd_launch "$ws" "$exec_cmd" "$silent" "$geom_json"; then
+    local cwd url
+    cwd=$(echo "$item" | jq -r '.cwd // empty')
+    url=$(echo "$item" | jq -r '.url // empty')
+    # hyprctl reads stdin — must not steal the assignment stream
+    if cmd_launch "$ws" "$exec_cmd" "$silent" "$geom_json" "$cwd" "$url" "$name" </dev/null; then
       echo "$(date -u) OK ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true
     else
       echo "$(date -u) FAIL ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true
       echo "failed to launch $name" >&2
     fi
+    clients_json=$(hyprctl clients -j </dev/null 2>/dev/null || echo "[]")
+    existing=$(place_existing_on_ws "$exec_cmd" "$name" "$clients_json" "$ws" "$used_addrs")
+    if [[ -n $existing ]]; then
+      used_addrs+="$existing "
+      echo "$(date -u) PLACE ws=$ws name=$name addr=$existing" >> "$boot_log" 2>/dev/null || true
+    fi
     idx=$((idx + 1))
   done < <(profile_assignments "$profile_id")
+
+  echo "ensuring assigned windows are on their workspaces"
+  ensure_profile_windows "$profile_id"
 
   echo "sweeping extras off blocked workspaces"
   python3 "$PLUGIN_DIR/scripts/watch" --sweep || true
 
   echo "applying window geometry for $profile_id"
   apply_profile_geoms "$profile_id"
+
+  if [[ -n $apply_prev_ws ]]; then
+    hyprctl eval "$(printf 'hl.dispatch(hl.dsp.focus({ workspace = "%s" }))' "$apply_prev_ws")" </dev/null >/dev/null 2>&1 || true
+  fi
+  unset WORKSCAPE_RESTORE_FOCUS
 
   echo "$boot_id" > "$last_boot_file"
   echo "done"
@@ -773,19 +926,33 @@ close_preset_workspaces() {
   local profile_id=$1
   local ws addr
   while IFS= read -r ws; do
-    [[ $ws =~ ^([1-9]|10)$ ]] || continue
+    [[ $ws =~ ^([1-9]|1[0-9]|20)$ ]] || continue
     while IFS= read -r addr; do
       [[ $addr =~ ^0x[0-9a-fA-F]+$ ]] || continue
       hyprctl eval "$(printf 'hl.dispatch(hl.dsp.window.close({ window = "address:%s" }))' "$addr")" >/dev/null 2>&1 || true
       echo "close $addr on ws $ws"
     done < <(hyprctl clients -j 2>/dev/null | jq -r --arg ws "$ws" '.[] | select((.workspace.id|tostring) == $ws) | .address // empty' 2>/dev/null)
   done < <(jq -r --arg id "$profile_id" '
-    [.profiles[]? | select(.id==$id) |
-      ((.assignments[]? | .workspace | tostring),
-       ((.workspaceMonitors // {}) | keys[]?),
-       ((.workspacePrefs // {}) | keys[]?))
-    ] | unique | .[]
+    [.profiles[]? | select(.id==$id) | .assignments[]? | .workspace | tostring]
+    | unique | .[]
   ' "$CONFIG_FILE" 2>/dev/null)
+}
+
+cmd_reset_empty() {
+  local profile_id=${1:-}
+  ensure_config || exit 1
+  wait_for_hyprland || exit 1
+  if [[ -z $profile_id ]]; then
+    profile_id=$(cmd_live_status | jq -r '.matchedProfileId // empty')
+  fi
+  if [[ -z $profile_id || $profile_id == "null" ]]; then
+    echo "no profile"
+    exit 1
+  fi
+  local occupied
+  occupied=$(hyprctl -j clients 2>/dev/null | jq -r '[.[] | (.workspace.id|tostring)] | unique | join(" ")' 2>/dev/null || true)
+  export WORKSCAPE_OCCUPIED_WS="$occupied"
+  live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --reset-empty
 }
 
 cmd_fresh_apply() {
@@ -801,7 +968,7 @@ cmd_fresh_apply() {
   fi
   echo "closing windows on $profile_id preset workspaces…"
   close_preset_workspaces "$profile_id"
-  sleep 0.5
+  sleep 0.12
   unset WORKSCAPE_OCCUPIED_WS
   cmd_apply hotkey "$profile_id" true
 }
@@ -823,7 +990,9 @@ case "${1:-}" in
   --apply-matching) cmd_apply hotkey "" true ;;
   --apply-profile) cmd_apply hotkey "${2:-}" true ;;
   --fresh-apply-profile) cmd_fresh_apply "${2:-}" ;;
+  --reset-empty-workspaces) cmd_reset_empty "${2:-}" ;;
   --watch-extras) exec python3 "$PLUGIN_DIR/scripts/watch" ;;
+  --capture-workspace) python3 "$PLUGIN_DIR/scripts/capture" --workspace "${2:-1}" ;;
   --apply-gestures) python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "${2:-}" --apply ;;
   --default-config) default_config ;;
   --help|-h|"") cat <<'HELP'
@@ -839,7 +1008,8 @@ workscape.sh — helper for io.github.calebhat.workscape
   --force-launch-all           launch matching profile regardless of boot flag
   --apply-matching             detect layout, bind workspaces, launch apps
   --apply-profile <id>         bind + launch a specific profile
-  --fresh-apply-profile [id]   close that profile’s preset workspaces, then apply empty
+  --fresh-apply-profile [id]   close workspaces that have apps in that profile, then apply empty
+  --reset-empty-workspaces [id] restore Omarchy dwindle on workspaces with no assigned apps (keeps Fill-next Stage chain)
   --watch-extras               keep locked panes pinned; send extras away when extras=block
   --apply-gestures             write trackpad / swipe prefs and hyprctl eval them
   --default-config             print default config

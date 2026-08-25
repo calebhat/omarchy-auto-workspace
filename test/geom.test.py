@@ -93,7 +93,89 @@ def test_column_width_frac():
     assert geom.column_width_frac(locked, 0.5) == 0.6279
     assert geom.column_width_frac(extra, 0.5) == 0.5
     assert "fullscreen_on_one_column = false" in geom.scrolling_layout_opts(2, lock=True)
-    assert "fullscreen_on_one_column" not in geom.scrolling_layout_opts(2, lock=False)
+    assert "fullscreen_on_one_column = false" in geom.scrolling_layout_opts(2, lock=False)
+    assert "fullscreen_on_one_column = true" in geom.scrolling_layout_opts(2, stage=True)
+    assert "follow_focus = false" in geom.scrolling_layout_opts(2, lock=True)
+    assert "follow_focus = false" in geom.scrolling_layout_opts(2, stage=True)
+    assert "fullscreen_on_one_column = true" in geom.scrolling_layout_opts(2, lock=True, fill_one=True)
+    assert "column_width = 0.3333" in geom.scrolling_layout_opts(3)
+    assert "column_width = 0.25" in geom.scrolling_layout_opts(4)
+    assert "fullscreen_on_one_column = false" in geom.scrolling_layout_opts(4, fill_one=False)
+
+
+def test_push_column_after_locked():
+    calls = []
+    ranks = {"0xL0": 0, "0xL1": 2, "0x3": 1}
+    orig = (
+        geom.hypr_eval,
+        geom.cache_clear,
+        geom.stacked_with_other,
+        geom.column_collapsed,
+        geom.column_rank,
+        geom.focus_window,
+        geom.layout_msg,
+    )
+    geom.hypr_eval = lambda lua: calls.append(lua)
+    geom.cache_clear = lambda: None
+    geom.stacked_with_other = lambda *a, **k: False
+    geom.column_collapsed = lambda *a, **k: False
+    def layout_msg(msg):
+        calls.append(msg)
+        if msg == "swapcol r":
+            ranks["0x3"] = 3
+    geom.column_rank = lambda addr, ws: ranks.get(addr)
+    geom.focus_window = lambda addr: calls.append(f"focus {addr}")
+    geom.layout_msg = layout_msg
+    try:
+        geom.push_column_after_locked("0x3", "2", {"0xL0", "0xL1"})
+        assert "swapcol r" in calls
+    finally:
+        (
+            geom.hypr_eval,
+            geom.cache_clear,
+            geom.stacked_with_other,
+            geom.column_collapsed,
+            geom.column_rank,
+            geom.focus_window,
+            geom.layout_msg,
+        ) = orig
+
+
+def test_fit_column_fracs_keeps_columns_on_screen():
+    orig_out, orig_in, orig_b = geom.gaps_out, geom.gaps_in, geom.border_size
+    geom.gaps_out = lambda: (8, 8, 8, 8)
+    geom.gaps_in = lambda: (4, 4, 4, 4)
+    geom.border_size = lambda: 2
+    try:
+        metrics = {"lw": 1440.0, "w": 1424.0}
+        raw = [0.6764, 0.3236]
+        out = geom.fit_column_fracs(raw, metrics, 2)
+        assert out[0] > out[1]
+        assert abs(out[0] / out[1] - raw[0] / raw[1]) < 0.02
+        px = sum(f * metrics["lw"] for f in out)
+        between = 4 + 4
+        assert px + between <= metrics["w"] + 2
+        assert px >= metrics["w"] * 0.95
+    finally:
+        geom.gaps_out, geom.gaps_in, geom.border_size = orig_out, orig_in, orig_b
+
+
+def test_force_scrolling_not_persistent_by_default():
+    calls = []
+    orig = geom.hypr_eval
+    geom.hypr_eval = lambda lua: calls.append(lua)
+    try:
+        geom.force_scrolling("3", visible_count=2, lock=False, stage=True)
+        assert calls, "expected workspace_rule"
+        lua = calls[0]
+        assert "persistent = false" in lua
+        assert "layout = \"scrolling\"" in lua
+        assert "fullscreen_on_one_column = true" in lua
+        calls.clear()
+        geom.force_scrolling("2", visible_count=2, lock=True, persist=True)
+        assert "persistent = true" in calls[0]
+    finally:
+        geom.hypr_eval = orig
 
 
 def test_restore_resizes_locked_pane():
@@ -296,6 +378,26 @@ def test_match_herdr_not_shophawk():
     assert b and b["address"] == "0x2"
 
 
+def test_match_outlook_prefers_full_pane():
+    extra = {
+        "address": "0xnew",
+        "class": "brave-outlook.office.com__mail_-Default",
+        "title": "Message",
+        "at": [740, 36],
+        "size": [704, 914],
+    }
+    main = {
+        "address": "0xmain",
+        "class": "brave-outlook.office.com__mail_-Default",
+        "title": "Mail - Outlook",
+        "at": [10, 36],
+        "size": [1420, 914],
+    }
+    a = {"name": "Outlook", "exec": "omarchy-launch-webapp 'https://outlook.office.com/mail/'"}
+    hit = geom.match_client(a, [extra, main], set())
+    assert hit and hit["address"] == "0xmain", hit
+
+
 if __name__ == "__main__":
     test_layout_metrics_scale()
     test_geom_pixels()
@@ -303,9 +405,13 @@ if __name__ == "__main__":
     test_lock_plan_and_assignment()
     test_close_enough_and_fallback()
     test_column_width_frac()
+    test_push_column_after_locked()
+    test_fit_column_fracs_keeps_columns_on_screen()
+    test_force_scrolling_not_persistent_by_default()
     test_restore_resizes_locked_pane()
     test_apply_config_skips_occupied()
     test_apply_items_scrolling_vs_stacked_rows()
     test_geom_pixels_master_stack()
     test_match_herdr_not_shophawk()
+    test_match_outlook_prefers_full_pane()
     print("geom.test.py ok")

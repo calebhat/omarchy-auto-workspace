@@ -28,6 +28,7 @@ Item {
     signal splitRequested(int index, string dir)
     signal gearRequested(int index)
     signal closeRequested()
+    signal windowRemoved(string assignmentId)
 
     function iconSourceFor(exec) {
         for (var i = 0; i < appList.length; i++) {
@@ -115,7 +116,7 @@ Item {
                 color: Qt.darker(Color.foreground, 1.4)
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
+                wrapMode: Text.WordWrap
             }
             Button {
                 text: "Tile"
@@ -156,7 +157,12 @@ Item {
                     y: geom.y * board.height
                     width: Math.max(24, geom.w * board.width)
                     height: Math.max(24, geom.h * board.height)
-                    z: index === root.dragFrom ? 40 : (index === root.selectedIndex ? 8 : 1)
+                    z: {
+                        if (index === root.dragFrom) return 80
+                        if (floating) return 30 + index
+                        if (index === root.selectedIndex) return 8
+                        return 1
+                    }
 
                     Rectangle {
                         anchors.fill: parent
@@ -189,6 +195,7 @@ Item {
                             font.pixelSize: Style.font.body
                             font.bold: true
                         }
+
                     }
 
                     Repeater {
@@ -229,13 +236,42 @@ Item {
                     }
 
                     MouseArea {
+                        z: 40
+                        anchors.top: parent.top
+                        anchors.right: parent.right
+                        anchors.margins: 4
+                        width: 26
+                        height: 26
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            var id = modelData && modelData.id
+                            if (id) root.windowRemoved(id)
+                        }
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 4
+                            color: Qt.rgba(0, 0, 0, parent.containsMouse ? 0.5 : 0.28)
+                            Text {
+                                anchors.centerIn: parent
+                                text: "×"
+                                color: Color.foreground
+                                font.pixelSize: 14
+                                font.bold: true
+                            }
+                        }
+                    }
+
+                    MouseArea {
                         anchors.fill: parent
                         anchors.margins: 8
+                        z: 1
                         cursorShape: Qt.SizeAllCursor
                         hoverEnabled: true
                         property real pressBX: 0
                         property real pressBY: 0
                         property var startG: null
+                        property var startAll: null
                         onPressed: function(mouse) {
                             root.selectedIndex = pane.paneIndex
                             root.dragFrom = pane.paneIndex
@@ -244,33 +280,35 @@ Item {
                             pressBX = p.x
                             pressBY = p.y
                             startG = JSON.parse(JSON.stringify(geom))
+                            startAll = JSON.parse(JSON.stringify(root.liveGeoms))
                         }
                         onPositionChanged: function(mouse) {
-                            if (!pressed || !floating || !startG) return
+                            if (!pressed || !startG) return
                             var p = mapToItem(board, mouse.x, mouse.y)
-                            var dx = (p.x - pressBX) / Math.max(1, board.width)
-                            var dy = (p.y - pressBY) / Math.max(1, board.height)
-                            var next = JSON.parse(JSON.stringify(root.liveGeoms))
-                            next[pane.paneIndex] = Model.moveFloatGeom(startG, dx, dy)
-                            root.liveGeoms = next
+                            if (floating) {
+                                var dx = (p.x - pressBX) / Math.max(1, board.width)
+                                var dy = (p.y - pressBY) / Math.max(1, board.height)
+                                var next = JSON.parse(JSON.stringify(startAll))
+                                next[pane.paneIndex] = Model.moveFloatGeom(startG, dx, dy)
+                                root.liveGeoms = next
+                                return
+                            }
+                            var hit = root.hitIndex(p.x, p.y, pane.paneIndex)
+                            if (hit >= 0 && hit !== pane.paneIndex && !root.isFloat(hit) && startAll) {
+                                var hg = startAll[hit]
+                                var nx = (p.x / board.width - hg.x) / Math.max(0.001, hg.w)
+                                var ny = (p.y / board.height - hg.y) / Math.max(0.001, hg.h)
+                                var zone = Model.dropZone(nx, ny)
+                                if (zone === "center")
+                                    root.liveGeoms = Model.swapGeoms(startAll, pane.paneIndex, hit)
+                                else
+                                    root.liveGeoms = Model.splitDrop(startAll, pane.paneIndex, hit, zone)
+                            } else if (startAll) {
+                                root.liveGeoms = JSON.parse(JSON.stringify(startAll))
+                            }
                         }
                         onReleased: function(mouse) {
-                            if (floating) {
-                                root.commitLive()
-                            } else {
-                                var p = mapToItem(board, mouse.x, mouse.y)
-                                var hit = root.hitIndex(p.x, p.y, pane.paneIndex)
-                                if (hit >= 0 && hit !== pane.paneIndex && !root.isFloat(hit)) {
-                                    var hg = root.liveGeoms[hit]
-                                    var nx = (p.x / board.width - hg.x) / Math.max(0.001, hg.w)
-                                    var ny = (p.y / board.height - hg.y) / Math.max(0.001, hg.h)
-                                    var zone = Model.dropZone(nx, ny)
-                                    var next2
-                                    if (zone === "center") next2 = Model.swapGeoms(root.liveGeoms, pane.paneIndex, hit)
-                                    else next2 = Model.splitDrop(root.liveGeoms, pane.paneIndex, hit, zone)
-                                    root.applyGeoms(next2)
-                                }
-                            }
+                            root.commitLive()
                             root.dragFrom = -1
                             root.dragging = false
                             root.refreshSplits()

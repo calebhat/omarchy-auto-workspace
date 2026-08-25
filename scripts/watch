@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -66,7 +67,13 @@ def load_block_map() -> dict[str, int]:
             continue
         n = counts.get(str(ws), 0)
         vis = int(pref.get("visibleCount") or 2)
-        out[str(ws)] = max(n, 1) if n else max(1, min(20, vis))
+        vis = max(1, min(20, vis))
+        # Set width fills Visible columns, then bounces. Scrolling/lock uses
+        # assignment count so extras leave after the pinned panes.
+        if pref.get("layout") == "set-width":
+            out[str(ws)] = vis
+        else:
+            out[str(ws)] = max(n, 1) if n else vis
     ov = profile.get("overflow") if isinstance(profile.get("overflow"), dict) else {}
     if ov.get("enabled") is True:
         try:
@@ -224,6 +231,31 @@ def socket_path() -> Path | None:
     return None
 
 
+def extra_width_workspaces() -> dict[str, dict]:
+    """Scrolling/stage workspaces whose extras should be 1/visibleCount wide."""
+    profile = load_active_profile()
+    if not profile:
+        return {}
+    prefs = profile.get("workspacePrefs") or {}
+    out: dict[str, dict] = {}
+    for ws, pref in prefs.items():
+        if not isinstance(pref, dict):
+            continue
+        layout = pref.get("layout")
+        if layout not in ("scrolling", "stage", "set-width"):
+            continue
+        try:
+            vis = int(pref.get("visibleCount") or 2)
+        except (TypeError, ValueError):
+            vis = 2
+        if vis < 1:
+            vis = 1
+        if vis > 20:
+            vis = 20
+        out[str(ws)] = {"visibleCount": vis, "stage": layout == "stage", "setWidth": layout == "set-width"}
+    return out
+
+
 def locked_workspaces() -> list[str]:
     path = config_path()
     if not path.exists():
@@ -255,22 +287,98 @@ def locked_workspaces() -> list[str]:
 
 _restoring = False
 _last_restore: dict[str, float] = {}
+_event_times: list[float] = []
+_burst_until = 0.0
+_window_ws: dict[str, str] = {}
+_close_restore_timers: dict[str, threading.Timer] = {}
+CLOSE_RESTORE_DELAY_SEC = 0.4
 STARTED_AT = time.monotonic()
 STARTUP_GRACE_SEC = 4.0
+RESTORE_DEBOUNCE_SEC = 0.45
+BURST_WINDOW_SEC = 1.5
+BURST_EVENTS = 12
+BURST_GRACE_SEC = 3.0
 
 
 def in_startup_grace() -> bool:
     return time.monotonic() - STARTED_AT < STARTUP_GRACE_SEC
 
 
-def restore_locks(ws: str, addr: str = "") -> None:
+def note_event() -> bool:
+    """True if Hyprland is flooding events (sleep/wake remap). Skip hyprctl storms."""
+    global _burst_until
+    now = time.monotonic()
+    _event_times.append(now)
+    cutoff = now - BURST_WINDOW_SEC
+    while _event_times and _event_times[0] < cutoff:
+        _event_times.pop(0)
+    if len(_event_times) >= BURST_EVENTS:
+        _burst_until = now + BURST_GRACE_SEC
+    return now < _burst_until
+
+
+def norm_addr(addr: str) -> str:
+    a = str(addr or "").strip()
+    if a and not a.startswith("0x"):
+        a = "0x" + a
+    return a
+
+
+def remember_window(addr: str, ws: str) -> None:
+    a = norm_addr(addr)
+    if a and ws:
+        _window_ws[a] = str(ws)
+
+
+def forget_window(addr: str) -> str:
+    return _window_ws.pop(norm_addr(addr), "")
+
+
+def seed_window_map() -> None:
+    try:
+        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
+    except Exception:
+        return
+    for c in clients or []:
+        ws = str(((c.get("workspace") or {}).get("id") or ""))
+        remember_window(str(c.get("address") or ""), ws)
+
+
+def schedule_close_restore(ws: str) -> None:
+    """Restore after the last close, not on every keypress — rapid close must not steal focus."""
+    ws = str(ws)
+    if not ws:
+        return
+    prev = _close_restore_timers.pop(ws, None)
+    if prev is not None:
+        prev.cancel()
+
+    def fire() -> None:
+        _close_restore_timers.pop(ws, None)
+        restore_locks(ws, "", keep_focus=True)
+
+    timer = threading.Timer(CLOSE_RESTORE_DELAY_SEC, fire)
+    timer.daemon = True
+    _close_restore_timers[ws] = timer
+    timer.start()
+
+
+def restore_locks(ws: str, addr: str = "", keep_focus: bool = False) -> None:
     global _restoring
     if _restoring:
         return
+    now = time.monotonic()
+    prev = _last_restore.get(str(ws))
+    if prev is not None and now - prev < RESTORE_DEBOUNCE_SEC:
+        return
+    if now < _burst_until:
+        return
     _restoring = True
-    _last_restore[str(ws)] = time.monotonic()
+    _last_restore[str(ws)] = now
     try:
-        result = geom_mod().restore_locks_for_workspace(str(ws), prefer_addr=addr or "")
+        result = geom_mod().restore_locks_for_workspace(
+            str(ws), prefer_addr=addr or "", keep_focus=keep_focus
+        )
         if result and not result.get("skipped"):
             print(json.dumps({"restore": str(ws), "ok": result.get("ok"), "closeEnough": result.get("closeEnough")}), flush=True)
     except Exception as exc:
@@ -282,19 +390,19 @@ def restore_locks(ws: str, addr: str = "") -> None:
 def handle_open(addr: str, ws: str) -> None:
     if apply_in_progress():
         return
+    bursting = note_event()
     blocked = load_block_map()
     locked = locked_workspaces()
-    if not blocked and not locked:
+    extra_ws = extra_width_workspaces()
+    if not blocked and not locked and not extra_ws:
+        return
+    if bursting and str(ws) not in locked and not extra_ws.get(str(ws)) and ws not in blocked:
         return
     profile = load_active_profile()
     if ws in blocked:
         cap = int(blocked[ws])
-        over = False
-        for _ in range(10):
-            if window_count(ws) > cap:
-                over = True
-                break
-            time.sleep(0.05)
+        time.sleep(0.08)
+        over = window_count(ws) > cap
         if over:
             dest = next_open_ws(blocked, ws, profile)
             if dest:
@@ -305,8 +413,21 @@ def handle_open(addr: str, ws: str) -> None:
                 focus_ws_and_window(dest, addr)
                 print(json.dumps({"moved": addr, "from": ws, "to": dest}), flush=True)
                 return
-    if in_startup_grace():
+    if in_startup_grace() and str(ws) not in locked and not extra_ws.get(str(ws)):
         return
+    info = extra_ws.get(str(ws))
+    if info:
+        try:
+            geom_mod().size_new_scrolling_column(
+                str(ws),
+                addr,
+                int(info["visibleCount"]),
+                stage=info.get("stage") is True,
+                set_width=info.get("setWidth") is True,
+            )
+            print(json.dumps({"extraWidth": str(ws), "addr": addr, "visibleCount": info["visibleCount"]}), flush=True)
+        except Exception as exc:
+            print(json.dumps({"extraWidth": str(ws), "ok": False, "error": str(exc)}), flush=True)
     if str(ws) in locked:
         restore_locks(ws, addr)
 
@@ -372,6 +493,8 @@ def sweep_block_extras() -> list[dict]:
 
 
 def apply_focus_chrome() -> None:
+    if note_event():
+        return
     profile = load_active_profile()
     if not profile:
         return
@@ -414,25 +537,25 @@ def apply_focus_chrome() -> None:
         geom.apply_chrome(addr, chrome, addr == focus)
 
 
-def handle_close_or_move(ws: str | None) -> None:
-    # closewindow / our own swapcol must not re-enter restore (that fight
-    # squeezed extras to width -3). Only admit extras on openwindow.
-    return
+def handle_close_or_move(ws: str | None, addr: str = "") -> None:
+    if apply_in_progress() or in_startup_grace():
+        if addr:
+            forget_window(addr)
+        return
+    if addr:
+        remembered = forget_window(addr)
+        if not ws:
+            ws = remembered
+    if not ws:
+        return
+    locked = locked_workspaces()
+    extra_ws = extra_width_workspaces()
+    if str(ws) not in locked and not extra_ws.get(str(ws)):
+        return
+    schedule_close_restore(str(ws))
 
 
-def main() -> int:
-    if "--sweep" in sys.argv:
-        sweep_block_extras()
-        return 0
-    sock = socket_path()
-    if not sock:
-        print("no hypr socket2", file=sys.stderr)
-        return 1
-    proc = subprocess.Popen(
-        ["socat", "-u", f"UNIX-CONNECT:{sock}", "-"],
-        stdout=subprocess.PIPE,
-        text=True,
-    )
+def _consume_socket(proc: subprocess.Popen) -> None:
     assert proc.stdout
     for line in proc.stdout:
         line = line.strip()
@@ -442,20 +565,69 @@ def main() -> int:
             if len(parts) < 2:
                 continue
             addr, ws = parts[0], parts[1]
+            if addr and not addr.startswith("0x"):
+                addr = "0x" + addr
             if addr and ws and ws.isdigit():
+                remember_window(addr, ws)
                 handle_open(addr, ws)
+            continue
+        if line.startswith("workspace>>") or line.startswith("workspacev2>>"):
+            payload = line.split(">>", 1)[1]
+            ws = payload.split(",", 1)[0].strip()
+            if ws.isdigit():
+                try:
+                    geom_mod().sync_column_width_for_workspace(ws)
+                except Exception:
+                    pass
             continue
         if line.startswith("movewindow>>") or line.startswith("movewindowv2>>"):
             payload = line.split(">>", 1)[1]
             parts = payload.split(",", 2)
-            if len(parts) >= 2 and parts[1].isdigit():
-                handle_close_or_move(parts[1])
+            addr = parts[0] if parts else ""
+            dest = parts[1] if len(parts) >= 2 else ""
+            if dest.isdigit():
+                remember_window(addr, dest)
+                handle_close_or_move(dest)
             continue
         if line.startswith("closewindow>>"):
-            handle_close_or_move(None)
+            addr = line.split(">>", 1)[1].split(",", 1)[0]
+            handle_close_or_move(None, addr)
             continue
         if line.startswith("activewindow>>") or line.startswith("activewindowv2>>"):
             apply_focus_chrome()
+
+
+def main() -> int:
+    if "--sweep" in sys.argv:
+        sweep_block_extras()
+        return 0
+    while True:
+        sock = socket_path()
+        if not sock:
+            time.sleep(1.0)
+            continue
+        proc = subprocess.Popen(
+            ["socat", "-u", f"UNIX-CONNECT:{sock}", "-"],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            seed_window_map()
+            try:
+                active = json.loads(subprocess.check_output(["hyprctl", "-j", "activeworkspace"], text=True))
+                ws = str((active or {}).get("id") or "")
+                if ws.isdigit():
+                    geom_mod().sync_column_width_for_workspace(ws)
+            except Exception:
+                pass
+            _consume_socket(proc)
+        finally:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        # Hyprland dropped the socket (sleep/wake or compositor restart).
+        time.sleep(0.5)
     return 0
 
 

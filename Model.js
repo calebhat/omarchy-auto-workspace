@@ -14,6 +14,7 @@ function defaultConfig() {
             silent: true,
             onlyOnBoot: true,
             lastFormWorkspace: 1,
+            lastMainView: "profiles",
             activeProfileId: "default",
             gestureSource: "global",
             persistHyprGestures: false,
@@ -47,6 +48,12 @@ function defaultProfile() {
 }
 
 function maxWorkspace() { return 20 }
+
+function allowedMainView(v) {
+    var s = String(v || "")
+    if (s === "profiles" || s === "workspaces" || s === "displays" || s === "gestures") return s
+    return "profiles"
+}
 
 function emptyOverflow() {
     return { enabled: false, workspaces: [], maxWindows: 1 }
@@ -309,6 +316,65 @@ function matchReasonLabel(reason) {
     return String(reason || "")
 }
 
+function profileById(cfg, id) {
+    var list = (cfg && cfg.profiles) || []
+    var want = String(id || "")
+    if (!want) return null
+    for (var i = 0; i < list.length; i++) if (String(list[i].id) === want) return list[i]
+    return null
+}
+
+function applyHint(cfg, profile, liveList, liveNet, liveStatus) {
+    var match = profileMatch(cfg, profile || {}, liveList, liveNet)
+    if (liveStatus && Array.isArray(liveStatus.profiles) && profile && profile.id) {
+        for (var i = 0; i < liveStatus.profiles.length; i++) {
+            if (String(liveStatus.profiles[i].id) === String(profile.id)) {
+                match.matches = !!liveStatus.profiles[i].matches
+                match.reason = liveStatus.profiles[i].reason || match.reason
+                match.networkConstrained = liveStatus.profiles[i].networkConstrained
+                match.networkMatches = liveStatus.profiles[i].networkMatches
+                break
+            }
+        }
+    }
+    var will = null
+    var willId = ""
+    if (liveStatus && liveStatus.matchedProfileId) {
+        willId = String(liveStatus.matchedProfileId)
+        will = profileById(cfg, willId)
+    }
+    if (!willId) {
+        will = bestProfile(cfg, liveList, liveNet)
+        willId = will && will.id ? String(will.id) : ""
+    }
+    var willName = will ? String(will.name || willId) : String((liveStatus && liveStatus.matchedProfileName) || willId || "")
+    var viewingId = profile && profile.id ? String(profile.id) : ""
+    var applies = !!(match.matches && willId && willId === viewingId)
+    var text
+    if (applies) {
+        text = networkConfigured(profile && profile.network)
+            ? "matches now · this applies"
+            : "matches now · fallback for this layout"
+    } else if (match.matches && willId && willId !== viewingId) {
+        text = "displays match · " + willName + " still wins"
+    } else if (match.matches && !willId) {
+        text = "displays match · nothing applies"
+    } else {
+        var why = matchReasonLabel(match.reason) || "no match"
+        if (willId) text = why + " · fallback " + willName + " will apply"
+        else text = why + " · no matching profile"
+    }
+    return {
+        text: text,
+        matches: applies,
+        reason: match.reason || "",
+        willId: willId,
+        willName: willName,
+        appliedId: String(((cfg && cfg.settings) || {}).activeProfileId || ""),
+        appliedName: ""
+    }
+}
+
 function defaultGestures() {
     return {
         workspaceSwipe: true,
@@ -354,6 +420,8 @@ function normalizeWorkspaceNames(raw) {
 }
 
 function layoutDescription(layout, hasLock) {
+    if (layout === "set-width")
+        return "Every new window is a fixed fraction of the monitor (Visible). Scroll extras at this width keeps more columns on a tape; off sends the next window to another workspace after Visible are filled."
     if (layout === "stage")
         return "The first window stays full width. Extra windows are smaller columns to the right; scroll to see them. Visible sets extra-column width, not the first window."
     if (layout === "master" && !hasLock)
@@ -371,8 +439,10 @@ function clampVisibleCount(n) {
     return v
 }
 
-function visibleCountHelp(visibleCount, hasLock) {
+function visibleCountHelp(visibleCount, hasLock, layout) {
     var n = clampVisibleCount(visibleCount)
+    if (layout === "set-width")
+        return "Every new window is 1/" + n + " of the monitor (1–20), including the first."
     if (hasLock)
         return "Extra columns are 1/" + n + " of the screen (1–20). Locked panes keep the size you set."
     return n + " extra columns (not the first, in Stage) fit on screen before you scroll. Ultrawides can go up to 20."
@@ -383,7 +453,7 @@ function normalizeWorkspacePref(p) {
         return { layout: "dwindle", visibleCount: 2, lockSizes: false, extras: "around" }
     }
     var layout = p.layout
-    if (layout !== "scrolling" && layout !== "master" && layout !== "stage") layout = "dwindle"
+    if (layout !== "scrolling" && layout !== "master" && layout !== "stage" && layout !== "set-width") layout = "dwindle"
     var vis = clampVisibleCount(p.visibleCount)
     var extras = p.extras === "block" ? "block" : "around"
     return {
@@ -827,7 +897,13 @@ function autoLayoutRects(count, layout, columnWidth) {
     var rects = []
     if (!(count > 0)) return rects
     function push(x, y, w, h) { rects.push(normalizeGeom({ x: x, y: y, w: w, h: h })) }
+    if (layout === "set-width") {
+        var sw = columnWidth > 0.1 && columnWidth < 1 ? columnWidth : 0.25
+        for (var i = 0; i < count; i++) push(i * (sw + gap), 0, sw, 1)
+        return rects
+    }
     if (layout === "scrolling") {
+        if (count === 1) { push(0, 0, 1, 1); return rects }
         var cw = columnWidth > 0.1 && columnWidth < 1 ? columnWidth : 0.49
         for (var i = 0; i < count; i++) push(i * (cw + gap), 0, cw, 1)
         return rects
@@ -954,6 +1030,7 @@ function packedGeomsForApps(apps, layout, columnWidth) {
         tileList.push(list[i])
     }
     var autos = autoLayoutRects(tileList.length, packLayout, columnWidth)
+    if (tileList.length === 1) autos = [{ x: 0, y: 0, w: 1, h: 1 }]
     var tileGeoms = []
     var anyCustom = false
     var t
@@ -965,6 +1042,12 @@ function packedGeomsForApps(apps, layout, columnWidth) {
         } else {
             tileGeoms.push(autos[t] || normalizeGeom({ x: 0, y: 0, w: 1, h: 1 }))
         }
+    }
+    // One tiled pane always fills the workspace — leftover 1/N column geoms from
+    // scrolling Visible columns must not keep a single window at half width.
+    if (tileList.length === 1) {
+        anyCustom = false
+        tileGeoms = [{ x: 0, y: 0, w: 1, h: 1 }]
     }
     var use = (!anyCustom || layoutHasOverlap(tileGeoms)) ? autos : tileGeoms
     var out = []
@@ -1155,6 +1238,57 @@ function fillHole(geoms, hole, skip) {
     return next
 }
 
+function geomArea(g) {
+    if (!g) return 0
+    return Number(g.w) * Number(g.h)
+}
+
+function removeAppAndFill(apps, id) {
+    var list = clone(apps || [])
+    var idx = -1
+    var i
+    for (i = 0; i < list.length; i++) {
+        if (String(list[i].id) === String(id)) { idx = i; break }
+    }
+    if (idx < 0) return apps
+    var gone = list[idx]
+    var ws = gone.workspace
+    var hole = assignmentPlace(gone) === "float" ? null : normalizeGeom(gone.geom)
+    list.splice(idx, 1)
+    if (!hole) return list
+    var tileIdx = []
+    var tileGeoms = []
+    var missing = false
+    for (i = 0; i < list.length; i++) {
+        if (String(list[i].workspace) !== String(ws)) continue
+        if (assignmentPlace(list[i]) === "float") continue
+        var g = normalizeGeom(list[i].geom)
+        if (!g) missing = true
+        tileIdx.push(i)
+        tileGeoms.push(g || { x: 0, y: 0, w: 1, h: 1 })
+    }
+    if (!tileIdx.length) return list
+    if (tileIdx.length === 1) {
+        list[tileIdx[0]].geom = { x: 0, y: 0, w: 1, h: 1 }
+        return list
+    }
+    if (missing) return list
+    var filled = fillHole(tileGeoms, hole, {})
+    var before = geomArea(hole)
+    var after = 0
+    for (i = 0; i < tileGeoms.length; i++) before += geomArea(tileGeoms[i])
+    for (i = 0; i < filled.length; i++) after += geomArea(filled[i])
+    if (after + 0.04 < before || layoutHasOverlap(filled)) {
+        var autos = autoLayoutRects(tileIdx.length, "dwindle", 0.49)
+        for (i = 0; i < tileIdx.length; i++) {
+            if (autos[i]) list[tileIdx[i]].geom = autos[i]
+        }
+        return list
+    }
+    for (i = 0; i < tileIdx.length; i++) list[tileIdx[i]].geom = filled[i]
+    return list
+}
+
 function swapGeoms(geoms, i, j) {
     var next = clone(geoms)
     if (i === j || !next[i] || !next[j]) return geoms
@@ -1264,6 +1398,98 @@ function chromeIsDefault(c) {
         && n.borderColorActive === "" && n.borderColorInactive === "" && n.borderSize === -1
 }
 
+function safeCwd(s) {
+    var t = String(s || "").trim()
+    if (t.indexOf("/") !== 0 || t.length > 400) return ""
+    if (t.indexOf("..") >= 0) return ""
+    if (/[^A-Za-z0-9._/+\- ]/.test(t)) return ""
+    return t
+}
+
+function safeUrl(s) {
+    var t = String(s || "").trim()
+    if (t.length > 300) t = t.slice(0, 300)
+    if (!/^https:\/\/[A-Za-z0-9][A-Za-z0-9._~:/?#@&=+%,\-]*$/.test(t)) return ""
+    return t
+}
+
+function setAppsPlace(apps, index, place, layout, columnWidth) {
+    var next = clone(apps || [])
+    if (!next[index]) return apps
+    var want = place === "float" ? "float" : "tile"
+    var i
+    if (want === "float") {
+        var hole = normalizeGeom(next[index].geom) || { x: 0, y: 0, w: 1, h: 1 }
+        next[index].place = "float"
+        next[index].geomTiled = clone(hole)
+        next[index].geom = normalizeFloatGeom(hole)
+        var tileGeoms = []
+        var tileIdx = []
+        for (i = 0; i < next.length; i++) {
+            if (i === index || assignmentPlace(next[i]) === "float") continue
+            tileIdx.push(i)
+            tileGeoms.push(normalizeGeom(next[i].geom) || { x: 0, y: 0, w: 1, h: 1 })
+        }
+        if (tileGeoms.length) {
+            tileGeoms = fillHole(tileGeoms, hole, {})
+            for (i = 0; i < tileIdx.length; i++) next[tileIdx[i]].geom = tileGeoms[i]
+        }
+        return next
+    }
+    next[index].place = "tile"
+    var others = []
+    var otherIdx = []
+    for (i = 0; i < next.length; i++) {
+        if (i === index || assignmentPlace(next[i]) === "float") continue
+        otherIdx.push(i)
+        others.push(normalizeGeom(next[i].geom) || { x: 0, y: 0, w: 1, h: 1 })
+    }
+    if (!others.length) {
+        next[index].geom = { x: 0, y: 0, w: 1, h: 1 }
+        return next
+    }
+    var fg = normalizeFloatGeom(next[index].geom) || { x: 0.5, y: 0.5, w: 0.4, h: 0.4 }
+    var cx = fg.x + fg.w / 2
+    var cy = fg.y + fg.h / 2
+    var best = 0
+    var bestD = 1e9
+    var contained = -1
+    for (i = 0; i < others.length; i++) {
+        var o = others[i]
+        if (cx >= o.x - GEOM_EPS && cx <= o.x + o.w + GEOM_EPS && cy >= o.y - GEOM_EPS && cy <= o.y + o.h + GEOM_EPS)
+            contained = i
+        var ocx = o.x + o.w / 2
+        var ocy = o.y + o.h / 2
+        var d = (ocx - cx) * (ocx - cx) + (ocy - cy) * (ocy - cy)
+        if (d < bestD) { bestD = d; best = i }
+    }
+    if (contained >= 0) best = contained
+    var tw = Math.max(0.001, others[best].w)
+    var th = Math.max(0.001, others[best].h)
+    var dir = dropZone((cx - others[best].x) / tw, (cy - others[best].y) / th)
+    if (dir === "center") {
+        var dx = (cx - others[best].x) / tw - 0.5
+        var dy = (cy - others[best].y) / th - 0.5
+        if (Math.abs(dx) >= Math.abs(dy)) dir = dx >= 0 ? "right" : "left"
+        else dir = dy >= 0 ? "bottom" : "top"
+    }
+    delete next[index].geomTiled
+    var cut = splitRect(others[best], dir)
+    if (!cut) {
+        var autos = autoLayoutRects(others.length + 1, layout === "scrolling" ? "dwindle" : (layout || "dwindle"), columnWidth)
+        var t = 0
+        for (i = 0; i < next.length; i++) {
+            if (i !== index && assignmentPlace(next[i]) === "float") continue
+            if (autos[t]) next[i].geom = autos[t]
+            t++
+        }
+        return next
+    }
+    next[otherIdx[best]].geom = normalizeGeom(cut.stay)
+    next[index].geom = normalizeGeom(cut.incoming)
+    return next
+}
+
 function maxOrganizerPanes() { return MAX_PANES }
 
 function normalizeAssignment(a) {
@@ -1290,6 +1516,18 @@ function normalizeAssignment(a) {
         lockPlace: a.lockPlace === true,
         place: assignmentPlace(a)
     }
+    if (a.geomTiled) {
+        var gt = normalizeGeom(a.geomTiled)
+        if (gt) out.geomTiled = gt
+    }
+    var cwd = safeCwd(a.cwd)
+    if (cwd) out.cwd = cwd
+    var url = safeUrl(a.url)
+    if (url) out.url = url
+    var title = String(a.title || "").trim()
+    if (title) out.title = title.slice(0, 120)
+    var cls = String(a.class || a.windowClass || "").trim()
+    if (cls) out.class = cls.slice(0, 80)
     var geom = a.place === "float" ? normalizeFloatGeom(a.geom) : normalizeGeom(a.geom)
     if (geom) out.geom = geom
     var chrome = normalizeChrome(a.chrome)
@@ -1433,6 +1671,7 @@ function migrateV1(cfg) {
         out.settings.silent = cfg.settings.silent !== false
         out.settings.onlyOnBoot = cfg.settings.onlyOnBoot !== false
         out.settings.lastFormWorkspace = Math.max(1, Math.min(10, parseInt(cfg.settings.lastFormWorkspace) || 1))
+        out.settings.lastMainView = allowedMainView(cfg.settings.lastMainView)
     }
     var prof = defaultProfile()
     if (Array.isArray(cfg.assignments)) {
@@ -1457,6 +1696,7 @@ function sanitizeConfig(cfg) {
         out.settings.silent = cfg.settings.silent !== false
         out.settings.onlyOnBoot = cfg.settings.onlyOnBoot !== false
         out.settings.lastFormWorkspace = Math.max(1, Math.min(10, parseInt(cfg.settings.lastFormWorkspace) || 1))
+        out.settings.lastMainView = allowedMainView(cfg.settings.lastMainView)
         out.settings.activeProfileId = String(cfg.settings.activeProfileId || "default").slice(0, 40)
         out.settings.gestureSource = cfg.settings.gestureSource === "profile" ? "profile" : "global"
         out.settings.persistHyprGestures = cfg.settings.persistHyprGestures === true

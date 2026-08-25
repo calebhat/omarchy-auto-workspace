@@ -41,7 +41,7 @@ Panel {
     property bool formNameEdited: false
     property string autoName: ""
     property bool fillingName: false
-    property string mainView: "workspaces"
+    property string mainView: "profiles"
     property string customCommand: ""
     property string customName: ""
     property var liveStatus: ({ live: [], profiles: [], matchedProfileId: "", bindings: {} })
@@ -146,6 +146,7 @@ Panel {
     onAnyLockOnWsChanged: Qt.callLater(function() { })
     onActiveProfileIdChanged: Qt.callLater(syncMonitorDropdown)
     readonly property string matchedLabel: liveStatus.matchedProfileName ? ("matches " + liveStatus.matchedProfileName) : "no layout match"
+    readonly property var activeApplyHint: Model.applyHint(config, activeProfile, liveMonitors, liveNetwork, liveStatus)
     readonly property int totalCount: {
         var n = 0
         var list = config.profiles || []
@@ -159,7 +160,10 @@ Panel {
     })()
 
     function open() { root.controller.show(); loadConfig(); appsProc.running = true; layoutProc.running = true; liveProc.running = true; root.workspacePicked = true }
-    function close() { root.controller.hide() }
+    function close() {
+        saveConfig()
+        root.controller.hide()
+    }
     function toggle() { root.opened ? root.close() : root.open() }
     function closeForPopoutSwitch() { root.close() }
     function switchPanel(dir) {
@@ -172,6 +176,7 @@ Panel {
     function currentConfig() {
         var cfg = Model.sanitizeConfig(config)
         cfg.settings.lastFormWorkspace = formWorkspace
+        cfg.settings.lastMainView = Model.allowedMainView(mainView)
         var pid = cfg.settings.activeProfileId
         for (var i = 0; i < cfg.profiles.length; i++) {
             if (cfg.profiles[i].id === pid) {
@@ -481,35 +486,75 @@ Panel {
     }
     Timer { id: persistWsTimer; interval: 400; onTriggered: root.saveConfig() }
     function removeAssignment(id) {
-        root.assignments = root.assignments.filter(function(a){ return a.id !== id })
+        root.assignments = Model.removeAppAndFill(root.assignments, id)
         root.saveConfig()
         root.statusText = "Removed"; clearStatusTimer.restart()
     }
     function isInList(list, exec) {
-        if (!list) return false
-        for (var i = 0; i < list.length; i++) {
-            if (Model.sameAppExec(list[i].exec, exec) || Model.sameAppExec(list[i].command, exec)) return true
-        }
-        return false
+        return root.countInWorkspace(exec) > 0
     }
-    function toggleInWorkspace(exec, name) {
-        var ws = root.formWorkspace
-        for (var i = 0; i < root.assignments.length; i++) {
-            var a = root.assignments[i]
-            if (a.workspace === ws && (Model.sameAppExec(a.exec, exec) || Model.sameAppExec(a.command, exec))) {
-                root.removeAssignment(a.id)
-                root.statusText = "Removed " + a.name + " from WS" + ws; clearStatusTimer.restart()
-                return
-            }
+    function countInWorkspace(exec) {
+        var n = 0
+        var list = root.addedApps || []
+        for (var i = 0; i < list.length; i++) {
+            if (Model.sameAppExec(list[i].exec, exec) || Model.sameAppExec(list[i].command, exec)) n++
         }
+        return n
+    }
+    function addInstance(exec, name) {
+        var ws = root.formWorkspace
         var onWs = 0
         for (var n = 0; n < root.assignments.length; n++) if (root.assignments[n].workspace === ws) onWs++
         if (onWs >= Model.maxOrganizerPanes()) { errorText = "This workspace already has " + Model.maxOrganizerPanes() + " windows"; return }
+        var count = root.countInWorkspace(exec)
         var type = /herdr/.test(exec) || exec.indexOf("/") === 0 || exec.indexOf(" ") >= 0 ? "custom" : "app"
-        var item = Model.normalizeAssignment({ workspace: ws, name: name, command: exec, exec: exec, type: type, enabled: true, onlyOnBoot: true })
+        var label = name
+        if (count >= 1) label = name + " " + (count + 1)
+        var item = Model.normalizeAssignment({ workspace: ws, name: label, command: exec, exec: exec, type: type, enabled: true, onlyOnBoot: true })
         root.assignments = root.assignments.concat([item])
-        root.saveConfig(); root.statusText = "Added " + item.name + " → WS" + item.workspace; clearStatusTimer.restart()
+        root.saveConfig()
+        root.statusText = "Added " + item.name + " → WS" + item.workspace
+        clearStatusTimer.restart()
         if (root.bar && typeof root.bar.broadcast === "function") root.bar.broadcast("refreshCounts")
+        root.countsChanged()
+    }
+    function toggleInWorkspace(exec, name) {
+        var ws = root.formWorkspace
+        var last = -1
+        for (var i = 0; i < root.assignments.length; i++) {
+            var a = root.assignments[i]
+            if (a.workspace === ws && (Model.sameAppExec(a.exec, exec) || Model.sameAppExec(a.command, exec))) last = i
+        }
+        if (last >= 0) {
+            var gone = root.assignments[last]
+            root.removeAssignment(gone.id)
+            root.statusText = "Removed " + gone.name + " from WS" + ws; clearStatusTimer.restart()
+            return
+        }
+        root.addInstance(exec, name)
+    }
+    function captureWorkspace() {
+        captureProc.command = ["python3", root.home + "/.config/omarchy/plugins/" + root.pluginId + "/scripts/capture", "--workspace", String(root.formWorkspace)]
+        captureProc.running = true
+        statusText = "Capturing WS" + root.formWorkspace + "…"
+        clearStatusTimer.restart()
+    }
+    function applyCapture(rows) {
+        var ws = root.formWorkspace
+        var kept = []
+        for (var i = 0; i < assignments.length; i++) if (assignments[i].workspace !== ws) kept.push(assignments[i])
+        var added = []
+        var maxN = Model.maxOrganizerPanes()
+        for (var r = 0; r < rows.length && added.length < maxN; r++) {
+            var item = Model.normalizeAssignment(rows[r])
+            if (!item.exec) continue
+            item.workspace = ws
+            added.push(item)
+        }
+        assignments = kept.concat(added)
+        saveConfig()
+        statusText = "Captured " + added.length + " window" + (added.length === 1 ? "" : "s") + " on WS" + ws
+        clearStatusTimer.restart()
         root.countsChanged()
     }
     function updateAutofillName() {
@@ -619,7 +664,15 @@ Panel {
         root.applyBusy = true
         applyProc.command = ["bash", root.script, "--fresh-apply-profile", id]
         applyProc.running = true
-        statusText = "Closing preset workspaces, then applying fresh…"
+        statusText = "Closing workspaces that have apps in this profile, then applying fresh…"
+        clearStatusTimer.restart()
+    }
+    function resetEmptyWorkspaces() {
+        if (root.applyBusy || applyProc.running) return
+        root.applyBusy = true
+        applyProc.command = ["bash", root.script, "--reset-empty-workspaces", root.activeProfileId]
+        applyProc.running = true
+        statusText = "Restoring Omarchy defaults on workspaces with no apps in this profile…"
         clearStatusTimer.restart()
     }
     function openNewProfile() {
@@ -674,7 +727,7 @@ Panel {
         newProfileOpen = false
         statusText = "Saved " + prof.name + root.stolenStatus(claimed.stolen)
         clearStatusTimer.restart()
-        mainView = "displays"
+        mainView = "workspaces"
     }
     function bindProfileNetwork(id) {
         var net = Model.captureNetwork(root.liveNetwork)
@@ -927,15 +980,25 @@ Panel {
     function setAssignmentPlace(index, place) {
         var apps = root.addedApps || []
         if (!apps[index]) return
-        var id = apps[index].id
+        var packed = Model.setAppsPlace(apps, index, place === "float" ? "float" : "tile", root.currentWsPref.layout, 1 / Math.max(1, root.currentWsPref.visibleCount))
+        var byId = {}
+        for (var p = 0; p < packed.length; p++) if (packed[p] && packed[p].id) byId[packed[p].id] = packed[p]
         var next = []
         for (var i = 0; i < assignments.length; i++) {
             var a = Model.clone(assignments[i])
-            if (a.id === id) a.place = place === "float" ? "float" : "tile"
+            var src = byId[a.id]
+            if (src) {
+                a.place = src.place
+                if (src.geom) a.geom = src.geom
+                if (src.geomTiled) a.geomTiled = src.geomTiled
+                else delete a.geomTiled
+            }
             next.push(a)
         }
         assignments = next
         saveConfig()
+        statusText = place === "float" ? "Floated — other tiles filled the gap" : "Tiled — snapped back into the layout"
+        clearStatusTimer.restart()
     }
     function applyOrganizerSplit(index, dir) {
         var apps = root.addedApps || []
@@ -1089,6 +1152,7 @@ Panel {
                 var prof = Model.profileById(sane, sane.settings.activeProfileId)
                 root.assignments = (prof && prof.assignments) ? prof.assignments.slice() : []
                 root.formWorkspace = sane.settings.lastFormWorkspace
+                root.mainView = Model.allowedMainView(sane.settings.lastMainView)
                 var others = []
                 for (var p = 0; p < sane.profiles.length; p++)
                     if (sane.profiles[p].id !== sane.settings.activeProfileId) others.push(sane.profiles[p].id)
@@ -1132,6 +1196,21 @@ Panel {
             root.statusText = code === 0 ? "Applied" : "Apply failed"
             clearStatusTimer.restart()
             liveProc.running = true
+        }
+    }
+    Process {
+        id: captureProc
+        stdout: StdioCollector { id: captureOut; waitForEnd: true }
+        stderr: StdioCollector { id: captureErr; waitForEnd: true }
+        onExited: function(code) {
+            if (code !== 0) { errorText = "Capture failed: " + (captureErr.text || code); return }
+            try {
+                var rows = JSON.parse(captureOut.text || "[]")
+                if (!Array.isArray(rows)) throw "bad json"
+                root.applyCapture(rows)
+            } catch (e) {
+                errorText = "Capture parse failed"
+            }
         }
     }
     Process {
@@ -1285,10 +1364,8 @@ Panel {
         return null
     }
     readonly property string activeMatchLabel: {
-        var b = profileMatchBadge(activeProfileId)
-        if (b && b.matches) return "matches now"
-        if (b && b.reason) return String(b.reason)
-        return ""
+        var h = root.activeApplyHint
+        return (h && h.text) ? h.text : ""
     }
 
     KeyboardPanel {
@@ -1339,11 +1416,20 @@ Panel {
                         }
                     }
                     trailingControl: Component {
-                        Button {
-                            text: root.applyBusy ? "Applying…" : "Apply matching"
-                            tooltipText: "Detect connected monitors and load that profile (middle-click the bar chip)"
-                            enabled: !root.applyBusy
-                            onClicked: root.applyMatching()
+                        Row {
+                            spacing: Style.space(6)
+                            Button {
+                                text: root.applyBusy ? "Applying…" : "Apply matching"
+                                tooltipText: "Detect connected monitors and load that profile (middle-click the bar chip)"
+                                enabled: !root.applyBusy
+                                onClicked: root.applyMatching()
+                            }
+                            Button {
+                                text: "Fresh set"
+                                tooltipText: "Close workspaces that have apps in the last applied profile, then apply that profile from scratch. Other workspaces stay put."
+                                enabled: !root.applyBusy && root.activeProfileId !== ""
+                                onClicked: root.applyFreshProfile(root.activeProfileId)
+                            }
                         }
                     }
                 }
@@ -1370,8 +1456,10 @@ Panel {
                     }
                     Text {
                         visible: root.activeMatchLabel !== ""
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
                         text: root.activeMatchLabel
-                        color: Color.accent
+                        color: (root.activeApplyHint && root.activeApplyHint.matches) ? Color.accent : root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                         font.bold: true
@@ -1382,21 +1470,30 @@ Panel {
                     Layout.fillWidth: true
                     foreground: root.foreground
                     options: [
+                        { value: "profiles", label: "Profiles" },
                         { value: "workspaces", label: "Workspaces" },
                         { value: "displays", label: "Displays" },
-                        { value: "gestures", label: "Gestures" },
-                        { value: "profiles", label: "Profiles" }
+                        { value: "gestures", label: "Gestures" }
                     ]
                     value: root.mainView
-                    onChanged: function(v) { root.mainView = v; liveProc.running = true }
+                    onChanged: function(v) {
+                        if (!v || v === root.mainView) return
+                        root.mainView = v
+                        liveProc.running = true
+                        saveConfig()
+                    }
                 }
 
                 // ——— Workspaces ———
-                RowLayout {
+                ColumnLayout {
                     visible: root.mainView === "workspaces"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.minimumHeight: Style.space(360)
+                    spacing: Style.space(10)
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
                     spacing: Style.space(12)
 
                     ColumnLayout {
@@ -1405,15 +1502,14 @@ Panel {
                         Layout.preferredWidth: Math.round(content.width * 0.38)
                         Layout.minimumWidth: Style.space(280)
                         Layout.fillHeight: true
-                        spacing: Style.space(6)
+                        spacing: Style.space(10)
 
-                        Text {
-                            text: "Layout"
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
-                            font.bold: true
-                        }
+                        SectionCard {
+                            title: "LAYOUT"
+                            hint: Model.layoutDescription(root.currentWsPref.layout, root.currentWsPref.lockSizes === true || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace))
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+
                         GridLayout {
                             Layout.fillWidth: true
                             columns: 2
@@ -1424,7 +1520,8 @@ Panel {
                                     { value: "dwindle", label: "Dwindle" },
                                     { value: "scrolling", label: "Scrolling" },
                                     { value: "master", label: "Master" },
-                                    { value: "stage", label: "Stage" }
+                                    { value: "stage", label: "Stage" },
+                                    { value: "set-width", label: "Set width" }
                                 ]
                                 delegate: Button {
                                     required property var modelData
@@ -1439,16 +1536,8 @@ Panel {
                                 }
                             }
                         }
-                        Text {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: Model.layoutDescription(root.currentWsPref.layout, root.currentWsPref.lockSizes === true || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace))
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption - 1
-                        }
                         RowLayout {
-                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.layout === "stage" || (root.anyLockOnWs && root.currentWsPref.extras !== "block")
+                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.layout === "stage" || root.currentWsPref.layout === "set-width" || (root.anyLockOnWs && root.currentWsPref.extras !== "block")
                             Layout.fillWidth: true
                             spacing: Style.space(6)
                             Text {
@@ -1456,6 +1545,9 @@ Panel {
                                 color: root.dim
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
+                            }
+                            HintMark {
+                                tooltipText: Model.visibleCountHelp(root.currentWsPref.visibleCount, root.anyLockOnWs, root.currentWsPref.layout)
                             }
                             Button {
                                 text: "−"
@@ -1484,24 +1576,27 @@ Panel {
                                 onClicked: root.bumpVisibleCount(1)
                             }
                         }
-                        Text {
-                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.layout === "stage" || (root.anyLockOnWs && root.currentWsPref.extras !== "block")
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: Model.visibleCountHelp(root.currentWsPref.visibleCount, root.anyLockOnWs)
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption - 1
-                        }
-                        Toggle {
+                        RowLayout {
                             visible: root.lockAllViable
                             Layout.fillWidth: true
-                            label: "Lock every app on this workspace"
-                            description: "Pins each assigned pane. Same as tapping 🔒 on every app in the list."
-                            checked: root.allAssignedLocked
-                            foreground: root.foreground
-                            onClicked: root.setWorkspacePref("lockSizes", !root.allAssignedLocked)
+                            spacing: Style.space(4)
+                            WrapToggle {
+                                Layout.fillWidth: true
+                                label: "Lock every app on this workspace"
+                                checked: root.allAssignedLocked
+                                foreground: root.foreground
+                                onClicked: root.setWorkspacePref("lockSizes", !root.allAssignedLocked)
+                            }
+                            HintMark { tooltipText: "Pins each assigned pane. Same as tapping 🔒 on every app in the list." }
                         }
+                        }
+
+                        SectionCard {
+                            title: "APPS"
+                            hint: "Toggle apps onto this workspace. Custom command adds something that is not in the list."
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+                            fillAvailable: true
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: Style.space(6)
@@ -1539,10 +1634,12 @@ Panel {
                             Layout.fillHeight: true
                             Layout.minimumHeight: Style.space(240)
                             clip: true
+                            rightPadding: Style.space(16)
+                            contentWidth: availableWidth
                             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                             ScrollBar.vertical.policy: ScrollBar.AsNeeded
                             Column {
-                                width: resultsScroll.width
+                                width: resultsScroll.availableWidth
                                 spacing: Style.space(3)
                                 Repeater {
                                     model: root.filteredApps
@@ -1577,6 +1674,7 @@ Panel {
                             }
                             Button { text: "Add"; onClicked: root.addCustomCommand() }
                         }
+                        }
                     }
 
                     ColumnLayout {
@@ -1584,8 +1682,18 @@ Panel {
                         Layout.fillWidth: true
                         Layout.preferredWidth: Math.round(content.width * 0.62)
                         Layout.fillHeight: true
-                        spacing: Style.space(6)
+                        spacing: Style.space(10)
 
+                        SectionCard {
+                            title: "WORKSPACE " + root.formWorkspace
+                            hint: "Settings on this card apply only to the selected workspace number."
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+                            tools: Button {
+                                text: "Restore defaults"
+                                tooltipText: "On empty workspaces in this profile: restore Omarchy dwindle and drop leftover Stage/scroll rules. Does not close windows. Occupied unassigned workspaces keep their layout until empty. Fill next overflow workspaces stay in that chain."
+                                onClicked: root.resetEmptyWorkspaces()
+                            }
                         GridLayout {
                             Layout.fillWidth: true
                             columns: 10
@@ -1632,11 +1740,11 @@ Panel {
                             Text {
                                 visible: !root.showMonitorPicker
                                 Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
                                 text: root.monitorOptions.length ? ("All workspaces → " + root.monitorOptions[0].label) : ""
                                 color: root.dim
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
-                                elide: Text.ElideRight
                             }
                             TextField {
                                 Layout.preferredWidth: Style.space(120)
@@ -1646,9 +1754,36 @@ Panel {
                                 onEditingFinished: root.setWorkspaceName(root.formWorkspace, text)
                             }
                             Button {
+                                text: "Capture WS"
+                                tooltipText: "Replace this workspace’s presets with the windows that are open now (cwd for terminals, URL for web apps when exposed)"
+                                onClicked: root.captureWorkspace()
+                            }
+                            Button {
                                 text: "Copy / move"
                                 tooltipText: "Copy this workspace to another profile or move it to another number"
                                 onClicked: root.openTransfer("copy")
+                            }
+                        }
+                        RowLayout {
+                            visible: root.anyLockOnWs || root.currentWsPref.layout === "scrolling" || root.currentWsPref.layout === "stage" || root.currentWsPref.layout === "set-width"
+                            Layout.fillWidth: true
+                            spacing: Style.space(4)
+                            WrapToggle {
+                                id: extrasToggle
+                                Layout.fillWidth: true
+                                label: root.currentWsPref.layout === "set-width"
+                                    ? "Scroll extras at this width"
+                                    : "Send extra windows to the next workspace"
+                                checked: root.currentWsPref.layout === "set-width"
+                                    ? root.currentWsPref.extras !== "block"
+                                    : root.currentWsPref.extras === "block"
+                                foreground: root.foreground
+                                onClicked: root.setWorkspacePref("extras", root.currentWsPref.extras === "block" ? "around" : "block")
+                            }
+                            HintMark {
+                                tooltipText: root.currentWsPref.layout === "set-width"
+                                    ? "On: extra windows stay here as more 1/Visible scrolling columns. Off: after Visible columns are filled, a new window still opens, then WorkScape moves it to the next workspace."
+                                    : "This workspace only. Locked panes stay; a new extra window still opens, then WorkScape moves it off. Off: extras stay here as extra scrolling columns. Profiles → Stage overflow is a separate profile-wide chain."
                             }
                         }
                         Text {
@@ -1660,90 +1795,21 @@ Panel {
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption - 1
                         }
-                        Toggle {
-                            id: extrasToggle
-                            visible: root.anyLockOnWs
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: extrasToggle.implicitHeight
-                            Layout.minimumHeight: extrasToggle.visible ? extrasToggle.implicitHeight : 0
-                            label: "Send extra windows to the next workspace"
-                            description: "A new window still opens, then WorkScape moves it off this workspace. Off: extras stay here as extra scrolling columns."
-                            checked: root.currentWsPref.extras === "block"
+                        }
+
+                        SectionCard {
+                            title: "PREVIEW · " + root.activeProfile.name
+                            hint: root.addedApps.length > 1
+                                ? "Drag the bar between panes. Apply keeps them tiled so later resize still moves both."
+                                : (root.addedApps.length === 1 ? "Add another app to split this workspace." : "Toggle apps in the list to place them on this workspace.")
                             foreground: root.foreground
-                            onClicked: root.setWorkspacePref("extras", root.currentWsPref.extras === "block" ? "around" : "block")
-                            onImplicitHeightChanged: { }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Style.space(8)
-                            Toggle {
-                                id: overflowToggle
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: overflowToggle.implicitHeight
-                                label: "Fill next open workspace"
-                                description: Model.overflowSummary(root.activeProfile)
-                                checked: root.overflowEnabled()
-                                foreground: root.foreground
-                                onClicked: root.setOverflowEnabled(!root.overflowEnabled())
-                                onImplicitHeightChanged: { }
-                            }
-                            Button {
-                                text: "−"
-                                enabled: root.overflowMaxWindows() > 1
-                                Layout.preferredHeight: Style.space(28)
-                                Layout.preferredWidth: Style.space(28)
-                                tooltipText: "Global max windows per overflow workspace (not the Visible columns on a unique Stage workspace)"
-                                onClicked: root.bumpOverflowMax(-1)
-                            }
-                            Text {
-                                text: String(root.overflowMaxWindows())
-                                color: root.foreground
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                                font.bold: true
-                            }
-                            Button {
-                                text: "+"
-                                enabled: root.overflowMaxWindows() < 20
-                                Layout.preferredHeight: Style.space(28)
-                                Layout.preferredWidth: Style.space(28)
-                                tooltipText: "Global max windows per overflow workspace"
-                                onClicked: root.bumpOverflowMax(1)
-                            }
-                            Button {
-                                text: "Choose…"
-                                tooltipText: "Pick which of 1–20 participate. Set Stage selects unused workspaces as Stage. None clears the list."
-                                onClicked: root.openOverflow()
-                            }
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: {
-                                if (root.addedApps.length > 1)
-                                    return "Drag the bar between panes. Apply keeps them tiled so later resize still moves both."
-                                if (root.addedApps.length === 1)
-                                    return "Add another app to split this workspace."
-                                return "Toggle apps in the list to place them on WS " + root.formWorkspace + "."
-                            }
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption - 1
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            PanelSectionHeader {
-                                Layout.fillWidth: true
-                                text: "PREVIEW · drag splitters · " + root.activeProfile.name
-                                foreground: root.foreground
-                                fontFamily: root.fontFamily
-                            }
-                            Button {
+                            fontFamily: root.fontFamily
+                            fillAvailable: true
+                            tools: Button {
                                 text: "Expand"
                                 tooltipText: "Full organizer: split, drag-and-drop, float, opacity"
                                 onClicked: root.organizerOpen = true
                             }
-                        }
                         Item {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
@@ -1764,9 +1830,12 @@ Panel {
                                 onLayoutCleared: root.resetPreviewLayout()
                                 onAppLockToggled: function(id) { root.toggleAppLockById(id) }
                                 onOrganizerRequested: root.organizerOpen = true
+                                onWindowRemoved: function(id) { root.removeAssignment(id) }
                             }
                         }
+                        }
                     }
+                }
                 }
 
                 // ——— Displays (selected profile) ———
@@ -1774,15 +1843,12 @@ Panel {
                     visible: root.mainView === "displays"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    spacing: Style.space(8)
-                    Text {
-                        Layout.fillWidth: true
-                        wrapMode: Text.WordWrap
-                        text: "Displays for “" + root.activeProfile.name + "”. Drag to arrange; edges snap. At least one display must stay on."
-                        color: root.dim
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                    }
+                    spacing: Style.space(10)
+                    SectionCard {
+                        title: "MATCH AND APPLY"
+                        hint: "Displays for “" + root.activeProfile.name + "”. Exact needs every saved monitor and no extras. All-present allows extra displays. At least one display must stay on."
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: Style.space(8)
@@ -1795,10 +1861,17 @@ Panel {
                         Button { text: "Apply this profile"; onClicked: root.applyProfile(root.activeProfileId) }
                         Button {
                             text: "Fresh set"
-                            tooltipText: "Close windows on this profile’s preset workspaces, then apply empty so apps and layouts load from scratch. Leaves other workspaces alone."
+                            tooltipText: "Close only workspaces that have apps in this profile, then apply empty. Workspaces with no assigned apps are not closed."
                             onClicked: root.applyFreshProfile(root.activeProfileId)
                         }
                     }
+                    }
+                    SectionCard {
+                        title: "ARRANGEMENT"
+                        hint: "Drag displays to arrange; edges snap. Toggle a display off only when at least one stays on."
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
+                        fillAvailable: true
                     Repeater {
                         model: (root.activeProfile.monitors || []).length > 1 ? (root.activeProfile.monitors || []) : []
                         delegate: RowLayout {
@@ -1819,7 +1892,7 @@ Panel {
                                 color: isOff ? root.dim : root.foreground
                                 font.family: root.fontFamily
                                 font.pixelSize: Style.font.caption
-                                elide: Text.ElideRight
+                                wrapMode: Text.WordWrap
                             }
                             ToggleSwitch {
                                 checked: !isOff
@@ -1840,197 +1913,257 @@ Panel {
                         tiles: Model.monitorLayoutTiles(root.config, root.activeProfile, root.liveMonitors)
                         onLayoutChanged: function(positions) { root.setMonitorLayout(positions) }
                     }
+                    }
                 }
 
                 // ——— Gestures ———
                 ScrollView {
+                    id: gestureScroll
                     visible: root.mainView === "gestures"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                    rightPadding: Style.space(16)
                     contentWidth: availableWidth
+                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                     ColumnLayout {
                         id: gestureCol
-                        width: content.width
-                        spacing: Style.space(8)
-                        Text {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: "Trackpad workspace swipes. Global is the default and applies for every profile. Switch to This profile only if you want a separate set for the header profile — those edits do not change Global."
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
-                        }
-                        ButtonGroup {
-                            Layout.fillWidth: true
+                        width: gestureScroll.availableWidth
+                        spacing: Style.space(14)
+
+                        SectionCard {
+                            title: "SCOPE"
+                            hint: "Global is the default and applies for every profile. This profile is a separate set for the header profile only — those edits do not change Global."
                             foreground: root.foreground
-                            value: (root.config.settings && root.config.settings.gestureSource) === "profile" ? "profile" : "global"
-                            options: [
-                                { value: "global", label: "Global" },
-                                { value: "profile", label: "This profile" }
-                            ]
-                            onChanged: function(v) {
-                                var cur = (root.config.settings && root.config.settings.gestureSource) === "profile" ? "profile" : "global"
-                                if (v !== cur) root.setGestureSource(v)
-                            }
-                        }
-                        Toggle {
-                            Layout.fillWidth: true
-                            label: "Keep swipes after Hyprland reload"
-                            description: "Writes ~/.config/hypr/workscape-gestures.lua. Off: apply in this session only (and at login if that toggle is on). On: persist across compositor reload."
-                            checked: root.config.settings && root.config.settings.persistHyprGestures === true
-                            foreground: root.foreground
-                            onClicked: root.setPersistHyprGestures(!(root.config.settings && root.config.settings.persistHyprGestures === true))
-                        }
-                        Toggle {
-                            Layout.fillWidth: true
-                            label: "Workspace swipe"
-                            description: "Horizontal swipe switches workspaces (same as your 3-finger swipe)."
-                            checked: root.currentGestures.workspaceSwipe
-                            foreground: root.foreground
-                            onClicked: root.setGestureField("workspaceSwipe", !root.currentGestures.workspaceSwipe)
-                        }
-                        RowLayout {
-                            visible: root.currentGestures.workspaceSwipe
-                            Layout.fillWidth: true
-                            Text {
-                                text: "Fingers"
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                            }
-                            Button { text: "3"; selected: root.currentGestures.fingers === 3; onClicked: { if (root.currentGestures.fingers !== 3) root.setGestureField("fingers", 3) } }
-                            Button { text: "4"; selected: root.currentGestures.fingers === 4; onClicked: { if (root.currentGestures.fingers !== 4) root.setGestureField("fingers", 4) } }
-                        }
-                        Toggle {
-                            visible: root.currentGestures.workspaceSwipe
-                            Layout.fillWidth: true
-                            label: "Skip empty workspaces"
-                            description: "On: swipe only through workspaces that have windows. Off: swipe through every workspace number, empty included."
-                            checked: root.currentGestures.skipEmpty
-                            foreground: root.foreground
-                            onClicked: root.setGestureField("skipEmpty", !root.currentGestures.skipEmpty)
-                        }
-                        Toggle {
-                            visible: root.currentGestures.workspaceSwipe
-                            Layout.fillWidth: true
-                            label: "Include empty workspaces on touchscreen"
-                            description: "Also swipe workspaces from the display edge (Hyprland workspace_swipe_touch)."
-                            checked: root.currentGestures.touch
-                            foreground: root.foreground
-                            onClicked: root.setGestureField("touch", !root.currentGestures.touch)
-                        }
-                        RowLayout {
-                            visible: root.currentGestures.workspaceSwipe
-                            Layout.fillWidth: true
-                            spacing: Style.space(8)
-                            Text {
-                                text: "Swipe method"
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                            }
+                            fontFamily: root.fontFamily
                             ButtonGroup {
                                 Layout.fillWidth: true
                                 foreground: root.foreground
-                                value: root.currentGestures.invert === false ? "swap" : "natural"
+                                value: (root.config.settings && root.config.settings.gestureSource) === "profile" ? "profile" : "global"
                                 options: [
-                                    { value: "natural", label: "Natural" },
-                                    { value: "swap", label: "Swap left / right" }
+                                    { value: "global", label: "Global" },
+                                    { value: "profile", label: "This profile" }
                                 ]
                                 onChanged: function(v) {
-                                    var invert = v !== "swap"
-                                    if (root.currentGestures.invert !== invert)
-                                        root.setGestureField("invert", invert)
+                                    var cur = (root.config.settings && root.config.settings.gestureSource) === "profile" ? "profile" : "global"
+                                    if (v !== cur) root.setGestureSource(v)
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Style.space(4)
+                                WrapToggle {
+                                    Layout.fillWidth: true
+                                    label: "Keep swipes after Hyprland reload"
+                                    checked: root.config.settings && root.config.settings.persistHyprGestures === true
+                                    foreground: root.foreground
+                                    onClicked: root.setPersistHyprGestures(!(root.config.settings && root.config.settings.persistHyprGestures === true))
+                                }
+                                HintMark { tooltipText: "Writes ~/.config/hypr/workscape-gestures.lua. Off: this session only (and at login if that toggle is on)." }
+                            }
+                        }
+
+                        SectionCard {
+                            title: "TRACKPAD SWIPE"
+                            hint: "Horizontal swipe switches workspaces. Finger count sits on the same row as the master toggle."
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Style.space(8)
+                                WrapToggle {
+                                    Layout.fillWidth: true
+                                    label: "Workspace swipe"
+                                    checked: root.currentGestures.workspaceSwipe
+                                    foreground: root.foreground
+                                    onClicked: root.setGestureField("workspaceSwipe", !root.currentGestures.workspaceSwipe)
+                                }
+                                HintMark { tooltipText: "Horizontal swipe switches workspaces." }
+                                RowLayout {
+                                    visible: root.currentGestures.workspaceSwipe
+                                    spacing: Style.space(4)
+                                    Text {
+                                        text: "Fingers"
+                                        color: root.dim
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
+                                    }
+                                    Button { text: "3"; selected: root.currentGestures.fingers === 3; onClicked: { if (root.currentGestures.fingers !== 3) root.setGestureField("fingers", 3) } }
+                                    Button { text: "4"; selected: root.currentGestures.fingers === 4; onClicked: { if (root.currentGestures.fingers !== 4) root.setGestureField("fingers", 4) } }
+                                }
+                            }
+                            ColumnLayout {
+                                visible: root.currentGestures.workspaceSwipe
+                                Layout.fillWidth: true
+                                spacing: Style.space(4)
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Style.space(8)
+                                    Text {
+                                        text: "Swipe method"
+                                        color: root.dim
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
+                                    }
+                                    ButtonGroup {
+                                        Layout.fillWidth: true
+                                        foreground: root.foreground
+                                        value: root.currentGestures.invert === false ? "swap" : "natural"
+                                        options: [
+                                            { value: "natural", label: "Natural" },
+                                            { value: "swap", label: "Swap left / right" }
+                                        ]
+                                        onChanged: function(v) {
+                                            var invert = v !== "swap"
+                                            if (root.currentGestures.invert !== invert)
+                                                root.setGestureField("invert", invert)
+                                        }
+                                    }
+                                    HintMark {
+                                        tooltipText: root.currentGestures.invert
+                                            ? "Natural: swipe the workspace strip with your fingers (Hyprland default)."
+                                            : "Swapped: reverse which workspace a left or right swipe selects."
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                visible: root.currentGestures.workspaceSwipe
+                                Layout.fillWidth: true
+                                spacing: Style.space(4)
+                                WrapToggle {
+                                    Layout.fillWidth: true
+                                    label: "Skip empty workspaces"
+                                    checked: root.currentGestures.skipEmpty
+                                    foreground: root.foreground
+                                    onClicked: root.setGestureField("skipEmpty", !root.currentGestures.skipEmpty)
+                                }
+                                HintMark { tooltipText: "On: only workspaces with windows. Off: every number, empty included. Keyboard SUPER+,/. follows this." }
+                            }
+                            RowLayout {
+                                visible: root.currentGestures.workspaceSwipe
+                                Layout.fillWidth: true
+                                spacing: Style.space(4)
+                                WrapToggle {
+                                    Layout.fillWidth: true
+                                    label: "Keep workspaces 1–10 even when empty"
+                                    checked: root.activeProfile.persistentWorkspaces === true
+                                    foreground: root.foreground
+                                    onClicked: root.setProfileField("persistentWorkspaces", !(root.activeProfile.persistentWorkspaces === true))
+                                }
+                                HintMark { tooltipText: "So “include empty” has a full row of workspaces to land on." }
+                            }
+                            RowLayout {
+                                visible: root.currentGestures.workspaceSwipe
+                                Layout.fillWidth: true
+                                spacing: Style.space(4)
+                                WrapToggle {
+                                    Layout.fillWidth: true
+                                    label: "Include empty workspaces on touchscreen"
+                                    checked: root.currentGestures.touch
+                                    foreground: root.foreground
+                                    onClicked: root.setGestureField("touch", !root.currentGestures.touch)
+                                }
+                                HintMark { tooltipText: "Also swipe from the display edge (Hyprland workspace_swipe_touch)." }
+                            }
+                            RowLayout {
+                                visible: root.currentGestures.workspaceSwipe
+                                Layout.fillWidth: true
+                                spacing: Style.space(4)
+                                WrapToggle {
+                                    Layout.fillWidth: true
+                                    label: "Create a new workspace past the last one"
+                                    checked: root.currentGestures.createNew
+                                    foreground: root.foreground
+                                    onClicked: root.setGestureField("createNew", !root.currentGestures.createNew)
+                                }
+                                HintMark { tooltipText: "Swiping off the end opens a fresh empty workspace." }
+                            }
+                            RowLayout {
+                                visible: root.currentGestures.workspaceSwipe
+                                Layout.fillWidth: true
+                                spacing: Style.space(4)
+                                WrapToggle {
+                                    Layout.fillWidth: true
+                                    label: "Keep swiping beyond the next workspace"
+                                    checked: root.currentGestures.forever
+                                    foreground: root.foreground
+                                    onClicked: root.setGestureField("forever", !root.currentGestures.forever)
+                                }
+                                HintMark { tooltipText: "One swipe can pass several workspaces instead of stopping at the next." }
+                            }
+                        }
+
+                        SectionCard {
+                            title: "KEYBOARD"
+                            hint: "Comma and period (the < > keys). Follows Skip empty above."
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Style.space(4)
+                                WrapToggle {
+                                    Layout.fillWidth: true
+                                    label: "SUPER + , / .  previous and next workspace"
+                                    checked: root.currentGestures.keyboard
+                                    foreground: root.foreground
+                                    onClicked: root.setGestureField("keyboard", !root.currentGestures.keyboard)
+                                }
+                                HintMark { tooltipText: "Comma and period (the < > keys). Follows Skip empty above." }
+                            }
+                        }
+
+                        SectionCard {
+                            title: "SCRATCHPAD"
+                            hint: "Opens Omarchy’s special:scratchpad (same as SUPER+S)."
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Style.space(8)
+                                WrapToggle {
+                                    Layout.fillWidth: true
+                                    label: "Swipe down for scratchpad"
+                                    checked: root.currentGestures.scratchpadSwipe
+                                    foreground: root.foreground
+                                    onClicked: root.setGestureField("scratchpadSwipe", !root.currentGestures.scratchpadSwipe)
+                                }
+                                HintMark { tooltipText: "Opens Omarchy’s special:scratchpad (same as SUPER+S)." }
+                                RowLayout {
+                                    visible: root.currentGestures.scratchpadSwipe
+                                    spacing: Style.space(4)
+                                    Text {
+                                        text: "Fingers"
+                                        color: root.dim
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
+                                    }
+                                    Button { text: "3"; selected: root.currentGestures.scratchpadFingers === 3; onClicked: root.setGestureField("scratchpadFingers", 3) }
+                                    Button { text: "4"; selected: root.currentGestures.scratchpadFingers === 4; onClicked: root.setGestureField("scratchpadFingers", 4) }
                                 }
                             }
                         }
-                        Text {
-                            visible: root.currentGestures.workspaceSwipe
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: root.currentGestures.invert
-                                ? "Natural: swipe the workspace strip with your fingers (Hyprland default)."
-                                : "Swapped: reverse which workspace a left or right swipe selects."
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption - 1
-                        }
-                        Toggle {
-                            visible: root.currentGestures.workspaceSwipe
-                            Layout.fillWidth: true
-                            label: "Create a new workspace past the last one"
-                            checked: root.currentGestures.createNew
+
+                        SectionCard {
+                            title: "AFTER APPLY"
+                            hint: "Which workspace to focus after Apply matching. Stay leaves the current workspace."
                             foreground: root.foreground
-                            onClicked: root.setGestureField("createNew", !root.currentGestures.createNew)
-                        }
-                        Toggle {
-                            visible: root.currentGestures.workspaceSwipe
-                            Layout.fillWidth: true
-                            label: "Keep swiping beyond the next workspace"
-                            checked: root.currentGestures.forever
-                            foreground: root.foreground
-                            onClicked: root.setGestureField("forever", !root.currentGestures.forever)
-                        }
-                        Toggle {
-                            Layout.fillWidth: true
-                            label: "SUPER + , / .  previous and next workspace"
-                            description: "Comma and period (the < > keys). Follows Skip empty: occupied only, or every workspace including empty."
-                            checked: root.currentGestures.keyboard
-                            foreground: root.foreground
-                            onClicked: root.setGestureField("keyboard", !root.currentGestures.keyboard)
-                        }
-                        Toggle {
-                            Layout.fillWidth: true
-                            label: "Swipe down for scratchpad"
-                            description: "Opens Omarchy’s special:scratchpad (same as SUPER+S)."
-                            checked: root.currentGestures.scratchpadSwipe
-                            foreground: root.foreground
-                            onClicked: root.setGestureField("scratchpadSwipe", !root.currentGestures.scratchpadSwipe)
-                        }
-                        RowLayout {
-                            visible: root.currentGestures.scratchpadSwipe
-                            Layout.fillWidth: true
-                            Text {
-                                text: "Scratchpad fingers"
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                            }
-                            Button { text: "3"; selected: root.currentGestures.scratchpadFingers === 3; onClicked: root.setGestureField("scratchpadFingers", 3) }
-                            Button { text: "4"; selected: root.currentGestures.scratchpadFingers === 4; onClicked: root.setGestureField("scratchpadFingers", 4) }
-                        }
-                        Toggle {
-                            Layout.fillWidth: true
-                            label: "Keep workspaces 1–10 even when empty"
-                            description: "So “include empty” swipe has a full row of workspaces to land on."
-                            checked: root.activeProfile.persistentWorkspaces === true
-                            foreground: root.foreground
-                            onClicked: root.setProfileField("persistentWorkspaces", !(root.activeProfile.persistentWorkspaces === true))
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            text: "After apply, go to workspace"
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
-                        }
-                        Flow {
-                            Layout.fillWidth: true
-                            spacing: Style.space(4)
-                            Button {
-                                text: "Stay"
-                                selected: (root.activeProfile.defaultWorkspace || 0) === 0
-                                onClicked: root.setProfileField("defaultWorkspace", 0)
-                            }
-                            Repeater {
-                                model: 10
-                                delegate: Button {
-                                    required property int index
-                                    text: String(index + 1)
-                                    selected: root.activeProfile.defaultWorkspace === (index + 1)
-                                    onClicked: root.setProfileField("defaultWorkspace", index + 1)
+                            fontFamily: root.fontFamily
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: Style.space(4)
+                                Button {
+                                    text: "Stay"
+                                    selected: (root.activeProfile.defaultWorkspace || 0) === 0
+                                    onClicked: root.setProfileField("defaultWorkspace", 0)
+                                }
+                                Repeater {
+                                    model: 10
+                                    delegate: Button {
+                                        required property int index
+                                        text: String(index + 1)
+                                        selected: root.activeProfile.defaultWorkspace === (index + 1)
+                                        onClicked: root.setProfileField("defaultWorkspace", index + 1)
+                                    }
                                 }
                             }
                         }
@@ -2042,23 +2175,82 @@ Panel {
                     visible: root.mainView === "profiles"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    spacing: Style.space(8)
+                    spacing: Style.space(10)
 
-                    Toggle {
-                        Layout.fillWidth: true
-                        label: "Apply matching profile at login"
-                        description: "Picks one profile from connected displays, then Wi-Fi name / LAN subnet if you bound a network. One layout per environment. Middle-click the bar chip or Apply matching any time."
-                        checked: root.config.settings && root.config.settings.applyOnBoot === true
+                    SectionCard {
+                        title: "LOGIN"
+                        hint: "Picks one profile from connected displays, then Wi-Fi name / LAN subnet if you bound a network. One layout per environment. Middle-click the bar chip or Apply matching any time."
                         foreground: root.foreground
-                        onClicked: root.setApplyOnBoot(!(root.config.settings && root.config.settings.applyOnBoot === true))
+                        fontFamily: root.fontFamily
+                        WrapToggle {
+                            Layout.fillWidth: true
+                            label: "Apply matching profile at login"
+                            checked: root.config.settings && root.config.settings.applyOnBoot === true
+                            foreground: root.foreground
+                            onClicked: root.setApplyOnBoot(!(root.config.settings && root.config.settings.applyOnBoot === true))
+                        }
                     }
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Style.space(8)
-                        Button { text: "Save current layout as profile"; onClicked: root.openNewProfile() }
-                        Button { text: "Refresh layout"; onClicked: liveProc.running = true }
+                    SectionCard {
+                        title: "STAGE OVERFLOW · " + (root.activeProfile.name || "Profile")
+                        hint: "Profile-wide chain of unused workspaces (Stage), not the per-workspace “send extras off a locked workspace” toggle. When this is on, new windows fill the chosen workspaces in order, up to a max per workspace."
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            WrapToggle {
+                                Layout.fillWidth: true
+                                label: "Fill next open workspace"
+                                description: Model.overflowSummary(root.activeProfile)
+                                checked: root.overflowEnabled()
+                                foreground: root.foreground
+                                onClicked: root.setOverflowEnabled(!root.overflowEnabled())
+                            }
+                            HintMark { tooltipText: "Max windows is for this Stage chain only — not Visible columns on a unique Stage workspace. Choose… picks which of 1–20 are in the chain; Set Stage selects unused workspaces." }
+                            Button {
+                                text: "−"
+                                enabled: root.overflowMaxWindows() > 1
+                                Layout.preferredHeight: Style.space(28)
+                                Layout.preferredWidth: Style.space(28)
+                                tooltipText: "Global max windows per overflow workspace (not Visible columns on a unique Stage workspace)"
+                                onClicked: root.bumpOverflowMax(-1)
+                            }
+                            Text {
+                                text: String(root.overflowMaxWindows())
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                font.bold: true
+                            }
+                            Button {
+                                text: "+"
+                                enabled: root.overflowMaxWindows() < 20
+                                Layout.preferredHeight: Style.space(28)
+                                Layout.preferredWidth: Style.space(28)
+                                tooltipText: "Global max windows per overflow workspace"
+                                onClicked: root.bumpOverflowMax(1)
+                            }
+                            Button {
+                                text: "Choose…"
+                                tooltipText: "Pick which of 1–20 are in this profile’s Stage chain. Set Stage selects unused workspaces."
+                                onClicked: root.openOverflow()
+                            }
+                        }
                     }
+
+                    SectionCard {
+                        title: "PROFILES"
+                        hint: "Save the current monitor and window layout as a new profile, or refresh live displays and network."
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
+                        fillAvailable: true
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            Button { text: "Save current layout as profile"; onClicked: root.openNewProfile() }
+                            Button { text: "Refresh layout"; onClicked: liveProc.running = true }
+                        }
 
                     Text {
                         Layout.fillWidth: true
@@ -2096,27 +2288,47 @@ Panel {
                     }
 
                     ScrollView {
+                        id: profilesScroll
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
+                        rightPadding: Style.space(16)
+                        contentWidth: availableWidth
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Column {
-                            width: parent.parent.width
+                            width: profilesScroll.availableWidth
                             spacing: Style.space(8)
                             Repeater {
                                 model: root.config.profiles || []
                                 delegate: Rectangle {
+                                    id: profileCard
                                     required property var modelData
+                                    readonly property bool selected: modelData.id === root.activeProfileId
+                                    readonly property bool hot: cardHover.hovered
                                     width: parent.width
                                     implicitHeight: col.implicitHeight + Style.space(16)
                                     radius: Style.cornerRadius
-                                    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, modelData.id === root.activeProfileId ? 0.10 : 0.05)
+                                    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, selected ? (hot ? 0.18 : 0.10) : (hot ? 0.12 : 0.05))
                                     border.width: 1
-                                    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, modelData.id === root.activeProfileId ? 0.35 : 0.12)
+                                    border.color: hot
+                                        ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.65)
+                                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, selected ? 0.35 : 0.12)
+                                    Behavior on color { ColorAnimation { duration: 120 } }
+                                    Behavior on border.color { ColorAnimation { duration: 120 } }
+                                    HoverHandler {
+                                        id: cardHover
+                                        cursorShape: Qt.PointingHandCursor
+                                    }
                                     MouseArea {
                                         anchors.fill: parent
                                         z: 0
-                                        onClicked: root.setActiveProfile(modelData.id)
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            root.setActiveProfile(modelData.id)
+                                            root.mainView = "workspaces"
+                                            saveConfig()
+                                        }
                                     }
                                     ColumnLayout {
                                         id: col
@@ -2136,14 +2348,16 @@ Panel {
                                                 Layout.fillWidth: true
                                             }
                                             Text {
+                                                Layout.preferredWidth: Style.space(220)
+                                                wrapMode: Text.WordWrap
+                                                horizontalAlignment: Text.AlignRight
                                                 text: {
-                                                    var b = root.profileMatchBadge(modelData.id)
-                                                    if (!b) return ""
-                                                    return b.matches ? "matches now" : Model.matchReasonLabel(b.reason)
+                                                    var h = Model.applyHint(root.config, modelData, root.liveMonitors, root.liveNetwork, root.liveStatus)
+                                                    return h.text || ""
                                                 }
                                                 color: {
-                                                    var b = root.profileMatchBadge(modelData.id)
-                                                    return (b && b.matches) ? Color.accent : root.dim
+                                                    var h = Model.applyHint(root.config, modelData, root.liveMonitors, root.liveNetwork, root.liveStatus)
+                                                    return h.matches ? Color.accent : root.dim
                                                 }
                                                 font.family: root.fontFamily
                                                 font.pixelSize: Style.font.caption
@@ -2176,7 +2390,7 @@ Panel {
                                             Button { text: "Apply"; onClicked: root.applyProfile(modelData.id) }
                                             Button {
                                                 text: "Fresh set"
-                                                tooltipText: "Close windows on this profile’s preset workspaces, then apply from scratch"
+                                                tooltipText: "Close only workspaces that have apps in this profile, then apply from scratch. Other workspaces stay put."
                                                 onClicked: root.applyFreshProfile(modelData.id)
                                             }
                                             Item { Layout.fillWidth: true }
@@ -2200,6 +2414,8 @@ Panel {
                             }
                         }
                     }
+                    }
+
                 }
 
                 RowLayout {
@@ -2253,22 +2469,21 @@ Panel {
                         anchors.margins: Style.space(16)
                         spacing: Style.space(10)
 
-                        Text {
-                            text: "Move / copy workspace"
-                            color: root.foreground
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.title
-                            font.bold: true
-                        }
-                        Text {
+                        RowLayout {
                             Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: root.transferMode === "move"
-                                  ? "Move apps and the split to another workspace on this profile. If that workspace already has apps, the two swap."
-                                  : "Copy apps and the split onto another profile. Pick the destination workspace number."
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Move / copy workspace"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.title
+                                font.bold: true
+                            }
+                            HintMark {
+                                tooltipText: root.transferMode === "move"
+                                      ? "Move apps and the split to another workspace on this profile. If that workspace already has apps, the two swap."
+                                      : "Copy apps and the split onto another profile. Pick the destination workspace number."
+                            }
                         }
 
                         ButtonGroup {
@@ -2295,7 +2510,7 @@ Panel {
                                 color: root.foreground
                                 font.family: root.fontFamily
                                 Layout.fillWidth: true
-                                elide: Text.ElideRight
+                                wrapMode: Text.WordWrap
                             }
                             Dropdown {
                                 Layout.preferredWidth: Style.space(110)
@@ -2325,10 +2540,10 @@ Panel {
                             Text {
                                 visible: root.transferMode === "move"
                                 Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
                                 text: root.activeProfile.name
                                 color: root.foreground
                                 font.family: root.fontFamily
-                                elide: Text.ElideRight
                             }
                             Dropdown {
                                 Layout.preferredWidth: Style.space(110)
@@ -2382,20 +2597,17 @@ Panel {
                         anchors.margins: Style.space(16)
                         spacing: Style.space(10)
 
-                        Text {
-                            text: "New profile"
-                            color: root.foreground
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.title
-                            font.bold: true
-                        }
-                        Text {
+                        RowLayout {
                             Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: "Name this layout first. One profile owns a given display set + network. Binding Wi-Fi / LAN lets the same dock look different at home vs work."
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
+                            Text {
+                                Layout.fillWidth: true
+                                text: "New profile"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.title
+                                font.bold: true
+                            }
+                            HintMark { tooltipText: "Name this layout first. One profile owns a given display set + network. Binding Wi-Fi / LAN lets the same dock look different at home vs work." }
                         }
                         TextField {
                             id: newProfileNameField
@@ -2406,13 +2618,18 @@ Panel {
                             onTextChanged: root.newProfileName = text
                             onAccepted: root.confirmNewProfile()
                         }
-                        Toggle {
+                        RowLayout {
                             Layout.fillWidth: true
-                            label: "Bind current network"
-                            description: Model.liveNetworkSummary(root.liveNetwork) + ". SSID when on Wi-Fi, otherwise the LAN subnet — not Tailscale or public IP."
-                            checked: root.newProfileBindNetwork
-                            foreground: root.foreground
-                            onClicked: root.newProfileBindNetwork = !root.newProfileBindNetwork
+                            spacing: Style.space(4)
+                            WrapToggle {
+                                Layout.fillWidth: true
+                                label: "Bind current network"
+                                description: Model.liveNetworkSummary(root.liveNetwork)
+                                checked: root.newProfileBindNetwork
+                                foreground: root.foreground
+                                onClicked: root.newProfileBindNetwork = !root.newProfileBindNetwork
+                            }
+                            HintMark { tooltipText: "SSID when on Wi-Fi, otherwise the LAN subnet — not Tailscale or public IP." }
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -2452,20 +2669,17 @@ Panel {
                         anchors.margins: Style.space(16)
                         spacing: Style.space(8)
 
-                        Text {
-                            text: "Edit network"
-                            color: root.foreground
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.title
-                            font.bold: true
-                        }
-                        Text {
+                        RowLayout {
                             Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: "Use this when you are not on the network that should load this profile. SSID is enough for Wi-Fi; subnet (192.168.2.0/24) covers ethernet. Leave all empty for any-network fallback. Now: " + Model.liveNetworkSummary(root.liveNetwork)
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Edit network"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.title
+                                font.bold: true
+                            }
+                            HintMark { tooltipText: "Use this when you are not on the network that should load this profile. SSID is enough for Wi-Fi; subnet (192.168.2.0/24) covers ethernet. Leave all empty for any-network fallback. Now: " + Model.liveNetworkSummary(root.liveNetwork) }
                         }
                         Text { text: "Wi-Fi SSID"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
                         TextField {
@@ -2544,20 +2758,17 @@ Panel {
                         anchors.margins: Style.space(16)
                         spacing: Style.space(10)
 
-                        Text {
-                            text: "Overflow chain"
-                            color: root.foreground
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.title
-                            font.bold: true
-                        }
-                        Text {
+                        RowLayout {
                             Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            text: "Checked workspaces take the next new window in this order. Max windows / workspace is for this global Stage chain only — unique Stage workspaces keep their own Visible columns. Set Stage selects workspaces with no pinned apps."
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Overflow chain"
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.title
+                                font.bold: true
+                            }
+                            HintMark { tooltipText: "Profile-wide Stage overflow chain. Checked workspaces take the next new window in this order. Max windows / workspace is for this chain only — not “send extras off a locked workspace,” and not Visible columns on a unique Stage workspace. Set Stage selects workspaces with no pinned apps." }
                         }
                         GridLayout {
                             Layout.fillWidth: true
@@ -2655,6 +2866,7 @@ Panel {
                     onSplitRequested: function(index, dir) { root.applyOrganizerSplit(index, dir) }
                     onGearRequested: function(index) { root.openChrome(index) }
                     onCloseRequested: root.organizerOpen = false
+                    onWindowRemoved: function(id) { root.removeAssignment(id) }
                 }
             }
 
@@ -2702,14 +2914,14 @@ Panel {
                             Button { text: "+"; onClicked: root.chromeOpI = Model.clampOpacity(root.chromeOpI + 0.1) }
                             Item { Layout.fillWidth: true }
                         }
-                        Toggle {
+                        WrapToggle {
                             Layout.fillWidth: true
                             label: "Focused border"
                             checked: root.chromeBorderA
                             foreground: root.foreground
                             onClicked: root.chromeBorderA = !root.chromeBorderA
                         }
-                        Toggle {
+                        WrapToggle {
                             Layout.fillWidth: true
                             label: "Unfocused border"
                             checked: root.chromeBorderI
@@ -2783,23 +2995,43 @@ Panel {
                 Layout.fillWidth: true
                 spacing: 1
                 Text {
-                    text: app ? app.name : ""
+                    text: {
+                        if (!app) return ""
+                        var n = root.countInWorkspace(app.exec)
+                        return n > 0 ? (app.name + "  ×" + n) : app.name
+                    }
                     color: root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
-                    elide: Text.ElideRight
+                    wrapMode: Text.WordWrap
                     Layout.fillWidth: true
                 }
                 Text {
-                    text: app ? (app.exec.indexOf("omarchy-launch-webapp") !== -1 ? "web app" : app.exec.split(" ")[0].split("/").pop()) : ""
+                    text: {
+                        if (!app) return ""
+                        var n = root.countInWorkspace(app.exec)
+                        var kind = app.exec.indexOf("omarchy-launch-webapp") !== -1 ? "web app" : app.exec.split(" ")[0].split("/").pop()
+                        return n > 1 ? (n + " on this workspace") : kind
+                    }
                     color: root.dim
                     font.family: "monospace"
                     font.pixelSize: Style.font.caption - 2
-                    elide: Text.ElideRight
+                    wrapMode: Text.WordWrap
                     Layout.fillWidth: true
                 }
             }
 
+            Button {
+                visible: app ? root.countInWorkspace(app.exec) > 0 : false
+                Layout.preferredWidth: Style.space(36)
+                Layout.minimumWidth: Style.space(36)
+                Layout.maximumWidth: Style.space(40)
+                Layout.fillWidth: false
+                Layout.alignment: Qt.AlignVCenter
+                text: "+"
+                tooltipText: "Add another window of this app on this workspace"
+                onClicked: if (app) root.addInstance(app.exec, app.name)
+            }
             Button {
                 visible: app ? root.isInList(root.addedApps, app.exec) : false
                 Layout.preferredWidth: Style.space(36)

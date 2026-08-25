@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""Snapshot live Hyprland windows on a workspace into WorkScape assignments."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+def hypr_j(cmd: str):
+    return json.loads(subprocess.check_output(["hyprctl", "-j", cmd], text=True))
+
+
+_CWD_OK = re.compile(r"^/[A-Za-z0-9._/+\- ]{0,399}$")
+_URL_OK = re.compile(r"^https://[A-Za-z0-9][A-Za-z0-9._~:/?#@&=+%,\-]*$")
+_WS_OK = re.compile(r"^(?:[1-9]|1[0-9]|20)$")
+
+
+def safe_cwd(path: str) -> str:
+    p = str(path or "").strip()
+    if not p or ".." in p or not _CWD_OK.fullmatch(p):
+        return ""
+    if not os.path.isdir(p):
+        return ""
+    return p
+
+
+def safe_url(url: str) -> str:
+    u = str(url or "").strip()[:300]
+    if not _URL_OK.fullmatch(u):
+        return ""
+    return u
+
+
+def children(pid: int) -> list[int]:
+    try:
+        raw = Path(f"/proc/{pid}/task/{pid}/children").read_text().split()
+        return [int(x) for x in raw]
+    except Exception:
+        return []
+
+
+def proc_cwd(pid: int) -> str:
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except Exception:
+        return ""
+
+
+def proc_cmd(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+    except Exception:
+        return ""
+
+
+def shell_cwd(pid: int) -> str:
+    """Prefer a shell child's cwd over the terminal process (often /)."""
+    shells = {"bash", "zsh", "fish", "sh", "nu"}
+    best = proc_cwd(pid)
+    stack = children(pid)
+    seen = set()
+    visits = 0
+    while stack:
+        c = stack.pop()
+        if c in seen:
+            continue
+        seen.add(c)
+        visits += 1
+        if visits > 32:
+            break
+        cmd = proc_cmd(c)
+        base = cmd.split()[0].split("/")[-1] if cmd else ""
+        cwd = proc_cwd(c)
+        if base in shells and cwd and cwd not in {"/", "/home", str(Path.home())}:
+            return cwd
+        if base in shells and cwd:
+            best = cwd
+        stack.extend(children(c))
+    return safe_cwd(best) if best not in {"/", ""} else ""
+
+
+def url_from_client(c: dict) -> str:
+    cls = str(c.get("class") or "")
+    title = str(c.get("title") or "")
+    m = re.match(r"^(?:brave|chrome|chromium|google-chrome)-(.+?)(?:_-Default)?$", cls)
+    if m and "." in m.group(1):
+        rest = m.group(1)
+        host, _, path = rest.partition("__")
+        path = path.replace("_", "/")
+        if host and "/" not in host:
+            url = "https://" + host
+            if path:
+                url += "/" + path.lstrip("/")
+            return safe_url(url.rstrip("/"))
+    cmd = proc_cmd(int(c.get("pid") or 0)) if c.get("pid") else ""
+    um = re.search(r"https://[^\s\"']+", cmd)
+    if um and "deeplink" not in um.group(0):
+        return safe_url(um.group(0))
+    if title.startswith("https://"):
+        return safe_url(title.split()[0])
+    return ""
+
+
+def exec_for_client(c: dict, url: str, cwd: str) -> str:
+    cls = str(c.get("class") or "")
+    cmd = proc_cmd(int(c.get("pid") or 0)) if c.get("pid") else ""
+    if cls.startswith("foot") or cls == "foot":
+        return "foot"
+    if "ghostty" in cls:
+        return "ghostty"
+    if url:
+        return f"omarchy-launch-webapp '{url}'"
+    if cls == "brave-browser" or cls == "brave":
+        return "brave"
+    first = cmd.split()[0] if cmd else ""
+    if first.startswith("/") and os.path.isfile(first):
+        return first
+    return first or cls
+
+
+def geom_from_client(c: dict, mon: dict) -> dict | None:
+    at = c.get("at") or [0, 0]
+    size = c.get("size") or [0, 0]
+    scale = float(mon.get("scale") or 1) or 1
+    mx = int(mon.get("x") or 0)
+    my = int(mon.get("y") or 0)
+    mw = int((mon.get("width") or 0) / scale)
+    mh = int((mon.get("height") or 0) / scale)
+    if mw <= 0 or mh <= 0:
+        return None
+    x = (int(at[0]) - mx) / mw
+    y = (int(at[1]) - my) / mh
+    w = int(size[0]) / mw
+    h = int(size[1]) / mh
+    return {
+        "x": round(max(0, min(1, x)), 4),
+        "y": round(max(0, min(1, y)), 4),
+        "w": round(max(0.04, min(1, w)), 4),
+        "h": round(max(0.04, min(1, h)), 4),
+    }
+
+
+def capture_workspace(ws: str) -> list[dict]:
+    clients = hypr_j("clients")
+    mons = {m.get("name"): m for m in hypr_j("monitors")}
+    out = []
+    for c in clients:
+        w = c.get("workspace") or {}
+        if str(w.get("id")) != str(ws) and str(w.get("name")) != str(ws):
+            continue
+        cls = str(c.get("class") or "")
+        if cls in {"", "org.omarchy.workscape"}:
+            continue
+        try:
+            pid = int(c.get("pid") or 0)
+        except Exception:
+            pid = 0
+        if pid < 2:
+            pid = 0
+        term = cls in {"foot", "org.wezfurlong.wezterm", "kitty", "Alacritty", "alacritty"} or "ghostty" in cls or cls.startswith("foot")
+        cwd = shell_cwd(pid) if pid and term else ""
+        url = url_from_client(c)
+        mon = mons.get(c.get("monitor")) or (list(mons.values())[0] if mons else {})
+        item = {
+            "workspace": int(ws) if str(ws).isdigit() else ws,
+            "name": str(c.get("title") or cls)[:80],
+            "class": cls,
+            "title": str(c.get("title") or "")[:120],
+            "exec": exec_for_client(c, url, cwd),
+            "command": exec_for_client(c, url, cwd),
+            "type": "webapp" if url else "app",
+            "enabled": True,
+            "place": "float" if c.get("floating") else "tile",
+        }
+        cwd = safe_cwd(cwd)
+        url = safe_url(url)
+        if cwd:
+            item["cwd"] = cwd
+        if url:
+            item["url"] = url
+        g = geom_from_client(c, mon)
+        if g:
+            item["geom"] = g
+        out.append(item)
+    return out
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--workspace", required=True)
+    args = p.parse_args()
+    ws = str(args.workspace)
+    if not _WS_OK.fullmatch(ws):
+        print("[]")
+        return 1
+    json.dump(capture_workspace(ws), sys.stdout)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

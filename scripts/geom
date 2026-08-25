@@ -40,11 +40,10 @@ def hypr_eval(lua: str) -> None:
     subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def gaps_out() -> tuple[int, int, int, int]:
-    """Return top, right, bottom, left gaps_out."""
+def _css_box(option: str, fallback: int) -> tuple[int, int, int, int]:
     try:
-        raw = hypr_j("getoption general:gaps_out", cached=True)
-        css = str(raw.get("css") or "8")
+        raw = hypr_j(f"getoption {option}", cached=True)
+        css = str(raw.get("css") or fallback)
         parts = [int(float(p)) for p in css.replace("px", "").split()]
         if len(parts) == 1:
             return parts[0], parts[0], parts[0], parts[0]
@@ -52,7 +51,25 @@ def gaps_out() -> tuple[int, int, int, int]:
             return parts[0], parts[1], parts[2], parts[3]
     except Exception:
         pass
-    return 8, 8, 8, 8
+    return fallback, fallback, fallback, fallback
+
+
+def gaps_out() -> tuple[int, int, int, int]:
+    """Return top, right, bottom, left gaps_out."""
+    return _css_box("general:gaps_out", 8)
+
+
+def gaps_in() -> tuple[int, int, int, int]:
+    """Return top, right, bottom, left gaps_in."""
+    return _css_box("general:gaps_in", 4)
+
+
+def border_size() -> int:
+    try:
+        raw = hypr_j("getoption general:border_size", cached=True)
+        return max(0, int(raw.get("int") or 0))
+    except Exception:
+        return 2
 
 
 def layout_metrics(mon: dict[str, Any]) -> dict[str, float]:
@@ -88,6 +105,14 @@ def geom_pixels(geom: dict[str, Any], metrics: dict[str, float]) -> dict[str, in
     y = metrics["y"] + float(geom.get("y") or 0) * metrics["h"]
     w = max(80.0, float(geom.get("w") or 1) * metrics["w"])
     h = max(60.0, float(geom.get("h") or 1) * metrics["h"])
+    max_x = float(metrics["x"]) + float(metrics["w"])
+    max_y = float(metrics["y"]) + float(metrics["h"])
+    if x + w > max_x:
+        w = max(80.0, max_x - x)
+    if y + h > max_y:
+        h = max(60.0, max_y - y)
+    x = max(float(metrics["x"]), x)
+    y = max(float(metrics["y"]), y)
     return {"x": int(round(x)), "y": int(round(y)), "w": int(round(w)), "h": int(round(h))}
 
 
@@ -121,6 +146,7 @@ def lock_plan_for_workspace(profile: dict[str, Any], ws: str) -> dict[str, Any]:
     extras = "block" if pref.get("extras") == "block" else "around"
     lock_all = pref.get("lockSizes") is True
     stage = pref.get("layout") == "stage"
+    set_width = pref.get("layout") == "set-width"
     locked = []
     for a in profile.get("assignments") or []:
         if a.get("enabled") is False:
@@ -148,6 +174,7 @@ def lock_plan_for_workspace(profile: dict[str, Any], ws: str) -> dict[str, Any]:
         "visibleCount": vis,
         "prefs": prefs,
         "stage": stage,
+        "setWidth": set_width,
     }
 
 
@@ -212,6 +239,16 @@ def ensure_floating(addr: str, want: bool) -> None:
     if bool(is_f) != bool(want):
         hypr_eval(f'hl.dispatch(hl.dsp.window.float({{ action = "toggle", window = "address:{addr}" }}))')
         cache_clear()
+
+
+def raise_window(addr: str) -> None:
+    """Keep a floating window above tiled ones without stealing focus."""
+    addr = SAFE.safe_addr(addr)
+    if not addr:
+        return
+    a = f"address:{addr}"
+    hypr_eval(f'hl.dispatch(hl.dsp.window.alter_zorder({{ window = "{a}", mode = "top" }}))')
+    hypr_eval(f'hl.dispatch(hl.dsp.window.bring_to_top({{ window = "{a}" }}))')
 
 
 def apply_abs_box(addr: str, px: dict[str, Any]) -> dict[str, int] | None:
@@ -321,22 +358,248 @@ def column_width_frac(it: dict[str, Any], extra_frac: float) -> float:
     return max(0.05, min(1.0, float(extra_frac)))
 
 
-def scrolling_layout_opts(visible_count: int, lock: bool = False, stage: bool = False) -> str:
+def fit_column_fracs(fracs: list[float], metrics: dict[str, float], n_cols: int) -> list[float]:
+    """Map custom column ratios onto the usable layout width.
+
+    colresize is a fraction of the *monitor* width. Assigned panes should
+    still fill the usable area (native outer gaps only). Visible-count is
+    for extra columns, not for shrinking a custom split.
+    """
+    if not fracs or n_cols < 1:
+        return fracs
+    lw = float(metrics.get("lw") or metrics.get("w") or 1) or 1.0
+    usable = float(metrics.get("w") or lw) or lw
+    _it, ir, _ib, il = gaps_in()
+    between = max(0, n_cols - 1) * (il + ir)
+    inner = max(80.0, usable - between)
+    total = sum(max(0.05, f) for f in fracs) or 1.0
+    return [max(0.08, min(0.98, round((f / total) * inner / lw, 4))) for f in fracs]
+
+
+def clamp_scrolling_to_monitor(ws: str, metrics: dict[str, float], items: list[dict[str, Any]]) -> None:
+    """Left-align the tape. Do not colresize — that overwrites locked splits."""
+    lw = float(metrics.get("lw") or metrics.get("w") or 0)
+    if lw < 80:
+        return
+    _gt, _gr, _gb, gl = gaps_out()
+    left = int(round(float(metrics.get("x") or gl)))
+    for _ in range(4):
+        cache_clear()
+        tiled = [c for c in sort_clients_axis(clients_on_workspace(ws), "x") if not c.get("floating")]
+        if not tiled:
+            return
+        addr = tiled[0].get("address")
+        if not addr:
+            return
+        first_x = int(((tiled[0].get("at") or [0, 0]) + [0, 0])[0])
+        dx = first_x - left
+        if abs(dx) <= 3:
+            return
+        focus_window(str(addr))
+        layout_msg(f"move {-dx}")
+        time.sleep(0.02)
+
+
+def scrolling_layout_opts(visible_count: int, lock: bool = False, stage: bool = False, fill_one: bool = False) -> str:
     col = max(0.1, extra_column_frac(visible_count))
-    if lock:
-        return f"column_width = {col}, fullscreen_on_one_column = false"
-    if stage:
-        return f"column_width = {col}, fullscreen_on_one_column = true"
-    return f"column_width = {col}"
+    # Always set fullscreen_on_one_column. Hyprland’s default is true, which
+    # makes a lone Set-width / extra column eat the whole monitor.
+    expand = bool(fill_one or (stage and not lock))
+    fs = "true" if expand else "false"
+    return f"column_width = {col}, fullscreen_on_one_column = {fs}, follow_focus = false"
 
 
-def force_scrolling(ws: str, visible_count: int = 2, lock: bool = True, stage: bool = False) -> None:
+OMARCHY_SCROLLING_COLUMN_WIDTH = 0.49
+
+
+def sync_column_width_for_workspace(ws: str, visible_count: int | None = None) -> None:
+    """Match Hyprland’s spawn default to this workspace’s Visible 1/N."""
+    layout = ""
+    if visible_count is None:
+        try:
+            cfg = load_config(config_path())
+            profile = active_profile(cfg)
+            pref = ((profile or {}).get("workspacePrefs") or {}).get(str(ws)) or {}
+            layout = str(pref.get("layout") or "")
+            if layout in ("scrolling", "stage", "set-width"):
+                visible_count = clamp_visible_count(pref.get("visibleCount") or 2)
+        except Exception:
+            visible_count = None
+    if not visible_count:
+        apply_spawn_width_rule(ws, None)
+        set_global_column_width(OMARCHY_SCROLLING_COLUMN_WIDTH, fill_one=True)
+        return
+    extra = extra_column_frac(int(visible_count))
+    apply_spawn_width_rule(ws, extra)
+    set_width = layout == "set-width"
+    stage = layout == "stage"
+    set_global_column_width(extra, fill_one=not set_width)
+    force_scrolling(
+        str(ws),
+        int(visible_count),
+        lock=not set_width and not stage,
+        stage=stage,
+        fill_one=not set_width,
+    )
+
+
+def apply_spawn_width_rule(ws: str, frac: float | None) -> None:
+    """Hyprland scrolling_width: spawn width for windows on this workspace."""
     ws = SAFE.safe_ws(ws)
     if not ws:
         return
-    opts = scrolling_layout_opts(visible_count, lock=lock, stage=stage)
+    name = f"workscape-w{ws}-width"
+    if frac is None:
+        hypr_eval(
+            f'hl.window_rule({{ name = "{name}", match = {{ workspace = "{ws}" }}, enabled = false }})'
+        )
+        return
+    try:
+        f = float(frac)
+    except (TypeError, ValueError):
+        f = OMARCHY_SCROLLING_COLUMN_WIDTH
+    f = max(0.1, min(1.0, round(f, 4)))
     hypr_eval(
-        f'hl.workspace_rule({{ workspace = "{ws}", persistent = true, layout = "scrolling", '
+        f'hl.window_rule({{ name = "{name}", match = {{ workspace = "{ws}" }}, scrolling_width = {f} }})'
+    )
+
+
+def set_global_column_width(frac: float, fill_one: bool | None = None) -> None:
+    """New scrolling columns use the global default. workspace_rule layout_opts
+    are ignored for spawn, so this must match Visible 1/N."""
+    try:
+        f = float(frac)
+    except (TypeError, ValueError):
+        f = OMARCHY_SCROLLING_COLUMN_WIDTH
+    f = max(0.1, min(1.0, f))
+    if fill_one is None:
+        hypr_eval(f"hl.config({{ scrolling = {{ column_width = {round(f, 4)} }} }})")
+        return
+    fs = "true" if fill_one else "false"
+    hypr_eval(
+        f"hl.config({{ scrolling = {{ column_width = {round(f, 4)}, fullscreen_on_one_column = {fs} }} }})"
+    )
+
+
+def restamp_scrolling_default(
+    ws: str,
+    visible_count: int,
+    lock: bool = False,
+    stage: bool = False,
+    n_cols: int = 1,
+    set_width: bool = False,
+) -> None:
+    """Keep new columns at 1/visibleCount. colresize of a locked pane must not
+    become the default for the next extra (Hyprland then uses 0.5)."""
+    vis = clamp_visible_count(visible_count)
+    extra = extra_column_frac(vis)
+    force_scrolling(
+        ws,
+        vis,
+        lock=bool(lock) and n_cols > 1,
+        stage=stage,
+        fill_one=n_cols <= 1 and not set_width,
+    )
+    apply_spawn_width_rule(ws, extra)
+    set_global_column_width(extra, fill_one=n_cols <= 1 and not set_width)
+
+
+def push_column_after_locked(addr: str, ws: str, locked_addrs: set[str] | int) -> None:
+    """Move a new column to the right of every locked pane (not between them)."""
+    if not addr:
+        return
+    if isinstance(locked_addrs, int):
+        if locked_addrs < 1:
+            return
+        locked_set: set[str] = set()
+        n_locked = locked_addrs
+    else:
+        locked_set = {a for a in locked_addrs if a and a != addr}
+        if not locked_set:
+            return
+        n_locked = len(locked_set)
+    focus_window(addr)
+    layout_msg("expel")
+    time.sleep(0.02)
+    for _ in range(14):
+        cache_clear()
+        rank = column_rank(addr, ws)
+        if rank is None:
+            return
+        if locked_set:
+            locked_ranks = [column_rank(a, ws) for a in locked_set]
+            locked_ranks = [r for r in locked_ranks if r is not None]
+            if locked_ranks and rank > max(locked_ranks):
+                return
+        elif rank >= n_locked:
+            return
+        layout_msg("swapcol r")
+        time.sleep(0.015)
+        cache_clear()
+        new_rank = column_rank(addr, ws)
+        if new_rank is not None and new_rank < rank:
+            layout_msg("swapcol l")
+            layout_msg("expel")
+            time.sleep(0.02)
+
+
+def size_new_scrolling_column(
+    ws: str,
+    addr: str,
+    visible_count: int,
+    stage: bool = False,
+    set_width: bool = False,
+) -> None:
+    extra = extra_column_frac(visible_count)
+    cache_clear()
+    tiled = [c for c in clients_on_workspace(ws) if not c.get("floating")]
+    n = len(tiled)
+    locked_addrs: set[str] = set()
+    try:
+        cfg = load_config(config_path())
+        profile = active_profile(cfg)
+        if profile:
+            plan = lock_plan_for_workspace(profile, str(ws))
+            used: set[str] = set()
+            on_ws = clients_on_workspace(str(ws))
+            for assignment in plan.get("locked") or []:
+                hit = match_client(assignment, on_ws, used)
+                if hit and hit.get("address"):
+                    used.add(hit["address"])
+                    locked_addrs.add(str(hit["address"]))
+    except Exception:
+        locked_addrs = set()
+    n_locked = len(locked_addrs)
+    restamp_scrolling_default(ws, visible_count, lock=n_locked > 1, stage=stage, n_cols=n, set_width=set_width)
+    if not addr:
+        return
+    if locked_addrs and addr not in locked_addrs:
+        push_column_after_locked(addr, str(ws), locked_addrs)
+    focus_window(addr)
+    if set_width or n > 1:
+        layout_msg(f"colresize {extra}")
+        return
+    # Stage / unlocked scrolling: the first column fills until extras exist.
+    layout_msg("colresize 1.0")
+
+
+def force_scrolling(
+    ws: str,
+    visible_count: int = 2,
+    lock: bool = True,
+    stage: bool = False,
+    persist: bool = False,
+    fill_one: bool = False,
+) -> None:
+    ws = SAFE.safe_ws(ws)
+    if not ws:
+        return
+    opts = scrolling_layout_opts(visible_count, lock=lock, stage=stage, fill_one=fill_one)
+    if "follow_focus" not in opts:
+        opts = (opts + ", " if opts else "") + "follow_focus = false"
+    persist_s = "true" if persist else "false"
+    hypr_eval(
+        f'hl.workspace_rule({{ workspace = "{ws}", persistent = {persist_s}, layout = "scrolling", '
         f"layout_opts = {{ {opts} }} }})"
     )
 
@@ -353,6 +616,7 @@ def active_window_addr() -> str | None:
 
 
 def focus_window(addr: str) -> None:
+    addr = SAFE.safe_addr(addr) or ""
     if not addr:
         return
     # Hyprland 0.56: layoutmsg hits the *active* workspace layout. Focus first
@@ -390,8 +654,12 @@ def ensure_width(addr: str, want_w: int) -> None:
 
 
 def client_by_addr(addr: str) -> dict[str, Any] | None:
+    want = SAFE.safe_addr(addr)
+    if not want:
+        return None
     for c in hypr_j("clients", cached=True):
-        if c.get("address") == addr:
+        got = SAFE.safe_addr(str(c.get("address") or ""))
+        if got == want:
             return c
     return None
 
@@ -570,6 +838,9 @@ def place_scrolling_columns(
     ws: str,
     extra_frac: float,
     prefer_addr: str = "",
+    visible_count: int = 0,
+    stage: bool = False,
+    set_width: bool = False,
 ) -> list[dict[str, Any]]:
     """Locked columns keep geom width; extras become new tape columns at extra_frac.
 
@@ -577,6 +848,7 @@ def place_scrolling_columns(
     until its width goes negative and the window vanishes.
     """
     extra_frac = max(0.05, min(1.0, float(extra_frac)))
+    vis = clamp_visible_count(visible_count) if visible_count else clamp_visible_count(int(round(1.0 / extra_frac)))
     cache_clear()
     locked_addrs = {it["addr"] for it in items if it.get("addr")}
     extras: list[dict[str, Any]] = []
@@ -619,10 +891,9 @@ def place_scrolling_columns(
         for it in extras:
             force_tiled(it["addr"])
             clear_size_lock(it["addr"])
-            if stacked_with_other(it["addr"], ws) or column_collapsed(it["addr"]):
-                focus_window(it["addr"])
-                layout_msg("expel")
-                time.sleep(0.04)
+            focus_window(it["addr"])
+            layout_msg("expel")
+            time.sleep(0.02)
         for it in ordered_locked:
             force_tiled(it["addr"])
             clear_size_lock(it["addr"])
@@ -636,34 +907,23 @@ def place_scrolling_columns(
             total = sum(locked_fracs)
             if total > 0.02 and abs(total - 1.0) >= 0.02:
                 locked_fracs = [round(f / total, 4) for f in locked_fracs]
+            locked_fracs = fit_column_fracs(locked_fracs, metrics, len(locked_fracs))
+        locked_addr_set = {it["addr"] for it in ordered_locked if it.get("addr")}
         for it in extras:
-            for _ in range(6):
-                cache_clear()
-                rank = column_rank(it["addr"], ws)
-                if rank is None or rank >= last_locked:
-                    break
-                focus_window(it["addr"])
-                layout_msg("swapcol r")
-                time.sleep(0.03)
-                cache_clear()
-                new_rank = column_rank(it["addr"], ws)
-                # wrap_swapcol sends the last column to the start — undo that.
-                if new_rank is not None and rank is not None and new_rank < rank:
-                    layout_msg("swapcol l")
-                    break
+            push_column_after_locked(it["addr"], ws, locked_addr_set)
         for it, frac in zip(ordered_locked, locked_fracs):
             focus_window(it["addr"])
             layout_msg(f"colresize {frac}")
-            time.sleep(0.04)
+            time.sleep(0.015)
         for it in extras:
             focus_window(it["addr"])
             layout_msg(f"colresize {extra_frac}")
-            time.sleep(0.04)
+            time.sleep(0.015)
             if column_collapsed(it["addr"]):
                 focus_window(it["addr"])
                 layout_msg("expel")
                 layout_msg(f"colresize {extra_frac}")
-                time.sleep(0.04)
+                time.sleep(0.015)
         stay = ""
         if extras:
             stay = anchor or extras[-1]["addr"]
@@ -673,6 +933,16 @@ def place_scrolling_columns(
             stay = sequence[0]["addr"]
         if stay:
             focus_window(stay)
+        if not has_extras:
+            clamp_scrolling_to_monitor(ws, metrics, ordered_locked)
+        restamp_scrolling_default(
+            ws,
+            vis,
+            lock=bool(ordered_locked),
+            stage=stage,
+            n_cols=len(sequence),
+            set_width=set_width,
+        )
     finally:
         # inhibit_scroll is a scrolling layoutmsg. Sending it after focusing a
         # dwindle/master workspace (e.g. after Apply) raises a Hyprland config error.
@@ -704,8 +974,23 @@ def close_enough(box: dict[str, int] | None, want: dict[str, int] | None, tol: i
     ) <= tol
 
 
-def restore_locks_for_workspace(ws: str, cfg: dict[str, Any] | None = None, profile_id: str = "", prefer_addr: str = "") -> dict[str, Any]:
+def restore_locks_for_workspace(
+    ws: str,
+    cfg: dict[str, Any] | None = None,
+    profile_id: str = "",
+    prefer_addr: str = "",
+    keep_focus: bool = False,
+) -> dict[str, Any]:
     """Re-apply locked pane sizes after Hyprland splits on a new window."""
+    prev_addr = active_window_addr() if keep_focus else None
+    prev_ws = ""
+    if keep_focus:
+        try:
+            aw = hypr_j("activeworkspace")
+            if isinstance(aw, dict):
+                prev_ws = str(aw.get("id") or "")
+        except Exception:
+            prev_ws = ""
     if cfg is None:
         path = config_path()
         try:
@@ -719,13 +1004,15 @@ def restore_locks_for_workspace(ws: str, cfg: dict[str, Any] | None = None, prof
     locked = plan["locked"]
     if not locked:
         return {"ok": True, "skipped": True, "workspace": str(ws)}
+    cache_clear()
+    tiled_now = [c for c in clients_on_workspace(str(ws)) if not c.get("floating")]
     force_scrolling(
         str(ws),
         plan["visibleCount"],
         lock=not plan.get("stage") or plan.get("lock_all") is True,
         stage=plan.get("stage") is True,
+        fill_one=len(locked) == 1 and len(tiled_now) <= 1 and not plan.get("setWidth"),
     )
-    cache_clear()
     monitors = hypr_j("monitors", cached=True)
     workspaces = hypr_j("workspaces", cached=True)
     mon = monitor_for_workspace(str(ws), monitors, workspaces)
@@ -754,11 +1041,26 @@ def restore_locks_for_workspace(ws: str, cfg: dict[str, Any] | None = None, prof
     if not items:
         return {"ok": True, "skipped": True, "workspace": str(ws), "reason": "no clients"}
     extra_frac = extra_column_frac(plan["visibleCount"])
-    last = place_scrolling_columns(items, metrics, str(ws), extra_frac, prefer_addr=prefer_addr)
+    last = place_scrolling_columns(
+        items,
+        metrics,
+        str(ws),
+        extra_frac,
+        prefer_addr=prefer_addr,
+        visible_count=plan["visibleCount"],
+        stage=plan.get("stage") is True,
+        set_width=plan.get("setWidth") is True,
+    )
     locked_placed = [it for it in last if it.get("lock")]
     extras_placed = [it for it in last if not it.get("lock")]
     extra_ok = all(int((it.get("place") or {}).get("w") or 0) >= 40 for it in extras_placed) if extras_placed else True
     ok = bool(locked_placed) and all(close_enough(it.get("place"), it.get("px"), tol=32) for it in locked_placed) and extra_ok
+    if keep_focus:
+        cache_clear()
+        if prev_addr and client_by_addr(prev_addr):
+            focus_window(prev_addr)
+        elif prev_ws:
+            focus_workspace(prev_ws)
     return {
         "ok": True,
         "workspace": str(ws),
@@ -828,9 +1130,22 @@ def match_client(assignment: dict[str, Any], clients: list[dict[str, Any]], used
                 score += 6
         if name and name in title and not (base in {"brave", "chromium"} and site_app):
             score += 4
+        at = c.get("at") or [0, 0]
+        size = c.get("size") or [0, 0]
+        x = int(at[0] or 0)
+        w = int(size[0] or 0)
         if score > best_score:
             best_score = score
             best = c
+            continue
+        if score == best_score and best is not None:
+            bat = best.get("at") or [0, 0]
+            bsz = best.get("size") or [0, 0]
+            bx, bw = int(bat[0] or 0), int(bsz[0] or 0)
+            # Same site-app class (Outlook extras): keep the existing full pane,
+            # not the extra the user is closing.
+            if w > bw + 8 or (abs(w - bw) <= 8 and x < bx):
+                best = c
     return best if best_score > 0 else None
 
 
@@ -891,10 +1206,11 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
         result = {"ok": True, "windows": []}
         lock_any = any(w.get("lock") for w in windows) or pref.get("lockSizes") is True
         stage = pref.get("layout") == "stage" and not lock_any
+        set_width = pref.get("layout") == "set-width"
         geoms = [w.get("geom") or {} for w in windows if w.get("geom")]
         cols = bool(geoms) and all(abs(float(g.get("h") or 1) - 1) < 0.08 and float(g.get("y") or 0) < 0.08 for g in geoms)
         rows = bool(geoms) and all(abs(float(g.get("w") or 1) - 1) < 0.08 and float(g.get("x") or 0) < 0.08 for g in geoms)
-        scrolling = (lock_any or pref.get("layout") in ("scrolling", "stage")) and cols
+        scrolling = (lock_any or pref.get("layout") in ("scrolling", "stage", "set-width")) and cols
         if not windows:
             pass
         elif rows and not cols:
@@ -907,7 +1223,14 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
             placed_list = apply_tiled_split(items, metrics)
             result = {"ok": True, "metrics": metrics, "windows": [{"addr": it.get("addr"), "place": it.get("place"), "actual": it.get("place")} for it in placed_list]}
         elif scrolling:
-            force_scrolling(ws, vis, lock=lock_any, stage=stage)
+            tiled_now = [c for c in clients_on_workspace(ws) if not c.get("floating")]
+            force_scrolling(
+                ws,
+                vis,
+                lock=lock_any,
+                stage=stage,
+                fill_one=len(windows) == 1 and len(tiled_now) <= 1 and not set_width,
+            )
             if stage:
                 for win in windows:
                     if not win.get("lock"):
@@ -917,7 +1240,15 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
             metrics = layout_metrics(mon) if mon else {"x": 0, "y": 0, "w": 1, "h": 1}
             for win in windows:
                 win["px"] = geom_pixels(win["geom"], metrics) if win.get("geom") else win.get("px")
-            placed_list = place_scrolling_columns(windows, metrics, ws, extra_column_frac(vis))
+            placed_list = place_scrolling_columns(
+                windows,
+                metrics,
+                ws,
+                extra_column_frac(vis),
+                visible_count=vis,
+                stage=stage,
+                set_width=set_width,
+            )
             result = {"ok": True, "metrics": metrics, "windows": [{"addr": it.get("addr"), "place": it.get("place"), "actual": it.get("place")} for it in placed_list]}
         else:
             result = apply_many({"workspace": ws, "windows": windows})
@@ -928,13 +1259,20 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
                     continue
                 clear_size_lock(addr)
         metrics = layout_metrics(mon) if mon else {"x": 0, "y": 0, "w": 1, "h": 1}
-        for win in floats:
+        floats_sorted = sorted(
+            floats,
+            key=lambda w: int((w.get("geom") or {}).get("z") or 0),
+        )
+        for win in floats_sorted:
             if not win.get("geom"):
                 continue
             px = geom_pixels(win["geom"], metrics)
             apply_abs_box(win["addr"], px)
+            raise_window(win["addr"])
             if win.get("chrome"):
                 apply_chrome(win["addr"], win["chrome"], True)
+        for win in floats_sorted:
+            raise_window(win["addr"])
         for win in windows:
             if win.get("chrome"):
                 apply_chrome(win["addr"], win["chrome"], False)

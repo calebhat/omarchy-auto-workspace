@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, fillHole, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -15,6 +15,11 @@ if (v1.version !== 2) throw new Error("migrate version")
 if (v1.profiles.length !== 1) throw new Error("migrate profile")
 if (v1.profiles[0].assignments.length !== 1) throw new Error("migrate assignments")
 if (v1.settings.applyOnBoot !== false) throw new Error("boot default off")
+if (m.allowedMainView("workspaces") !== "workspaces") throw new Error("keep workspaces view")
+if (m.allowedMainView("nope") !== "profiles") throw new Error("unknown view is profiles home")
+if (m.defaultConfig().settings.lastMainView !== "profiles") throw new Error("home is profiles")
+if (m.sanitizeConfig({ version: 2, settings: { lastMainView: "gestures" }, profiles: [{ id: "p", name: "P" }] }).settings.lastMainView !== "gestures")
+  throw new Error("persist last page")
 if (m.defaultConfig().settings.gestureSource !== "global") throw new Error("gestures default global")
 const gsrcMissing = m.sanitizeConfig({ version: 2, settings: {}, profiles: [{ id: "p", name: "P" }] })
 if (gsrcMissing.settings.gestureSource !== "global") throw new Error("sanitize missing source is global")
@@ -191,6 +196,11 @@ if (pref.layout !== "scrolling" || pref.visibleCount !== 3 || pref.lockSizes !==
 if (m.layoutDescription("master").indexOf("stack") < 0) throw new Error("master layout copy")
 if (m.layoutDescription("stage").indexOf("full width") < 0) throw new Error("stage layout copy")
 if (m.normalizeWorkspacePref({ layout: "stage" }).layout !== "stage") throw new Error("persist stage")
+if (m.normalizeWorkspacePref({ layout: "set-width" }).layout !== "set-width") throw new Error("persist set-width")
+if (m.layoutDescription("set-width").indexOf("Scroll extras") < 0) throw new Error("set-width layout copy")
+const setWidthRects = m.autoLayoutRects(1, "set-width", 0.25)
+if (setWidthRects.length !== 1 || Math.abs(setWidthRects[0].w - 0.25) > 0.02) throw new Error("set-width first is not full")
+if (m.visibleCountHelp(4, false, "set-width").indexOf("1/4") < 0) throw new Error("set-width visible help")
 const stageRects = m.autoLayoutRects(2, "stage", 0.5)
 if (stageRects[0].w !== 1) throw new Error("stage first full")
 if (!(stageRects[1].w > 0.4 && stageRects[1].w < 0.6)) throw new Error("stage extra width")
@@ -254,6 +264,34 @@ const netCfg = m.sanitizeConfig({
 if (m.bestProfile(netCfg, liveLaptop, { ssid: "Hataj", subnet: "192.168.1.0/24" }).id !== "home") throw new Error("home wifi wins")
 if (m.bestProfile(netCfg, liveLaptop, { ssid: "Office", subnet: "192.168.2.0/24" }).id !== "office") throw new Error("office wifi wins")
 if (m.bestProfile(netCfg, liveLaptop, { ssid: "Cafe", subnet: "10.0.0.0/24" }).id !== "any") throw new Error("unbound fallback on unknown net")
+const office = netCfg.profiles.find(function(p) { return p.id === "office" })
+const cafeHint = m.applyHint(netCfg, office, liveLaptop, { ssid: "Cafe", subnet: "10.0.0.0/24" })
+if (cafeHint.matches) throw new Error("office should not match cafe")
+if (cafeHint.text.indexOf("wrong network") < 0) throw new Error("hint says wrong network")
+if (cafeHint.text.indexOf("Any") < 0 || cafeHint.text.indexOf("will apply") < 0) throw new Error("hint names fallback that will apply")
+if (cafeHint.willId !== "any") throw new Error("will apply Any")
+if (cafeHint.text.indexOf("currently applied") >= 0) throw new Error("unmatched profile must not look applied")
+const anyHint = m.applyHint(netCfg, netCfg.profiles.find(function(p) { return p.id === "any" }), liveLaptop, { ssid: "Cafe", subnet: "10.0.0.0/24" })
+if (!anyHint.matches || anyHint.text.indexOf("fallback") < 0) throw new Error("unbound profile is the fallback")
+const homeHint = m.applyHint(netCfg, netCfg.profiles.find(function(p) { return p.id === "home" }), liveLaptop, { ssid: "Hataj", subnet: "192.168.1.0/24" })
+if (!homeHint.matches || homeHint.text.indexOf("this applies") < 0) throw new Error("home wifi this applies")
+const noFallbackCfg = m.sanitizeConfig({
+  version: 2,
+  settings: { activeProfileId: "laptop" },
+  monitors: [laptop],
+  profiles: [{ id: "laptop", name: "Laptop", monitors: ["laptop"], network: netHome }]
+})
+const status = {
+  matchedProfileId: null,
+  matchedProfileName: null,
+  needsNetworkWait: true,
+  profiles: [{ id: "laptop", name: "Laptop", matches: false, reason: "network", networkConstrained: true, networkMatches: false }]
+}
+const workHint = m.applyHint(noFallbackCfg, noFallbackCfg.profiles[0], liveLaptop, { ssid: "EdgertonGearNetwork", subnet: "192.168.2.0/24" }, status)
+if (workHint.matches) throw new Error("laptop must not match work wifi")
+if (workHint.text.indexOf("wrong network") < 0) throw new Error("work wifi is wrong network")
+if (workHint.text.indexOf("no matching profile") < 0) throw new Error("no fallback means nothing applies")
+if (workHint.text.indexOf("matches now") >= 0) throw new Error("must not say matches now")
 const owner = m.environmentOwner(netCfg, "laptop", netHome, "home")
 if (owner) throw new Error("home should uniquely own Hataj")
 const claimed = m.claimEnvironment(netCfg, "office", netHome)
@@ -286,7 +324,7 @@ const mixedPack = m.packedGeomsForApps([
   { id: "t", geom: { x: 0, y: 0, w: 0.5, h: 1 }, place: "tile" },
   { id: "f", geom: { x: 0.2, y: 0.2, w: 0.3, h: 0.3 }, place: "float" }
 ], "dwindle", 0.49)
-if (mixedPack[0].w !== 0.5) throw new Error("float must not pack away tiled geom")
+if (Math.abs(mixedPack[0].w - 1) > 0.02) throw new Error("lone tiled pane fills under a float")
 if (Math.abs(mixedPack[1].w - 0.3) > 0.02) throw new Error("keep float geom")
 if (m.safeCwd("/tmp/foo; rm") !== "") throw new Error("cwd inject")
 if (m.safeCwd("/home/caleb/.dotfiles") !== "/home/caleb/.dotfiles") throw new Error("cwd ok")
@@ -325,6 +363,14 @@ noOverlap(dwindle3)
 const scroll2 = m.autoLayoutRects(2, "scrolling", 0.5)
 if (scroll2.length !== 2 || Math.abs(scroll2[0].w - 0.5) > 0.02 || Math.abs(scroll2[1].x - 0.5) > 0.02) throw new Error("scrolling columns")
 noOverlap(scroll2)
+const scroll1 = m.autoLayoutRects(1, "scrolling", 0.5)
+if (scroll1.length !== 1 || scroll1[0].w !== 1 || scroll1[0].h !== 1) throw new Error("scrolling 1 is full even if visible columns is 2")
+const leftoverCol = m.packedGeomsForApps(
+  [{ id: "only", workspace: 2, geom: { x: 0, y: 0, w: 0.5, h: 1 }, place: "tile" }],
+  "scrolling",
+  0.5
+)
+if (Math.abs(leftoverCol[0].w - 1) > 0.02 || Math.abs(leftoverCol[0].x) > 0.02) throw new Error("single scrolling pane preview must fill after dropping the extra column")
 const master3 = m.autoLayoutRects(3, "master", 0.5)
 if (master3.length !== 3) throw new Error("master 3 count")
 if (!(master3[0].w > 0.5 && master3[0].h === 1)) throw new Error("master left pane")
@@ -348,6 +394,37 @@ const holeFill = m.fillHole(
   {}
 )
 if (Math.abs(holeFill[1].y) > 0.02 || Math.abs(holeFill[1].h - 1) > 0.05) throw new Error("fillHole grows neighbor into hole")
+
+const splitPair = [
+  { id: "left", workspace: 2, geom: { x: 0, y: 0, w: 0.5, h: 1 }, place: "tile" },
+  { id: "right", workspace: 2, geom: { x: 0.5, y: 0, w: 0.5, h: 1 }, place: "tile" },
+  { id: "other", workspace: 3, geom: { x: 0, y: 0, w: 0.4, h: 1 }, place: "tile" }
+]
+const afterRm = m.removeAppAndFill(splitPair, "left")
+if (afterRm.length !== 2) throw new Error("remove drops one")
+const stay = afterRm.find(function(a) { return a.id === "right" })
+if (!stay || Math.abs(stay.geom.w - 1) > 0.04 || Math.abs(stay.geom.x) > 0.04) throw new Error("remaining tile should fill the hole")
+const other = afterRm.find(function(a) { return a.id === "other" })
+if (Math.abs(other.geom.w - 0.4) > 0.02) throw new Error("other workspace geoms stay")
+const threePanes = [
+  { id: "a", workspace: 1, geom: { x: 0, y: 0, w: 0.5, h: 1 } },
+  { id: "b", workspace: 1, geom: { x: 0.5, y: 0, w: 0.5, h: 0.5 } },
+  { id: "c", workspace: 1, geom: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 } }
+]
+const afterC = m.removeAppAndFill(threePanes, "c")
+if (afterC.length !== 2) throw new Error("dwindle remove count")
+noOverlap([afterC[0].geom, afterC[1].geom])
+const bStay = afterC.find(function(a) { return a.id === "b" })
+if (Math.abs(bStay.geom.h - 1) > 0.06) throw new Error("upper-right should grow into closed pane")
+const lastOne = m.removeAppAndFill(afterC, "a")
+if (lastOne.length !== 1 || Math.abs(lastOne[0].geom.w - 1) > 0.02 || Math.abs(lastOne[0].geom.h - 1) > 0.02)
+  throw new Error("last pane fills the workspace")
+const floatPair = [
+  { id: "t", workspace: 1, geom: { x: 0, y: 0, w: 1, h: 1 }, place: "tile" },
+  { id: "f", workspace: 1, geom: { x: 0.2, y: 0.2, w: 0.3, h: 0.3 }, place: "float" }
+]
+const afterFloat = m.removeAppAndFill(floatPair, "f")
+if (afterFloat.length !== 1 || Math.abs(afterFloat[0].geom.w - 1) > 0.02) throw new Error("removing a float leaves tiles")
 
 const leftFloat = [
   { id: "L", geom: { x: 0, y: 0, w: 0.5, h: 1 }, place: "tile" },

@@ -361,13 +361,83 @@ def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]], live_net: 
     }
 
 
+def assigned_workspaces(profile: dict[str, Any] | None) -> set[str]:
+    out: set[str] = set()
+    for a in (profile or {}).get("assignments") or []:
+        ws = str(a.get("workspace") or "").strip()
+        if ws.isdigit() and 1 <= int(ws) <= 20:
+            out.add(ws)
+    return out
+
+
+def overflow_active_workspaces(profile: dict[str, Any] | None) -> set[str]:
+    ov = (profile or {}).get("overflow") or {}
+    if ov.get("enabled") is not True:
+        return set()
+    out: set[str] = set()
+    for raw in ov.get("workspaces") or []:
+        try:
+            n = int(raw)
+        except Exception:
+            continue
+        if 1 <= n <= 20:
+            out.add(str(n))
+    return out
+
+
+def omarchy_default_workspace_lua(ws: str) -> str:
+    return f'hl.workspace_rule({{ workspace = "{SAFE.lua_str(ws)}", persistent = false, layout = "dwindle" }})'
+
+
+def reset_empty_workspaces(cfg: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    """Drop leftover Stage/scroll rules on workspaces with no assigned apps.
+
+    Overflow-chain workspaces stay Stage while Fill next is on.
+    """
+    assigned = assigned_workspaces(profile)
+    overflow = overflow_active_workspaces(profile)
+    prefs = profile.get("workspacePrefs")
+    if not isinstance(prefs, dict):
+        prefs = {}
+        profile["workspacePrefs"] = prefs
+    cleared: list[str] = []
+    kept_overflow: list[str] = []
+    occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
+    for n in range(1, 21):
+        ws = str(n)
+        if ws in assigned:
+            continue
+        if ws in overflow:
+            vis = int((profile.get("overflow") or {}).get("maxWindows") or 2)
+            vis = max(1, min(20, vis))
+            col = round(1.0 / vis, 4)
+            lua = (
+                f'hl.workspace_rule({{ workspace = "{SAFE.lua_str(ws)}", persistent = false, '
+                f'layout = "scrolling", layout_opts = {{ column_width = {col}, fullscreen_on_one_column = true, follow_focus = false }} }})'
+            )
+            subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            prefs[ws] = {"layout": "stage", "visibleCount": vis, "lockSizes": False, "extras": "around"}
+            kept_overflow.append(ws)
+            continue
+        if ws in occupied:
+            continue
+        prefs.pop(ws, None)
+        prefs.pop(n, None)
+        subprocess.run(
+            ["hyprctl", "eval", omarchy_default_workspace_lua(ws)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        cleared.append(ws)
+    return {"ok": True, "cleared": cleared, "overflowKept": kept_overflow, "assigned": sorted(assigned, key=int)}
+
+
 def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
     pins = workspace_bindings(cfg, profile, live_list)
     prefs = profile.get("workspacePrefs") or {}
-    ws_ids = set(str(k) for k in pins.keys()) | set(str(k) for k in prefs.keys())
-    for a in profile.get("assignments") or []:
-        if a.get("lockPlace") is True:
-            ws_ids.add(str(a.get("workspace") or ""))
+    overflow_ws = overflow_active_workspaces(profile)
+    ws_ids = assigned_workspaces(profile) | overflow_ws
     ws_ids.discard("")
     ws_ids.discard("None")
     occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
@@ -377,11 +447,35 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
         if not ws:
             continue
         if ws in occupied:
+            pref = prefs.get(ws) or prefs.get(int(ws)) or {}
+            requested = pref.get("layout") if isinstance(pref, dict) else ""
+            if requested in ("scrolling", "stage", "set-width"):
+                try:
+                    vis_occ = int(pref.get("visibleCount") or 2)
+                except (TypeError, ValueError):
+                    vis_occ = 2
+                vis_occ = max(1, min(20, vis_occ))
+                col = round(1.0 / vis_occ, 4)
+                subprocess.run(
+                    [
+                        "hyprctl",
+                        "eval",
+                        f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, '
+                        f"scrolling_width = {col} }})",
+                    ],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
             continue
         pref = prefs.get(ws) or prefs.get(int(ws)) or {}
-        requested = pref.get("layout") if pref.get("layout") in ("dwindle", "scrolling", "master", "stage") else ""
+        if ws in overflow_ws and ws not in assigned_workspaces(profile):
+            requested = "stage"
+            vis = int((profile.get("overflow") or {}).get("maxWindows") or pref.get("visibleCount") or 2)
+        else:
+            requested = pref.get("layout") if pref.get("layout") in ("dwindle", "scrolling", "master", "stage", "set-width") else ""
+            vis = int(pref.get("visibleCount") or 2)
         layout = requested
-        vis = int(pref.get("visibleCount") or 2)
         if vis < 1:
             vis = 1
         if vis > 20:
@@ -393,25 +487,54 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
             for a in (profile.get("assignments") or [])
         )
         stage = requested == "stage" and not any_app_lock
-        if any_app_lock or stage:
+        set_width = requested == "set-width"
+        if any_app_lock or stage or set_width:
             layout = "scrolling"
         mon = pins.get(ws) or ""
         mon = safe_connector(mon) or ""
-        parts = [f'workspace = "{ws}"', "persistent = true"]
+        persist = profile.get("persistentWorkspaces") is True
+        parts = [f'workspace = "{ws}"', f"persistent = {'true' if persist else 'false'}"]
         if mon:
             parts.append(f'monitor = "{mon}"')
         if layout:
             parts.append(f'layout = "{layout}"')
         if layout == "scrolling":
+            n_on_ws = sum(1 for a in (profile.get("assignments") or []) if str(a.get("workspace")) == str(ws))
             col = round(1.0 / vis, 4)
-            if any_app_lock:
-                parts.append(f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false }}")
-            elif stage:
-                parts.append(f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = true }}")
+            if set_width:
+                parts.append(
+                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false, follow_focus = false }}"
+                )
+            elif any_app_lock and n_on_ws > 1:
+                parts.append(
+                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false, follow_focus = false }}"
+                )
+            elif stage or n_on_ws <= 1:
+                parts.append(
+                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = true, follow_focus = false }}"
+                )
             else:
-                parts.append(f"layout_opts = {{ column_width = {col} }}")
+                parts.append(
+                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false, follow_focus = false }}"
+                )
+            spawn = (
+                f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, '
+                f"scrolling_width = {col} }})"
+            )
+            subprocess.run(["hyprctl", "eval", spawn], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif layout == "master":
             parts.append("layout_opts = { orientation = \"left\" }")
+        else:
+            subprocess.run(
+                [
+                    "hyprctl",
+                    "eval",
+                    f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, enabled = false }})',
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         lua = "hl.workspace_rule({ " + ", ".join(parts) + " })"
         subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if mon:
@@ -439,6 +562,7 @@ def main() -> int:
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--apply-outputs", action="store_true")
     parser.add_argument("--apply-ws-prefs", action="store_true")
+    parser.add_argument("--reset-empty", action="store_true")
     parser.add_argument("--network-json", default="")
     parser.add_argument("--needs-identity", action="store_true")
     args = parser.parse_args()
@@ -484,6 +608,20 @@ def main() -> int:
             sys.stdout.write("\n")
             return 2
         json.dump(apply_ws_prefs(cfg, prof, live), sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+    if args.reset_empty:
+        pid = args.profile_id
+        prof = next((p for p in (cfg.get("profiles") or []) if p.get("id") == pid), None)
+        if not prof:
+            json.dump({"ok": False}, sys.stdout)
+            sys.stdout.write("\n")
+            return 2
+        result = reset_empty_workspaces(cfg, prof)
+        with open(args.config, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2)
+            fh.write("\n")
+        json.dump(result, sys.stdout)
         sys.stdout.write("\n")
         return 0
     matched = None

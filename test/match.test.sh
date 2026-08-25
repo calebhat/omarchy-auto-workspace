@@ -145,8 +145,54 @@ profile = {
 m.apply_ws_prefs({"monitors": []}, profile, [])
 lua = " ".join(str(c) for c in calls)
 assert "layout = \"scrolling\"" in lua, lua
-assert "fullscreen_on_one_column = false" in lua, lua
+assert "fullscreen_on_one_column = true" in lua, lua
+assert "follow_focus = false" in lua, lua
 print("lock forces scrolling ok")
+PY
+
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+profile = {
+    "assignments": [{"workspace": 1, "exec": "brave"}, {"workspace": 2, "exec": "herdr"}],
+    "workspacePrefs": {"1": {"layout": "stage"}, "5": {"layout": "stage"}, "8": {"layout": "scrolling"}},
+    "overflow": {"enabled": False, "workspaces": [5, 6, 7], "maxWindows": 2},
+}
+assert m.assigned_workspaces(profile) == {"1", "2"}
+assert m.overflow_active_workspaces(profile) == set()
+profile["overflow"]["enabled"] = True
+assert m.overflow_active_workspaces(profile) == {"5", "6", "7"}
+calls = []
+m.subprocess.run = lambda *a, **k: calls.append(a[0] if a else [])
+m.SAFE.lua_str = lambda s: s
+out = m.reset_empty_workspaces({"profiles": [profile]}, profile)
+assert "5" in out["overflowKept"]
+assert "8" in out["cleared"]
+assert "1" not in out["cleared"]
+assert "5" not in (profile.get("workspacePrefs") or {}) or profile["workspacePrefs"]["5"]["layout"] == "stage"
+assert "8" not in profile.get("workspacePrefs", {})
+print("reset empty keeps overflow, clears leftovers ok")
+PY
+
+python3 - <<'PY'
+import json, subprocess, tempfile, os
+from pathlib import Path
+cfg = {
+  "profiles": [{
+    "id": "p",
+    "assignments": [{"workspace": 2, "exec": "herdr"}],
+    "workspacePrefs": {"2": {"layout": "scrolling"}, "5": {"layout": "stage"}, "8": {"layout": "scrolling"}},
+    "workspaceMonitors": {"2": "laptop", "9": "laptop"}
+  }]
+}
+# jq used by close_preset_workspaces
+raw = json.dumps(cfg)
+import subprocess as sp
+out = sp.check_output(["jq", "-r", '--arg', "id", "p", '[.profiles[]? | select(.id==$id) | .assignments[]? | .workspace | tostring] | unique | .[]'], input=raw, text=True)
+got = set(out.split())
+assert got == {"2"}, got
+print("fresh close only assigned workspaces ok")
 PY
 
 python3 - "$MATCH" <<'PY'
@@ -188,9 +234,72 @@ lua = " ".join(str(c) for c in calls)
 assert out["workspaces"][0]["layout"] == "stage", out
 assert "layout = \"scrolling\"" in lua, lua
 assert "fullscreen_on_one_column = true" in lua, lua
+assert "follow_focus = false" in lua, lua
 assert "column_width = 0.3333" in lua, lua
 assert "orientation" not in lua, lua
 print("stage layout rule ok")
+PY
+
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+calls = []
+m.safe_connector = lambda n: n or ""
+m.workspace_bindings = lambda cfg, profile, live: {}
+m.subprocess.run = lambda *a, **k: calls.append(a)
+profile = {
+    "workspacePrefs": {"3": {"layout": "scrolling", "visibleCount": 2, "lockSizes": False, "extras": "around"}},
+    "assignments": [{"workspace": 3, "exec": "grok-bot", "lockPlace": True}],
+}
+m.apply_ws_prefs({"monitors": []}, profile, [])
+lua = " ".join(str(c) for c in calls)
+assert "fullscreen_on_one_column = true" in lua, lua
+assert "follow_focus = false" in lua, lua
+print("single locked window fills ok")
+PY
+
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+calls = []
+m.safe_connector = lambda n: n or ""
+m.workspace_bindings = lambda cfg, profile, live: {}
+m.subprocess.run = lambda *a, **k: calls.append(a)
+profile = {
+    "workspacePrefs": {"2": {"layout": "scrolling", "visibleCount": 2, "lockSizes": False, "extras": "around"}},
+    "assignments": [
+        {"workspace": 2, "exec": "herdr", "lockPlace": True},
+        {"workspace": 2, "exec": "shophawk-panel", "lockPlace": True},
+    ],
+}
+m.apply_ws_prefs({"monitors": []}, profile, [])
+lua = " ".join(str(c) for c in calls)
+assert "fullscreen_on_one_column = false" in lua, lua
+assert "follow_focus = false" in lua, lua
+print("multi locked split keeps fill off ok")
+PY
+
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+calls = []
+m.safe_connector = lambda n: n or ""
+m.workspace_bindings = lambda cfg, profile, live: {}
+m.subprocess.run = lambda *a, **k: calls.append(a)
+profile = {
+    "workspacePrefs": {"1": {"layout": "set-width", "visibleCount": 4, "lockSizes": False, "extras": "around"}},
+    "assignments": [{"workspace": 1, "exec": "foot", "lockPlace": False}],
+}
+m.apply_ws_prefs({"monitors": []}, profile, [])
+lua = " ".join(str(c) for c in calls)
+assert "layout = \"scrolling\"" in lua, lua
+assert "fullscreen_on_one_column = false" in lua, lua
+assert "column_width = 0.25" in lua, lua
+assert "scrolling_width = 0.25" in lua, lua
+print("set-width spawn rule ok")
 PY
 
 echo "match.test.sh ok"
