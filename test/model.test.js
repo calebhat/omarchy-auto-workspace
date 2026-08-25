@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -80,7 +80,7 @@ const nudged = m.nudgeSplit(tiled, splits[0], 0.1)
 if (m.layoutHasOverlap(nudged)) throw new Error("nudge overlap")
 if (Math.abs((nudged[0].x + nudged[0].w) - nudged[1].x) > 0.02) throw new Error("shared edge after nudge")
 const tooFar = m.nudgeSplit(tiled, splits[0], 0.9)
-if (tooFar[1].w < 0.12 - 1e-6) throw new Error("min size on right")
+if (tooFar[1].w < 0.04 - 1e-6) throw new Error("min size on right")
 
 const laptopOpts = m.monitorOptions(cfg, cfg.profiles[1], liveDesk)
 if (laptopOpts.some(function(o){ return o.value === "desk-left" || o.value === "desk-right" }))
@@ -272,6 +272,22 @@ if (ov.workspaces.join(",") !== "5,6") throw new Error("overflow unique 1-20")
 if (ov.maxWindows !== 1) throw new Error("overflow default max 1")
 if (m.normalizeOverflow({ enabled: true, workspaces: [8], maxWindows: 4 }).maxWindows !== 4) throw new Error("overflow max persist")
 if (m.normalizeOverflow({ maxWindows: 99 }).maxWindows !== 20) throw new Error("overflow max clamp")
+if (m.maxOrganizerPanes() !== 20) throw new Error("max panes 20")
+if (m.dropZone(0.1, 0.5) !== "left") throw new Error("drop left")
+if (m.dropZone(0.5, 0.5) !== "center") throw new Error("drop center")
+const twoPanes = [{ x: 0, y: 0, w: 0.5, h: 1 }, { x: 0.5, y: 0, w: 0.5, h: 1 }]
+const swapped = m.swapGeoms(twoPanes, 0, 1)
+if (swapped[0].x !== 0.5) throw new Error("swap")
+const splitR = m.splitDrop(twoPanes, 0, 1, "bottom")
+if (!(splitR[1].h < 0.6 && splitR[0].h < 0.6)) throw new Error("split drop bottom")
+if (m.clampOpacity(0.05) !== 0.2) throw new Error("opacity floor")
+if (m.assignmentPlace({ place: "float" }) !== "float") throw new Error("place float")
+const mixedPack = m.packedGeomsForApps([
+  { id: "t", geom: { x: 0, y: 0, w: 0.5, h: 1 }, place: "tile" },
+  { id: "f", geom: { x: 0.2, y: 0.2, w: 0.3, h: 0.3 }, place: "float" }
+], "dwindle", 0.49)
+if (mixedPack[0].w !== 0.5) throw new Error("float must not pack away tiled geom")
+if (Math.abs(mixedPack[1].w - 0.3) > 0.02) throw new Error("keep float geom")
 if (m.unsetWorkspaces(ovProf).indexOf(1) >= 0) throw new Error("unset excludes assigned")
 if (m.unsetWorkspaces(ovProf).indexOf(5) < 0) throw new Error("unset includes 5")
 

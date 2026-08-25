@@ -172,6 +172,76 @@ def config_path() -> str:
     return str(Path(state) / "omarchy/workscape/config.json")
 
 
+def apply_chrome(addr: str, chrome: dict[str, Any] | None, focused: bool) -> None:
+    addr = SAFE.safe_addr(addr)
+    if not addr or not isinstance(chrome, dict):
+        return
+    a = f"address:{addr}"
+    op = chrome.get("opacityActive") if focused else chrome.get("opacityInactive")
+    try:
+        alpha = float(op)
+    except Exception:
+        alpha = 1.0
+    if alpha < 0.2:
+        alpha = 0.2
+    if alpha > 1:
+        alpha = 1.0
+    hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="alpha", value="{alpha:.2f}" }}))')
+    bs = chrome.get("borderSize")
+    if isinstance(bs, int) and bs >= 0:
+        hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="bordersize", value="{int(bs)}" }}))')
+    show = chrome.get("borderActive") if focused else chrome.get("borderInactive")
+    color = chrome.get("borderColorActive") if focused else chrome.get("borderColorInactive")
+    if show is False:
+        hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="bordersize", value="0" }}))')
+    elif color:
+        col = str(color).replace("#", "")
+        if len(col) in (6, 8):
+            hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="bordercolor", value="rgb({col[:6]})" }}))')
+
+
+def ensure_floating(addr: str, want: bool) -> None:
+    addr = SAFE.safe_addr(addr)
+    if not addr:
+        return
+    c = client_by_addr(addr)
+    if not c:
+        return
+    is_f = c.get("floating") is True
+    if bool(is_f) != bool(want):
+        hypr_eval(f'hl.dispatch(hl.dsp.window.float({{ action = "toggle", window = "address:{addr}" }}))')
+        cache_clear()
+
+
+def apply_abs_box(addr: str, px: dict[str, Any]) -> dict[str, int] | None:
+    addr = SAFE.safe_addr(addr)
+    if not addr:
+        return None
+    ensure_floating(addr, True)
+    cache_clear()
+    box = actual_box(addr)
+    if not box:
+        return None
+    want_w = int(px.get("w") or 0)
+    want_h = int(px.get("h") or 0)
+    want_x = int(px.get("x") or 0)
+    want_y = int(px.get("y") or 0)
+    dx = want_w - int(box.get("w") or 0)
+    dy = want_h - int(box.get("h") or 0)
+    if abs(dx) >= 4 or abs(dy) >= 4:
+        resize_relative(addr, dx, dy)
+        cache_clear()
+        box = actual_box(addr) or box
+    mx = want_x - int(box.get("x") or 0)
+    my = want_y - int(box.get("y") or 0)
+    if abs(mx) >= 2 or abs(my) >= 2:
+        hypr_eval(
+            f'hl.dispatch(hl.dsp.window.move({{ window = "address:{addr}", x = {int(mx)}, y = {int(my)}, relative = true }}))'
+        )
+        cache_clear()
+    return actual_box(addr)
+
+
 def force_tiled(addr: str) -> None:
     addr = SAFE.safe_addr(addr)
     if not addr:
@@ -794,6 +864,8 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
             "geom": geom,
             "name": a.get("name"),
             "lock": locked,
+            "place": "float" if a.get("place") == "float" else "tile",
+            "chrome": a.get("chrome") if isinstance(a.get("chrome"), dict) else None,
         })
     results = []
     for ws, windows in by_ws.items():
@@ -808,12 +880,17 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
                     continue
                 box = actual_box(win["addr"])
                 win["geom"] = box_to_geom(box, metrics) if box else fallback_geom(i, len(windows))
+        floats = [w for w in windows if w.get("place") == "float"]
+        windows = [w for w in windows if w.get("place") != "float"]
         pref = prefs.get(str(ws)) or {}
         vis = clamp_visible_count(pref.get("visibleCount"))
+        result = {"ok": True, "windows": []}
         lock_any = any(w.get("lock") for w in windows) or pref.get("lockSizes") is True
         stage = pref.get("layout") == "stage" and not lock_any
         scrolling = lock_any or pref.get("layout") in ("scrolling", "stage")
-        if scrolling:
+        if not windows:
+            pass
+        elif scrolling:
             force_scrolling(ws, vis, lock=lock_any, stage=stage)
             if stage:
                 for win in windows:
@@ -834,6 +911,17 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
                 if not addr:
                     continue
                 clear_size_lock(addr)
+        metrics = layout_metrics(mon) if mon else {"x": 0, "y": 0, "w": 1, "h": 1}
+        for win in floats:
+            if not win.get("geom"):
+                continue
+            px = geom_pixels(win["geom"], metrics)
+            apply_abs_box(win["addr"], px)
+            if win.get("chrome"):
+                apply_chrome(win["addr"], win["chrome"], True)
+        for win in windows:
+            if win.get("chrome"):
+                apply_chrome(win["addr"], win["chrome"], False)
         results.append(result)
     return {"ok": True, "workspaces": results}
 

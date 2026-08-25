@@ -83,6 +83,16 @@ Panel {
     property var liveNetwork: ({})
     property string lastLiveJson: ""
     property bool visibleCountBusy: false
+    property bool organizerOpen: false
+    property bool chromeOpen: false
+    property int chromeIndex: 0
+    property real chromeOpA: 1
+    property real chromeOpI: 1
+    property bool chromeBorderA: true
+    property bool chromeBorderI: true
+    property string chromeColorA: ""
+    property string chromeColorI: ""
+    property int chromeBorderSize: -1
     property bool overflowOpen: false
     property var overflowDraft: []
     property int overflowDraftMax: 1
@@ -492,6 +502,9 @@ Panel {
                 return
             }
         }
+        var onWs = 0
+        for (var n = 0; n < root.assignments.length; n++) if (root.assignments[n].workspace === ws) onWs++
+        if (onWs >= Model.maxOrganizerPanes()) { errorText = "This workspace already has " + Model.maxOrganizerPanes() + " windows"; return }
         var type = /herdr/.test(exec) || exec.indexOf("/") === 0 || exec.indexOf(" ") >= 0 ? "custom" : "app"
         var item = Model.normalizeAssignment({ workspace: ws, name: name, command: exec, exec: exec, type: type, enabled: true, onlyOnBoot: true })
         root.assignments = root.assignments.concat([item])
@@ -892,7 +905,8 @@ Panel {
         for (var i = 0; i < assignments.length; i++) {
             var a = Model.clone(assignments[i])
             if (byId[a.id]) {
-                var g = Model.normalizeGeom(byId[a.id])
+                var raw = byId[a.id]
+                var g = a.place === "float" ? Model.normalizeFloatGeom(raw) : Model.normalizeGeom(raw)
                 if (g) a.geom = g
             }
             next.push(a)
@@ -900,6 +914,87 @@ Panel {
         assignments = next
         saveConfig()
         statusText = "Saved window layout on WS" + formWorkspace
+        clearStatusTimer.restart()
+    }
+    function setAssignmentPlace(index, place) {
+        var apps = root.addedApps || []
+        if (!apps[index]) return
+        var id = apps[index].id
+        var next = []
+        for (var i = 0; i < assignments.length; i++) {
+            var a = Model.clone(assignments[i])
+            if (a.id === id) a.place = place === "float" ? "float" : "tile"
+            next.push(a)
+        }
+        assignments = next
+        saveConfig()
+    }
+    function applyOrganizerSplit(index, dir) {
+        var apps = root.addedApps || []
+        if (apps.length < 2) { errorText = "Add another app before splitting"; return }
+        if (apps[index] && apps[index].place === "float") { errorText = "Split is for tiled panes"; return }
+        var geoms = []
+        for (var i = 0; i < apps.length; i++) {
+            var raw = apps[i].geom
+            geoms.push(apps[i].place === "float" ? (Model.normalizeFloatGeom(raw) || { x: 0.12, y: 0.12, w: 0.4, h: 0.4 }) : (Model.normalizeGeom(raw) || { x: 0, y: 0, w: 1, h: 1 }))
+        }
+        var other = (index + 1) % apps.length
+        if (apps[other] && apps[other].place === "float") {
+            other = -1
+            for (var j = 0; j < apps.length; j++) {
+                if (j !== index && apps[j].place !== "float") { other = j; break }
+            }
+            if (other < 0) { errorText = "Need another tiled pane to split with"; return }
+        }
+        if (other === index) return
+        var nextG = Model.splitDrop(geoms, other, index, dir)
+        var tiles = []
+        for (var t = 0; t < apps.length; t++) {
+            var g = nextG[t]
+            if (g) { g.id = apps[t].id; tiles.push(g) }
+        }
+        root.applyPreviewLayout(tiles)
+    }
+    function openChrome(index) {
+        var apps = root.addedApps || []
+        if (!apps[index]) return
+        var c = Model.normalizeChrome(apps[index].chrome)
+        chromeIndex = index
+        chromeOpA = c.opacityActive
+        chromeOpI = c.opacityInactive
+        chromeBorderA = c.borderActive
+        chromeBorderI = c.borderInactive
+        chromeColorA = c.borderColorActive
+        chromeColorI = c.borderColorInactive
+        chromeBorderSize = c.borderSize
+        chromeOpen = true
+    }
+    function saveChrome() {
+        var apps = root.addedApps || []
+        if (!apps[chromeIndex]) { chromeOpen = false; return }
+        var id = apps[chromeIndex].id
+        var chrome = Model.normalizeChrome({
+            opacityActive: chromeOpA,
+            opacityInactive: chromeOpI,
+            borderActive: chromeBorderA,
+            borderInactive: chromeBorderI,
+            borderColorActive: chromeColorA,
+            borderColorInactive: chromeColorI,
+            borderSize: chromeBorderSize
+        })
+        var next = []
+        for (var i = 0; i < assignments.length; i++) {
+            var a = Model.clone(assignments[i])
+            if (a.id === id) {
+                if (Model.chromeIsDefault(chrome)) delete a.chrome
+                else a.chrome = chrome
+            }
+            next.push(a)
+        }
+        assignments = next
+        saveConfig()
+        chromeOpen = false
+        statusText = "Saved window chrome"
         clearStatusTimer.restart()
     }
 
@@ -1203,10 +1298,10 @@ Panel {
         PanelKeyCatcher {
             id: keyCatcher
             anchors.fill: parent
-            blocked: root.transferOpen || root.newProfileOpen || root.editNetworkOpen || root.overflowOpen || filterField.activeFocus || customField.activeFocus || customNameField.activeFocus || (typeof visibleCountField !== "undefined" && visibleCountField.activeFocus) || (typeof newProfileNameField !== "undefined" && newProfileNameField.activeFocus) || (typeof editNetworkSsidField !== "undefined" && (editNetworkSsidField.activeFocus || editNetworkSubnetField.activeFocus || editNetworkConnField.activeFocus))
-            onMoveRequested: function(dx, dy) { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen) root.moveCursor(dx, dy) }
-            onActivateRequested: { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen) root.activateCursor() }
-            onCloseRequested: { if (root.overflowOpen) root.closeOverflow(); else if (root.editNetworkOpen) root.closeEditNetwork(); else if (root.newProfileOpen) root.closeNewProfile(); else if (root.transferOpen) root.closeTransfer(); else root.close() }
+            blocked: root.transferOpen || root.newProfileOpen || root.editNetworkOpen || root.overflowOpen || root.organizerOpen || root.chromeOpen || filterField.activeFocus || customField.activeFocus || customNameField.activeFocus || (typeof visibleCountField !== "undefined" && visibleCountField.activeFocus) || (typeof newProfileNameField !== "undefined" && newProfileNameField.activeFocus) || (typeof editNetworkSsidField !== "undefined" && (editNetworkSsidField.activeFocus || editNetworkSubnetField.activeFocus || editNetworkConnField.activeFocus))
+            onMoveRequested: function(dx, dy) { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen && !root.organizerOpen && !root.chromeOpen) root.moveCursor(dx, dy) }
+            onActivateRequested: { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen && !root.organizerOpen && !root.chromeOpen) root.activateCursor() }
+            onCloseRequested: { if (root.chromeOpen) root.chromeOpen = false; else if (root.organizerOpen) root.organizerOpen = false; else if (root.overflowOpen) root.closeOverflow(); else if (root.editNetworkOpen) root.closeEditNetwork(); else if (root.newProfileOpen) root.closeNewProfile(); else if (root.transferOpen) root.closeTransfer(); else root.close() }
             onTabRequested: function(direction) { root.moveTabCursor(direction) }
             onTextKey: function(t) {
                 if (t === "/") {
@@ -1627,10 +1722,19 @@ Panel {
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption - 1
                         }
-                        PanelSectionHeader {
-                            text: "PREVIEW · drag splitters · " + root.activeProfile.name
-                            foreground: root.foreground
-                            fontFamily: root.fontFamily
+                        RowLayout {
+                            Layout.fillWidth: true
+                            PanelSectionHeader {
+                                Layout.fillWidth: true
+                                text: "PREVIEW · drag splitters · " + root.activeProfile.name
+                                foreground: root.foreground
+                                fontFamily: root.fontFamily
+                            }
+                            Button {
+                                text: "Expand"
+                                tooltipText: "Full organizer: split, drag-and-drop, float, opacity"
+                                onClicked: root.organizerOpen = true
+                            }
                         }
                         Item {
                             Layout.fillWidth: true
@@ -1651,6 +1755,7 @@ Panel {
                                 onLayoutChanged: function(tiles) { root.applyPreviewLayout(tiles) }
                                 onLayoutCleared: root.resetPreviewLayout()
                                 onAppLockToggled: function(id) { root.toggleAppLockById(id) }
+                                onOrganizerRequested: root.organizerOpen = true
                             }
                         }
                     }
@@ -2509,6 +2614,103 @@ Panel {
                             Item { Layout.fillWidth: true }
                             Button { text: "Cancel"; onClicked: root.closeOverflow() }
                             Button { text: "Save"; onClicked: root.confirmOverflow() }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                visible: root.organizerOpen
+                z: 220
+                anchors.fill: parent
+                color: Color.background
+                Organizer {
+                    anchors.fill: parent
+                    bar: root.bar
+                    assignedApps: root.addedApps
+                    appList: root.appList
+                    hyprLayout: root.currentWsPref.layout
+                    columnWidth: 1 / Math.max(1, root.currentWsPref.visibleCount)
+                    onLayoutChanged: function(tiles) { root.applyPreviewLayout(tiles) }
+                    onLayoutCleared: root.resetPreviewLayout()
+                    onPlaceChanged: function(index, place) { root.setAssignmentPlace(index, place) }
+                    onSplitRequested: function(index, dir) { root.applyOrganizerSplit(index, dir) }
+                    onGearRequested: function(index) { root.openChrome(index) }
+                    onCloseRequested: root.organizerOpen = false
+                }
+            }
+
+            Rectangle {
+                visible: root.chromeOpen
+                z: 230
+                anchors.fill: parent
+                color: Qt.rgba(0, 0, 0, 0.45)
+                MouseArea { anchors.fill: parent; onClicked: root.chromeOpen = false }
+                Rectangle {
+                    width: Math.min(parent.width - Style.space(28), Style.space(420))
+                    implicitHeight: chromeCol.implicitHeight + Style.space(28)
+                    height: implicitHeight
+                    anchors.centerIn: parent
+                    radius: Style.cornerRadius
+                    color: Color.background
+                    border.width: 1
+                    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+                    MouseArea { anchors.fill: parent; onClicked: function(e) { e.accepted = true } }
+                    ColumnLayout {
+                        id: chromeCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Style.space(16)
+                        spacing: Style.space(8)
+                        Text {
+                            text: "Window look"
+                            color: root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.title
+                            font.bold: true
+                        }
+                        Text { text: "Focused opacity " + root.chromeOpA; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Button { text: "−"; onClicked: root.chromeOpA = Model.clampOpacity(root.chromeOpA - 0.1) }
+                            Button { text: "+"; onClicked: root.chromeOpA = Model.clampOpacity(root.chromeOpA + 0.1) }
+                            Item { Layout.fillWidth: true }
+                        }
+                        Text { text: "Unfocused opacity " + root.chromeOpI; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Button { text: "−"; onClicked: root.chromeOpI = Model.clampOpacity(root.chromeOpI - 0.1) }
+                            Button { text: "+"; onClicked: root.chromeOpI = Model.clampOpacity(root.chromeOpI + 0.1) }
+                            Item { Layout.fillWidth: true }
+                        }
+                        Toggle {
+                            Layout.fillWidth: true
+                            label: "Focused border"
+                            checked: root.chromeBorderA
+                            foreground: root.foreground
+                            onClicked: root.chromeBorderA = !root.chromeBorderA
+                        }
+                        Toggle {
+                            Layout.fillWidth: true
+                            label: "Unfocused border"
+                            checked: root.chromeBorderI
+                            foreground: root.foreground
+                            onClicked: root.chromeBorderI = !root.chromeBorderI
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "Border px"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                            Button { text: "−"; enabled: root.chromeBorderSize > -1; onClicked: root.chromeBorderSize = root.chromeBorderSize < 0 ? 0 : Math.max(-1, root.chromeBorderSize - 1) }
+                            Text { text: root.chromeBorderSize < 0 ? "default" : String(root.chromeBorderSize); color: root.foreground; font.family: root.fontFamily }
+                            Button { text: "+"; enabled: root.chromeBorderSize < 12; onClicked: root.chromeBorderSize = Math.min(12, (root.chromeBorderSize < 0 ? 1 : root.chromeBorderSize + 1)) }
+                            Item { Layout.fillWidth: true }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Item { Layout.fillWidth: true }
+                            Button { text: "Cancel"; onClicked: root.chromeOpen = false }
+                            Button { text: "Save"; onClicked: root.saveChrome() }
                         }
                     }
                 }

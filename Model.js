@@ -812,8 +812,8 @@ function normalizeGeom(g) {
     if (!g || typeof g !== "object") return null
     var x = Number(g.x), y = Number(g.y), w = Number(g.w), h = Number(g.h)
     if (isNaN(x) || isNaN(y) || isNaN(w) || isNaN(h)) return null
-    w = Math.max(0.12, Math.min(1, w))
-    h = Math.max(0.12, Math.min(1, h))
+    w = Math.max(GEOM_MIN, Math.min(1, w))
+    h = Math.max(GEOM_MIN, Math.min(1, h))
     x = Math.max(0, Math.min(1 - w, x))
     y = Math.max(0, Math.min(1 - h, y))
     var out = { x: round4(x), y: round4(y), w: round4(w), h: round4(h) }
@@ -884,8 +884,9 @@ function workspaceUsesCustomLayout(apps) {
     return false
 }
 
-var GEOM_EPS = 0.03
-var GEOM_MIN = 0.12
+var GEOM_EPS = 0.02
+var GEOM_MIN = 0.04
+var MAX_PANES = 20
 
 function geomRight(g) { return Number(g.x) + Number(g.w) }
 function geomBottom(g) { return Number(g.y) + Number(g.h) }
@@ -944,23 +945,39 @@ function packedGeomsForApps(apps, layout, columnWidth) {
     var list = apps || []
     var n = list.length
     var packLayout = layout === "scrolling" ? "dwindle" : (layout || "dwindle")
-    var autos = autoLayoutRects(n, packLayout, columnWidth)
-    var geoms = []
+    var tileList = []
+    var tilePos = []
+    var i
+    for (i = 0; i < n; i++) {
+        if (assignmentPlace(list[i]) === "float") continue
+        tilePos.push(i)
+        tileList.push(list[i])
+    }
+    var autos = autoLayoutRects(tileList.length, packLayout, columnWidth)
+    var tileGeoms = []
     var anyCustom = false
-    for (var i = 0; i < n; i++) {
-        var g = normalizeGeom(list[i] && list[i].geom)
+    var t
+    for (t = 0; t < tileList.length; t++) {
+        var g = normalizeGeom(tileList[t] && tileList[t].geom)
         if (g) {
             anyCustom = true
-            geoms.push(g)
+            tileGeoms.push(g)
         } else {
-            geoms.push(autos[i] || normalizeGeom({ x: 0, y: 0, w: 1, h: 1 }))
+            tileGeoms.push(autos[t] || normalizeGeom({ x: 0, y: 0, w: 1, h: 1 }))
         }
     }
-    var use = (!anyCustom || layoutHasOverlap(geoms)) ? autos : geoms
+    var use = (!anyCustom || layoutHasOverlap(tileGeoms)) ? autos : tileGeoms
     var out = []
-    for (var k = 0; k < n; k++) {
-        var item = clone(use[k] || { x: 0, y: 0, w: 1, h: 1 })
-        if (list[k] && list[k].id) item.id = list[k].id
+    t = 0
+    for (i = 0; i < n; i++) {
+        var item
+        if (assignmentPlace(list[i]) === "float") {
+            item = normalizeFloatGeom(list[i] && list[i].geom) || normalizeFloatGeom({ x: 0.12, y: 0.12, w: 0.4, h: 0.4 })
+        } else {
+            item = clone(use[t] || { x: 0, y: 0, w: 1, h: 1 })
+            t++
+        }
+        if (list[i] && list[i].id) item.id = list[i].id
         out.push(item)
     }
     return out
@@ -1082,6 +1099,175 @@ function nudgeSplit(geoms, split, delta) {
     return next
 }
 
+function overlapLen(a0, a1, b0, b1) {
+    return Math.min(a1, b1) - Math.max(a0, b0)
+}
+
+function splitRect(g, dir) {
+    var r = normalizeGeom(g)
+    if (!r) return null
+    dir = String(dir || "")
+    if (dir === "left" || dir === "right") {
+        var hw = r.w / 2
+        if (hw < GEOM_MIN) return null
+        var left = { x: r.x, y: r.y, w: hw, h: r.h }
+        var right = { x: round4(r.x + hw), y: r.y, w: round4(r.w - hw), h: r.h }
+        return dir === "left" ? { incoming: left, stay: right } : { incoming: right, stay: left }
+    }
+    var hh = r.h / 2
+    if (hh < GEOM_MIN) return null
+    var top = { x: r.x, y: r.y, w: r.w, h: hh }
+    var bot = { x: r.x, y: round4(r.y + hh), w: r.w, h: round4(r.h - hh) }
+    if (dir === "up" || dir === "top") return { incoming: top, stay: bot }
+    return { incoming: bot, stay: top }
+}
+
+function fillHole(geoms, hole, skip) {
+    var next = clone(geoms)
+    if (!hole) return next
+    var hx0 = Number(hole.x), hy0 = Number(hole.y)
+    var hx1 = hx0 + Number(hole.w), hy1 = hy0 + Number(hole.h)
+    var i, g
+    for (i = 0; i < next.length; i++) {
+        if (skip && skip[i]) continue
+        g = next[i]
+        if (!g) continue
+        if (Math.abs(geomRight(g) - hx0) < GEOM_EPS && overlapLen(g.y, geomBottom(g), hy0, hy1) > hole.h * 0.45) {
+            g.w = round4(g.w + hole.w)
+            return next
+        }
+        if (Math.abs(g.x - hx1) < GEOM_EPS && overlapLen(g.y, geomBottom(g), hy0, hy1) > hole.h * 0.45) {
+            g.w = round4(g.w + hole.w)
+            g.x = round4(g.x - hole.w)
+            return next
+        }
+        if (Math.abs(geomBottom(g) - hy0) < GEOM_EPS && overlapLen(g.x, geomRight(g), hx0, hx1) > hole.w * 0.45) {
+            g.h = round4(g.h + hole.h)
+            return next
+        }
+        if (Math.abs(g.y - hy1) < GEOM_EPS && overlapLen(g.x, geomRight(g), hx0, hx1) > hole.w * 0.45) {
+            g.h = round4(g.h + hole.h)
+            g.y = round4(g.y - hole.h)
+            return next
+        }
+    }
+    return next
+}
+
+function swapGeoms(geoms, i, j) {
+    var next = clone(geoms)
+    if (i === j || !next[i] || !next[j]) return geoms
+    var t = next[i]
+    next[i] = next[j]
+    next[j] = t
+    return next
+}
+
+function splitDrop(geoms, fromIdx, toIdx, dir) {
+    if (fromIdx === toIdx) return geoms
+    var next = clone(geoms)
+    if (!next[fromIdx] || !next[toIdx]) return geoms
+    var hole = clone(next[fromIdx])
+    var cut = splitRect(next[toIdx], dir)
+    if (!cut) return geoms
+    next[toIdx] = normalizeGeom(cut.stay)
+    next[fromIdx] = normalizeGeom(cut.incoming)
+    var skip = {}
+    skip[fromIdx] = true
+    skip[toIdx] = true
+    return fillHole(next, hole, skip)
+}
+
+function dropZone(nx, ny) {
+    var m = 0.28
+    if (nx < m) return "left"
+    if (nx > 1 - m) return "right"
+    if (ny < m) return "top"
+    if (ny > 1 - m) return "bottom"
+    return "center"
+}
+
+function normalizeFloatGeom(g) {
+    if (!g || typeof g !== "object") return null
+    var x = Number(g.x), y = Number(g.y), w = Number(g.w), h = Number(g.h)
+    if (isNaN(x) || isNaN(y) || isNaN(w) || isNaN(h)) return null
+    w = Math.max(GEOM_MIN, Math.min(1, w))
+    h = Math.max(GEOM_MIN, Math.min(1, h))
+    x = Math.max(0, Math.min(1 - w, x))
+    y = Math.max(0, Math.min(1 - h, y))
+    var out = { x: round4(x), y: round4(y), w: round4(w), h: round4(h) }
+    var z = parseInt(g.z, 10)
+    if (!isNaN(z)) out.z = z
+    return out
+}
+
+function moveFloatGeom(g, dx, dy) {
+    var r = normalizeFloatGeom(g)
+    if (!r) return g
+    r.x += Number(dx) || 0
+    r.y += Number(dy) || 0
+    return normalizeFloatGeom(r)
+}
+
+function resizeFloatGeom(g, edge, dx, dy) {
+    var r = normalizeFloatGeom(g)
+    if (!r) return g
+    edge = String(edge || "")
+    if (edge.indexOf("l") >= 0) { r.x += dx; r.w -= dx }
+    if (edge.indexOf("r") >= 0) r.w += dx
+    if (edge.indexOf("t") >= 0) { r.y += dy; r.h -= dy }
+    if (edge.indexOf("b") >= 0) r.h += dy
+    return normalizeFloatGeom(r)
+}
+
+function assignmentPlace(a) {
+    return a && a.place === "float" ? "float" : "tile"
+}
+
+function emptyChrome() {
+    return {
+        opacityActive: 1,
+        opacityInactive: 1,
+        borderActive: true,
+        borderInactive: true,
+        borderColorActive: "",
+        borderColorInactive: "",
+        borderSize: -1
+    }
+}
+
+function clampOpacity(n) {
+    var v = Number(n)
+    if (isNaN(v)) return 1
+    if (v < 0.2) return 0.2
+    if (v > 1) return 1
+    return Math.round(v * 100) / 100
+}
+
+function normalizeChrome(raw) {
+    var d = emptyChrome()
+    if (!raw || typeof raw !== "object") return d
+    d.opacityActive = clampOpacity(raw.opacityActive != null ? raw.opacityActive : 1)
+    d.opacityInactive = clampOpacity(raw.opacityInactive != null ? raw.opacityInactive : 1)
+    d.borderActive = raw.borderActive !== false
+    d.borderInactive = raw.borderInactive !== false
+    d.borderColorActive = String(raw.borderColorActive || "").replace(/[^#0-9a-fA-F]/g, "").slice(0, 9)
+    d.borderColorInactive = String(raw.borderColorInactive || "").replace(/[^#0-9a-fA-F]/g, "").slice(0, 9)
+    var bs = parseInt(raw.borderSize, 10)
+    d.borderSize = (!isNaN(bs) && bs >= 0 && bs <= 12) ? bs : -1
+    return d
+}
+
+function chromeIsDefault(c) {
+    var d = emptyChrome()
+    var n = normalizeChrome(c)
+    return n.opacityActive === d.opacityActive && n.opacityInactive === d.opacityInactive
+        && n.borderActive === d.borderActive && n.borderInactive === d.borderInactive
+        && n.borderColorActive === "" && n.borderColorInactive === "" && n.borderSize === -1
+}
+
+function maxOrganizerPanes() { return MAX_PANES }
+
 function normalizeAssignment(a) {
     var ws = parseInt(a.workspace, 10)
     if (!(ws >= 1 && ws <= 10) && String(a.workspace).indexOf("special:") !== 0) ws = 1
@@ -1103,10 +1289,13 @@ function normalizeAssignment(a) {
         type: type,
         enabled: a.enabled !== false,
         onlyOnBoot: onlyOnBoot,
-        lockPlace: a.lockPlace === true
+        lockPlace: a.lockPlace === true,
+        place: assignmentPlace(a)
     }
-    var geom = normalizeGeom(a.geom)
+    var geom = a.place === "float" ? normalizeFloatGeom(a.geom) : normalizeGeom(a.geom)
     if (geom) out.geom = geom
+    var chrome = normalizeChrome(a.chrome)
+    if (!chromeIsDefault(chrome)) out.chrome = chrome
     return out
 }
 

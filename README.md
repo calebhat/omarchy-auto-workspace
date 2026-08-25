@@ -143,7 +143,7 @@ Pick workspace **1–10** for app presets (overflow chain can use **1–20**).
 
 The extras watcher listens to Hyprland window events (no extra polling). A bounced window focuses the **destination workspace and that window**. After **Apply**, leftover windows on blocked workspaces are swept off so they do not steal lock geometry.
 
-**Preview** on the right: drag splitters between preset panes. Apply keeps them tiled.
+**Preview** on the right: drag **vertical and horizontal** splitters between preset panes. **Expand** opens the full organizer (almost the whole panel): drop a pane on another to **swap** or on an edge to **split** (left/right/up/down), **Tile / Float** per window, **⚙** for focused/unfocused opacity and borders. Up to **20** windows on a workspace. Apply keeps tiled splits in the compositor; float windows are placed at their organizer boxes.
 
 ### 4. Gestures — trackpad workspace swipes
 

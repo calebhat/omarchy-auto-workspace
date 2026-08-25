@@ -368,6 +368,49 @@ def sweep_block_extras() -> list[dict]:
     return moved
 
 
+def apply_focus_chrome() -> None:
+    profile = load_active_profile()
+    if not profile:
+        return
+    if not any(isinstance(a.get("chrome"), dict) for a in (profile.get("assignments") or [])):
+        return
+    try:
+        active = json.loads(subprocess.check_output(["hyprctl", "-j", "activewindow"], text=True))
+        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
+    except Exception:
+        return
+    focus = str((active or {}).get("address") or "")
+    geom = geom_mod()
+    used: set[str] = set()
+    for a in profile.get("assignments") or []:
+        chrome = a.get("chrome")
+        if not isinstance(chrome, dict):
+            continue
+        ws = str(a.get("workspace") or "")
+        on_ws = [c for c in clients if str((c.get("workspace") or {}).get("id")) == ws]
+        hit = None
+        name = str(a.get("name") or "").strip().lower()
+        exec_s = str(a.get("exec") or a.get("command") or "").split()
+        base = exec_s[0].rstrip("/").split("/")[-1].lower() if exec_s else ""
+        for c in on_ws:
+            addr = str(c.get("address") or "")
+            if addr in used:
+                continue
+            cls = str(c.get("class") or "").lower()
+            title = str(c.get("title") or "").lower()
+            if base and (base in cls or base.replace("-", "") in cls.replace("-", "").replace(".", "")):
+                hit = c
+                break
+            if name and len(name) >= 5 and name in title:
+                hit = c
+                break
+        if not hit:
+            continue
+        addr = str(hit.get("address") or "")
+        used.add(addr)
+        geom.apply_chrome(addr, chrome, addr == focus)
+
+
 def handle_close_or_move(ws: str | None) -> None:
     # closewindow / our own swapcol must not re-enter restore (that fight
     # squeezed extras to width -3). Only admit extras on openwindow.
@@ -407,6 +450,9 @@ def main() -> int:
             continue
         if line.startswith("closewindow>>"):
             handle_close_or_move(None)
+            continue
+        if line.startswith("activewindow>>") or line.startswith("activewindowv2>>"):
+            apply_focus_chrome()
     return 0
 
 

@@ -40,6 +40,7 @@ Item {
     signal layoutChanged(var tiles)
     signal layoutCleared()
     signal appLockToggled(string assignmentId)
+    signal organizerRequested()
 
     function iconSourceFor(exec) {
         for (var i = 0; i < appList.length; i++) {
