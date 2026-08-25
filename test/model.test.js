@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, fillHole, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -288,7 +288,134 @@ const mixedPack = m.packedGeomsForApps([
 ], "dwindle", 0.49)
 if (mixedPack[0].w !== 0.5) throw new Error("float must not pack away tiled geom")
 if (Math.abs(mixedPack[1].w - 0.3) > 0.02) throw new Error("keep float geom")
+if (m.safeCwd("/tmp/foo; rm") !== "") throw new Error("cwd inject")
+if (m.safeCwd("/home/caleb/.dotfiles") !== "/home/caleb/.dotfiles") throw new Error("cwd ok")
+if (m.safeUrl("https://x.com' ; rm") !== "") throw new Error("url inject")
+if (m.safeUrl("https://outlook.office.com/mail") !== "https://outlook.office.com/mail") throw new Error("url ok")
+if (m.normalizeAssignment({ workspace: 1, exec: "foot", cwd: "/tmp/x;y" }).cwd) throw new Error("cwd stripped")
+const pair = [
+  { id: "a", geom: { x: 0, y: 0, w: 0.5, h: 1 }, place: "tile" },
+  { id: "b", geom: { x: 0.5, y: 0, w: 0.5, h: 1 }, place: "tile" }
+]
+const floated = m.setAppsPlace(pair, 0, "float", "dwindle", 0.5)
+if (floated[0].place !== "float") throw new Error("place float")
+if (Math.abs(floated[1].w - 1) > 0.08) throw new Error("remaining tile should fill after float")
+const tiledBack = m.setAppsPlace(floated, 0, "tile", "dwindle", 0.5)
+if (tiledBack[0].place !== "tile") throw new Error("place tile")
+if (m.layoutHasOverlap([tiledBack[0].geom, tiledBack[1].geom])) throw new Error("unfloat overlap")
+if (Math.abs(tiledBack[0].w + tiledBack[1].w - 1) > 0.08 && Math.abs(tiledBack[0].h + tiledBack[1].h - 1) > 0.08)
+  throw new Error("unfloat should share the workspace")
 if (m.unsetWorkspaces(ovProf).indexOf(1) >= 0) throw new Error("unset excludes assigned")
 if (m.unsetWorkspaces(ovProf).indexOf(5) < 0) throw new Error("unset includes 5")
+
+function noOverlap(rects) {
+  if (m.layoutHasOverlap(rects)) throw new Error("overlap in " + JSON.stringify(rects))
+}
+function areaOk(r) { return r && r.w > 0.03 && r.h > 0.03 }
+
+const zeroPack = m.packedGeomsForApps([], "dwindle", 0.49)
+if (zeroPack.length !== 0) throw new Error("zero apps pack empty")
+const oneDwindle = m.autoLayoutRects(1, "dwindle", 0.49)
+if (oneDwindle.length !== 1 || oneDwindle[0].w !== 1 || oneDwindle[0].h !== 1) throw new Error("dwindle 1 is full")
+noOverlap(oneDwindle)
+const dwindle3 = m.autoLayoutRects(3, "dwindle", 0.49)
+if (dwindle3.length !== 3) throw new Error("dwindle 3 count")
+dwindle3.forEach(function(r) { if (!areaOk(r)) throw new Error("dwindle 3 empty pane") })
+noOverlap(dwindle3)
+const scroll2 = m.autoLayoutRects(2, "scrolling", 0.5)
+if (scroll2.length !== 2 || Math.abs(scroll2[0].w - 0.5) > 0.02 || Math.abs(scroll2[1].x - 0.5) > 0.02) throw new Error("scrolling columns")
+noOverlap(scroll2)
+const master3 = m.autoLayoutRects(3, "master", 0.5)
+if (master3.length !== 3) throw new Error("master 3 count")
+if (!(master3[0].w > 0.5 && master3[0].h === 1)) throw new Error("master left pane")
+if (!(master3[1].x > 0.5 && master3[2].x > 0.5)) throw new Error("master stack on right")
+if (Math.abs(master3[1].y + master3[1].h - master3[2].y) > 0.05) throw new Error("master stack stacked")
+noOverlap(master3)
+const stage3 = m.autoLayoutRects(3, "stage", 0.5)
+if (stage3.length !== 3 || stage3[0].w !== 1) throw new Error("stage lead full")
+if (!(stage3[1].w > 0.4 && stage3[1].w < 0.6)) throw new Error("stage extra width")
+if (!(stage3[2].w > 0.4 && stage3[2].w < 0.6)) throw new Error("stage second extra width")
+const sameType = m.packedGeomsForApps([
+  { id: "f1", exec: "foot", geom: { x: 0, y: 0, w: 0.5, h: 1 } },
+  { id: "f2", exec: "foot", geom: { x: 0.5, y: 0, w: 0.5, h: 1 } }
+], "dwindle", 0.49)
+if (sameType[0].id !== "f1" || sameType[1].id !== "f2") throw new Error("same-type keep order")
+noOverlap(sameType.map(function(a) { return a.geom || a }))
+
+const holeFill = m.fillHole(
+  [{ x: 0, y: 0, w: 0.5, h: 1 }, { x: 0.5, y: 0.5, w: 0.5, h: 0.5 }],
+  { x: 0.5, y: 0, w: 0.5, h: 0.5 },
+  {}
+)
+if (Math.abs(holeFill[1].y) > 0.02 || Math.abs(holeFill[1].h - 1) > 0.05) throw new Error("fillHole grows neighbor into hole")
+
+const leftFloat = [
+  { id: "L", geom: { x: 0, y: 0, w: 0.5, h: 1 }, place: "tile" },
+  { id: "R", geom: { x: 0.5, y: 0, w: 0.5, h: 1 }, place: "tile" }
+]
+const floatedL = m.setAppsPlace(leftFloat, 0, "float", "dwindle", 0.5)
+floatedL[0].geom = { x: 0.05, y: 0.2, w: 0.3, h: 0.4 }
+const snapL = m.setAppsPlace(floatedL, 0, "tile", "dwindle", 0.5)
+if (snapL[0].place !== "tile") throw new Error("unfloat left place")
+if (snapL[0].x >= 0.5 && snapL[0].geom && snapL[0].geom.x >= 0.5) throw new Error("unfloat left should snap into left tile")
+noOverlap([snapL[0].geom, snapL[1].geom])
+const rightFloat = [
+  { id: "L", geom: { x: 0, y: 0, w: 0.5, h: 1 }, place: "tile" },
+  { id: "R", geom: { x: 0.5, y: 0, w: 0.5, h: 1 }, place: "tile" }
+]
+const floatedR = m.setAppsPlace(rightFloat, 1, "float", "dwindle", 0.5)
+floatedR[1].geom = { x: 0.65, y: 0.2, w: 0.3, h: 0.4 }
+const snapR = m.setAppsPlace(floatedR, 1, "tile", "dwindle", 0.5)
+if (!(snapR[1].geom.x >= 0.45)) throw new Error("unfloat right should snap into right tile")
+noOverlap([snapR[0].geom, snapR[1].geom])
+
+const chromeClamp = m.normalizeChrome({
+  opacityActive: 0,
+  opacityInactive: 9,
+  borderSize: 99,
+  borderColorActive: "red;rm",
+  borderColorInactive: "#aabbccddEE"
+})
+if (chromeClamp.opacityActive !== 0.2) throw new Error("chrome opacity floor")
+if (chromeClamp.opacityInactive !== 1) throw new Error("chrome opacity ceil")
+if (chromeClamp.borderSize !== -1) throw new Error("chrome size clamp")
+if (chromeClamp.borderColorActive.indexOf(";") >= 0 || chromeClamp.borderColorActive.length > 9)
+  throw new Error("chrome color strips junk and caps length")
+if (chromeClamp.borderColorInactive !== "#aabbccdd") throw new Error("chrome color hex keep")
+if (!m.chromeIsDefault(m.normalizeChrome({}))) throw new Error("empty chrome is default")
+const withChrome = m.normalizeAssignment({ workspace: 2, exec: "foot", chrome: { opacityActive: 0.5, borderSize: 3, borderColorActive: "#ff8800" } })
+if (!withChrome.chrome || withChrome.chrome.opacityActive !== 0.5 || withChrome.chrome.borderSize !== 3) throw new Error("chrome persist on assignment")
+const noChrome = m.normalizeAssignment({ workspace: 2, exec: "foot" })
+if (noChrome.chrome) throw new Error("default chrome omitted")
+
+const isoCfg = m.sanitizeConfig({
+  version: 2,
+  profiles: [{
+    id: "p",
+    name: "P",
+    workspacePrefs: {
+      "1": { layout: "dwindle", visibleCount: 2, extras: "around" },
+      "2": { layout: "scrolling", visibleCount: 3, extras: "block", lockSizes: true }
+    },
+    overflow: { enabled: true, workspaces: [5, 6], maxWindows: 2 },
+    assignments: [{ workspace: 1, exec: "foot", name: "A" }, { workspace: 2, exec: "foot", name: "B" }]
+  }]
+})
+const p2 = isoCfg.profiles[0]
+p2.workspacePrefs["2"] = m.normalizeWorkspacePref({ layout: "master", visibleCount: 3, extras: "block", lockSizes: true })
+if (p2.workspacePrefs["1"].layout !== "dwindle") throw new Error("layout change must not touch other ws")
+if (p2.workspacePrefs["1"].visibleCount !== 2) throw new Error("visibleCount isolation")
+if (p2.assignments[0].exec !== "foot" || p2.assignments[1].name !== "B") throw new Error("pref change must not rewrite apps")
+if (m.normalizeOverflow(p2.overflow).workspaces.join(",") !== "5,6") throw new Error("overflow isolation")
+p2.workspacePrefs["1"] = m.normalizeWorkspacePref({ layout: "dwindle", visibleCount: 8, extras: "around" })
+if (p2.workspacePrefs["2"].layout !== "master") throw new Error("visible bump isolation")
+if (m.clampVisibleCount(8) !== 8) throw new Error("visible 8")
+const ovBlock = m.normalizeWorkspacePref({ extras: "block" })
+const ovAround = m.normalizeWorkspacePref({ extras: "around" })
+if (ovBlock.extras !== "block" || ovAround.extras !== "around") throw new Error("extras block vs around")
+if (m.maxOrganizerPanes() !== 20) throw new Error("cap 20")
+const twenty = m.autoLayoutRects(20, "dwindle", 0.49)
+if (twenty.length !== 20) throw new Error("20 panes")
+noOverlap(twenty)
 
 console.log("model.test.js ok")

@@ -173,6 +173,118 @@ def test_restore_resizes_locked_pane():
     assert first_extra_focus < inhibit_at < first_locked_focus, (first_extra_focus, inhibit_at, first_locked_focus)
 
 
+def test_apply_config_skips_occupied(monkeypatch=None):
+    orig_env = geom.os.environ.get("WORKSCAPE_OCCUPIED_WS")
+    calls = []
+    geom.os.environ["WORKSCAPE_OCCUPIED_WS"] = "2 8"
+    orig_hypr_j = geom.hypr_j
+    orig_apply_items = geom.apply_items
+    geom.hypr_j = lambda cmd, cached=False: [
+        {
+            "address": "0xabc",
+            "class": "herdr",
+            "title": "herdr",
+            "initialClass": "herdr",
+            "workspace": {"id": 2, "name": "2"},
+            "at": [8, 34],
+            "size": [700, 900],
+        }
+    ] if cmd == "clients" else []
+    geom.apply_items = lambda *a, **k: calls.append(a) or []
+    try:
+        cfg = {
+            "settings": {"activeProfileId": "p"},
+            "profiles": [{
+                "id": "p",
+                "assignments": [{
+                    "workspace": 2,
+                    "name": "Herdr",
+                    "exec": "herdr",
+                    "lockPlace": True,
+                    "geom": {"x": 0, "y": 0, "w": 0.6, "h": 1},
+                }],
+                "workspacePrefs": {"2": {"layout": "scrolling"}},
+            }],
+        }
+        import tempfile, json, os
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+        try:
+            result = geom.apply_config(path, "p")
+        finally:
+            os.unlink(path)
+        assert result.get("ok") is True
+        assert calls == []
+    finally:
+        geom.hypr_j = orig_hypr_j
+        geom.apply_items = orig_apply_items
+        if orig_env is None:
+            geom.os.environ.pop("WORKSCAPE_OCCUPIED_WS", None)
+        else:
+            geom.os.environ["WORKSCAPE_OCCUPIED_WS"] = orig_env
+
+
+def test_apply_items_scrolling_vs_stacked_rows():
+    metrics = {"x": 8, "y": 34, "w": 1424, "h": 918, "scale": 2}
+    items = [
+        {"addr": "0x1", "geom": {"x": 0, "y": 0, "w": 1, "h": 0.5}, "px": {"x": 8, "y": 34, "w": 1424, "h": 459}},
+        {"addr": "0x2", "geom": {"x": 0, "y": 0.5, "w": 1, "h": 0.5}, "px": {"x": 8, "y": 493, "w": 1424, "h": 459}},
+    ]
+    boxes = {
+        "0x1": {"x": 8, "y": 34, "w": 1424, "h": 900},
+        "0x2": {"x": 8, "y": 34, "w": 1424, "h": 18},
+    }
+    axes = []
+    orig_force = geom.force_tiled
+    orig_box = geom.actual_box
+    orig_resize = geom.resize_relative
+    orig_swap = geom.swap_windows
+    orig_scroll = geom.workspace_is_scrolling
+    orig_place = geom.place_scrolling_columns
+    geom.force_tiled = lambda addr: None
+    geom.actual_box = lambda addr: dict(boxes[addr])
+    geom.resize_relative = lambda addr, dx, dy: axes.append(("resize", addr, dx, dy))
+    geom.swap_windows = lambda a, b: axes.append(("swap", a, b))
+    geom.workspace_is_scrolling = lambda ws, workspaces=None: False
+    geom.place_scrolling_columns = lambda *a, **k: axes.append(("scroll", a, k)) or items
+    try:
+        geom.apply_items(items, metrics, ws="7")
+        assert any(c[0] == "resize" and c[3] != 0 for c in axes), axes
+        assert not any(c[0] == "scroll" for c in axes)
+        axes.clear()
+        geom.workspace_is_scrolling = lambda ws, workspaces=None: True
+        geom.apply_items(
+            [
+                {"addr": "0x1", "geom": {"x": 0, "y": 0, "w": 0.5, "h": 1}, "px": {"x": 8, "y": 34, "w": 712, "h": 918}},
+                {"addr": "0x2", "geom": {"x": 0.5, "y": 0, "w": 0.5, "h": 1}, "px": {"x": 720, "y": 34, "w": 712, "h": 918}},
+            ],
+            metrics,
+            ws="6",
+        )
+        assert any(c[0] == "scroll" for c in axes), axes
+    finally:
+        geom.force_tiled = orig_force
+        geom.actual_box = orig_box
+        geom.resize_relative = orig_resize
+        geom.swap_windows = orig_swap
+        geom.workspace_is_scrolling = orig_scroll
+        geom.place_scrolling_columns = orig_place
+
+
+def test_geom_pixels_master_stack():
+    metrics = {"x": 8, "y": 34, "w": 1000, "h": 900, "scale": 1}
+    left = geom.geom_pixels({"x": 0, "y": 0, "w": 0.55, "h": 1}, metrics)
+    top = geom.geom_pixels({"x": 0.55, "y": 0, "w": 0.45, "h": 0.5}, metrics)
+    bot = geom.geom_pixels({"x": 0.55, "y": 0.5, "w": 0.45, "h": 0.5}, metrics)
+    assert left["x"] == 8
+    assert top["x"] == 8 + 550
+    assert bot["y"] == 34 + 450
+    assert top["h"] + bot["h"] == 900
+    assert left["w"] + top["w"] == 1000
+
+
 def test_match_herdr_not_shophawk():
     herdr = {"address": "0x1", "class": "org.omarchy.herdr", "title": "omarchy: master", "initialClass": "org.omarchy.herdr"}
     panel = {"address": "0x2", "class": "org.quickshell", "title": "Shophawk Control", "initialClass": "org.quickshell"}
@@ -192,5 +304,8 @@ if __name__ == "__main__":
     test_close_enough_and_fallback()
     test_column_width_frac()
     test_restore_resizes_locked_pane()
+    test_apply_config_skips_occupied()
+    test_apply_items_scrolling_vs_stacked_rows()
+    test_geom_pixels_master_stack()
     test_match_herdr_not_shophawk()
     print("geom.test.py ok")
