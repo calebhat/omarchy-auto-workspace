@@ -144,15 +144,15 @@ Item {
             }
         }
 
-        Item { Layout.fillHeight: true; Layout.minimumHeight: 0 }
-
         Rectangle {
             id: previewBox
             Layout.fillWidth: true
-            Layout.preferredHeight: width > 0 ? Math.round(width * root.screenAspect) : 92
-            Layout.maximumHeight: Layout.preferredHeight
+            Layout.fillHeight: true
+            Layout.minimumHeight: Style.space(92)
+            Layout.preferredHeight: width > 0 ? Math.round(width * root.screenAspect) : Style.space(92)
+            Layout.maximumHeight: width > 0 ? Math.round(width * root.screenAspect) : 4096
             Layout.alignment: Qt.AlignHCenter
-            implicitHeight: width > 0 ? Math.round(width * root.screenAspect) : 92
+            implicitHeight: width > 0 ? Math.round(width * root.screenAspect) : Style.space(92)
             radius: Style.cornerRadius
             color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.04)
             border.width: 1

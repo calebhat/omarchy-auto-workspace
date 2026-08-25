@@ -1,6 +1,6 @@
 .pragma library
 
-// Shared helpers for WorkBook panel + service.
+// Shared helpers for WorkScape panel + service.
 // Config lives outside the plugin dir so saves do not reload the plugin.
 
 function defaultConfig() {
@@ -15,7 +15,8 @@ function defaultConfig() {
             onlyOnBoot: true,
             lastFormWorkspace: 1,
             activeProfileId: "default",
-            gestureSource: "profile",
+            gestureSource: "global",
+            persistHyprGestures: false,
             gestures: defaultGestures()
         },
         monitors: [],
@@ -38,8 +39,274 @@ function defaultProfile() {
         gestures: defaultGestures(),
         workspaceNames: {},
         defaultWorkspace: 0,
-        persistentWorkspaces: false
+        persistentWorkspaces: false,
+        network: emptyNetwork(),
+        overflow: emptyOverflow(),
+        claimedAt: 0
     }
+}
+
+function maxWorkspace() { return 20 }
+
+function emptyOverflow() {
+    return { enabled: false, workspaces: [], maxWindows: 1 }
+}
+
+function normalizeOverflow(raw) {
+    var src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
+    var seen = {}
+    var list = []
+    var arr = Array.isArray(src.workspaces) ? src.workspaces : []
+    var maxWs = maxWorkspace()
+    for (var i = 0; i < arr.length && list.length < maxWs; i++) {
+        var n = parseInt(arr[i], 10)
+        if (!(n >= 1 && n <= maxWs) || seen[n]) continue
+        seen[n] = true
+        list.push(n)
+    }
+    return {
+        enabled: src.enabled === true,
+        workspaces: list,
+        maxWindows: clampVisibleCount(src.maxWindows != null ? src.maxWindows : 1)
+    }
+}
+
+function assignedWorkspaceSet(profile) {
+    var used = {}
+    var list = (profile && profile.assignments) || []
+    for (var i = 0; i < list.length; i++) {
+        var ws = parseInt(list[i].workspace, 10)
+        if (ws >= 1 && ws <= maxWorkspace()) used[ws] = true
+    }
+    return used
+}
+
+function unsetWorkspaces(profile) {
+    var used = assignedWorkspaceSet(profile)
+    var out = []
+    var maxWs = maxWorkspace()
+    for (var i = 1; i <= maxWs; i++) if (!used[i]) out.push(i)
+    return out
+}
+
+function overflowSummary(profile) {
+    var ov = normalizeOverflow(profile && profile.overflow)
+    if (!ov.enabled) return "Off — extras only follow each workspace’s own send-extra toggle."
+    if (!ov.workspaces.length) return "On — no workspaces in the chain yet. Use Choose… then Set Stage."
+    return "On · " + ov.maxWindows + "/ws · " + ov.workspaces.join(" → ")
+}
+
+function emptyNetwork() {
+    return { ssids: [], subnets: [], connections: [] }
+}
+
+function uniqueStrings(list, maxLen, maxCount) {
+    var out = []
+    var seen = {}
+    if (!Array.isArray(list)) return out
+    for (var i = 0; i < list.length && out.length < maxCount; i++) {
+        var s = String(list[i] || "").trim().slice(0, maxLen)
+        var k = s.toLowerCase()
+        if (!s || seen[k]) continue
+        seen[k] = true
+        out.push(s)
+    }
+    return out
+}
+
+function normalizeNetwork(raw) {
+    var src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
+    return {
+        ssids: uniqueStrings(src.ssids, 64, 8),
+        subnets: uniqueStrings(src.subnets, 64, 8),
+        connections: uniqueStrings(src.connections, 64, 8)
+    }
+}
+
+function networkConfigured(raw) {
+    var n = normalizeNetwork(raw)
+    return n.ssids.length + n.subnets.length + n.connections.length > 0
+}
+
+function captureNetwork(live) {
+    var liveObj = live && typeof live === "object" ? live : {}
+    return normalizeNetwork({
+        ssids: liveObj.ssid ? [liveObj.ssid] : [],
+        subnets: liveObj.subnet ? [liveObj.subnet] : [],
+        connections: liveObj.connection ? [liveObj.connection] : []
+    })
+}
+
+function anyNetworkHit(savedArr, liveVal) {
+    if (!liveVal) return false
+    var want = String(liveVal).toLowerCase()
+    for (var i = 0; i < savedArr.length; i++) {
+        if (String(savedArr[i]).toLowerCase() === want) return true
+    }
+    return false
+}
+
+function networkMatches(saved, live) {
+    var n = normalizeNetwork(saved)
+    if (!networkConfigured(n)) return { constrained: false, matches: true }
+    if (!live || typeof live !== "object") return { constrained: true, matches: false }
+    var hit = anyNetworkHit(n.ssids, live.ssid) || anyNetworkHit(n.subnets, live.subnet) || anyNetworkHit(n.connections, live.connection)
+    return { constrained: true, matches: hit }
+}
+
+function networksOverlap(a, b) {
+    var na = normalizeNetwork(a)
+    var nb = normalizeNetwork(b)
+    var ca = networkConfigured(na)
+    var cb = networkConfigured(nb)
+    if (!ca && !cb) return true
+    if (ca !== cb) return false
+    function share(left, right) {
+        var other = {}
+        for (var i = 0; i < right.length; i++) other[String(right[i]).toLowerCase()] = true
+        for (var j = 0; j < left.length; j++) if (other[String(left[j]).toLowerCase()]) return true
+        return false
+    }
+    return share(na.ssids, nb.ssids) || share(na.subnets, nb.subnets) || share(na.connections, nb.connections)
+}
+
+function monitorKey(profile) {
+    var mons = []
+    var raw = (profile && profile.monitors) ? profile.monitors : []
+    for (var i = 0; i < raw.length; i++) {
+        var id = String(raw[i] || "")
+        if (id) mons.push(id)
+    }
+    mons.sort()
+    return mons.join(",")
+}
+
+function subtractNetwork(fromNet, claimed) {
+    var n = normalizeNetwork(fromNet)
+    var c = normalizeNetwork(claimed)
+    function drop(arr, other) {
+        var skip = {}
+        for (var i = 0; i < other.length; i++) skip[String(other[i]).toLowerCase()] = true
+        var out = []
+        for (var j = 0; j < arr.length; j++) if (!skip[String(arr[j]).toLowerCase()]) out.push(arr[j])
+        return out
+    }
+    return normalizeNetwork({
+        ssids: drop(n.ssids, c.ssids),
+        subnets: drop(n.subnets, c.subnets),
+        connections: drop(n.connections, c.connections)
+    })
+}
+
+function environmentOwner(cfg, key, network, exceptId) {
+    var list = (cfg && cfg.profiles) || []
+    for (var i = 0; i < list.length; i++) {
+        if (exceptId && list[i].id === exceptId) continue
+        if (monitorKey(list[i]) !== key) continue
+        if (networksOverlap(list[i].network, network)) return list[i]
+    }
+    return null
+}
+
+function claimEnvironment(cfg, profileId, network) {
+    var out = clone(cfg)
+    var net = normalizeNetwork(network)
+    var stolen = []
+    var prof = profileById(out, profileId)
+    if (!prof) return { config: out, stolen: stolen }
+    var key = monitorKey(prof)
+    for (var i = 0; i < out.profiles.length; i++) {
+        var p = out.profiles[i]
+        if (p.id === profileId) {
+            p.network = net
+            p.claimedAt = Date.now()
+            continue
+        }
+        if (monitorKey(p) !== key) continue
+        if (!networksOverlap(p.network, net)) continue
+        if (!networkConfigured(net) || !networkConfigured(p.network)) continue
+        var next = subtractNetwork(p.network, net)
+        if (JSON.stringify(next) !== JSON.stringify(normalizeNetwork(p.network))) {
+            stolen.push({ id: p.id, name: p.name })
+            p.network = next
+        }
+    }
+    return { config: out, stolen: stolen }
+}
+
+function suggestedProfileName(liveMonitors) {
+    var n = (liveMonitors || []).length
+    return n <= 1 ? "Laptop" : ("Desk " + n + " monitors")
+}
+
+function liveNetworkSummary(live) {
+    if (!live || typeof live !== "object") return "No LAN / Wi-Fi yet"
+    if (live.kind === "wifi" && live.ssid)
+        return "Wi-Fi " + live.ssid + (live.subnet ? " · " + live.subnet : "")
+    if (live.subnet)
+        return (live.kind === "ethernet" ? "Ethernet " : "") + live.subnet
+    if (live.iface) return String(live.iface)
+    return "No LAN / Wi-Fi yet"
+}
+
+function networkSummary(raw) {
+    var n = normalizeNetwork(raw)
+    if (!networkConfigured(n)) return "Any network (fallback for this layout)"
+    var parts = []
+    if (n.ssids.length) parts.push("Wi-Fi " + n.ssids.join(", "))
+    if (n.subnets.length) parts.push(n.subnets.join(", "))
+    if (n.connections.length) {
+        var same = n.ssids.join(",").toLowerCase() === n.connections.join(",").toLowerCase()
+        if (!same) parts.push(n.connections.join(", "))
+    }
+    return parts.join(" · ")
+}
+
+function splitNetworkField(s) {
+    var out = []
+    var raw = String(s || "").replace(/\n/g, ",")
+    var parts = raw.split(",")
+    for (var i = 0; i < parts.length; i++) {
+        var t = String(parts[i] || "").trim()
+        if (t) out.push(t)
+    }
+    return out
+}
+
+function parseNetworkText(ssidsText, subnetsText, connectionsText) {
+    return normalizeNetwork({
+        ssids: splitNetworkField(ssidsText),
+        subnets: splitNetworkField(subnetsText),
+        connections: splitNetworkField(connectionsText)
+    })
+}
+
+function networkFieldText(raw) {
+    var n = normalizeNetwork(raw)
+    return {
+        ssids: n.ssids.join(", "),
+        subnets: n.subnets.join(", "),
+        connections: n.connections.join(", ")
+    }
+}
+
+function boundNetworkLine(profile, liveNet) {
+    var net = profile && profile.network
+    var bound = networkSummary(net)
+    if (!networkConfigured(net)) return bound
+    var hit = networkMatches(net, liveNet)
+    if (hit.matches) return bound + " · connected now"
+    var live = liveNetworkSummary(liveNet)
+    if (live && live.indexOf("No LAN") !== 0) return bound + " · now " + live
+    return bound
+}
+
+function matchReasonLabel(reason) {
+    if (reason === "network") return "wrong network"
+    if (reason === "missing") return "missing displays"
+    if (reason === "extra") return "extra displays"
+    if (reason === "exact" || reason === "all-present") return "matches now"
+    return String(reason || "")
 }
 
 function defaultGestures() {
@@ -959,7 +1226,13 @@ function normalizeProfile(p, monitorIds) {
             if (!(n >= 0 && n <= 10)) n = 0
             return n
         })(),
-        persistentWorkspaces: p.persistentWorkspaces === true
+        persistentWorkspaces: p.persistentWorkspaces === true,
+        overflow: normalizeOverflow(p.overflow),
+        network: normalizeNetwork(p.network),
+        claimedAt: (function() {
+            var n = parseInt(p.claimedAt, 10)
+            return n > 0 ? n : 0
+        })()
     }
 }
 
@@ -998,7 +1271,8 @@ function sanitizeConfig(cfg) {
         out.settings.onlyOnBoot = cfg.settings.onlyOnBoot !== false
         out.settings.lastFormWorkspace = Math.max(1, Math.min(10, parseInt(cfg.settings.lastFormWorkspace) || 1))
         out.settings.activeProfileId = String(cfg.settings.activeProfileId || "default").slice(0, 40)
-        out.settings.gestureSource = cfg.settings.gestureSource === "global" ? "global" : "profile"
+        out.settings.gestureSource = cfg.settings.gestureSource === "profile" ? "profile" : "global"
+        out.settings.persistHyprGestures = cfg.settings.persistHyprGestures === true
         out.settings.gestures = normalizeGestures(cfg.settings.gestures)
     }
     var monitors = []
@@ -1082,7 +1356,7 @@ function findLive(saved, liveList) {
     return null
 }
 
-function profileMatch(cfg, profile, liveList) {
+function profileMatch(cfg, profile, liveList, liveNet) {
     var live = (liveList || []).filter(liveIsReal)
     var required = profile && profile.monitors ? profile.monitors : []
     var missing = []
@@ -1117,6 +1391,12 @@ function profileMatch(cfg, profile, liveList) {
         exact = matches
         allPresent = matches
     }
+    var reason = matches ? (exact ? "exact" : "all-present") : (missing.length ? "missing" : "extra")
+    var net = networkMatches(profile && profile.network, liveNet)
+    if (matches && net.constrained && !net.matches) {
+        matches = false
+        reason = "network"
+    }
     return {
         matches: matches,
         exact: exact,
@@ -1125,29 +1405,35 @@ function profileMatch(cfg, profile, liveList) {
         extra: extra,
         matchedCount: matched.length,
         requiredCount: required.length,
-        reason: matches ? (exact ? "exact" : "all-present") : (missing.length ? "missing" : "extra")
+        reason: reason,
+        networkConstrained: net.constrained,
+        networkMatches: net.matches
     }
 }
 
-function bestProfile(cfg, liveList) {
+function bestProfile(cfg, liveList, liveNet) {
     var list = (cfg && cfg.profiles) || []
-    var exact = []
-    var present = []
+    var scored = []
     for (var i = 0; i < list.length; i++) {
-        var info = profileMatch(cfg, list[i], liveList)
-        if (info.exact) exact.push({ profile: list[i], info: info })
-        else if (info.allPresent) present.push({ profile: list[i], info: info })
+        var info = profileMatch(cfg, list[i], liveList, liveNet)
+        if (!info.matches) continue
+        scored.push({
+            profile: list[i],
+            info: info,
+            netBoost: info.networkConstrained && info.networkMatches ? 2 : 1,
+            exactBoost: info.exact ? 2 : 1,
+            claimed: Number(list[i].claimedAt) || 0
+        })
     }
-    function moreMonitors(a, b) { return b.info.requiredCount - a.info.requiredCount }
-    if (exact.length) {
-        exact.sort(moreMonitors)
-        return exact[0].profile
-    }
-    if (present.length) {
-        present.sort(moreMonitors)
-        return present[0].profile
-    }
-    return null
+    if (!scored.length) return null
+    scored.sort(function(a, b) {
+        if (b.netBoost !== a.netBoost) return b.netBoost - a.netBoost
+        if (b.exactBoost !== a.exactBoost) return b.exactBoost - a.exactBoost
+        if (b.info.requiredCount !== a.info.requiredCount) return b.info.requiredCount - a.info.requiredCount
+        if (b.claimed !== a.claimed) return b.claimed - a.claimed
+        return 0
+    })
+    return scored[0].profile
 }
 
 function monitorOptions(cfg, profile, liveList) {
@@ -1270,6 +1556,15 @@ function extractWebappUrl(s) {
     return m[m.length - 1]
 }
 
+function extractChromiumAppKey(s) {
+    var t = String(s || "")
+    var id = t.match(/--app-id=([A-Za-z0-9_-]+)/)
+    if (id) return "id:" + id[1]
+    var app = t.match(/--app=(\S+)/)
+    if (app) return "app:" + app[1]
+    return ""
+}
+
 function canonicalExec(s) {
     var t = String(s || "").trim()
     if (!t) return ""
@@ -1296,6 +1591,8 @@ function sameAppExec(a, b) {
     if (ca && cb && ca === cb) return true
     var ua = extractWebappUrl(a), ub = extractWebappUrl(b)
     if (ua && ub) return ua === ub
+    var ka = extractChromiumAppKey(a), kb = extractChromiumAppKey(b)
+    if (ka || kb) return !!(ka && kb && ka === kb)
     if (ua || ub) return false
     var ba = execBasename(a), bb = execBasename(b)
     if (!ba || !bb) return false

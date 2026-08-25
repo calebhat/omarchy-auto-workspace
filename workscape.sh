@@ -1,12 +1,13 @@
 #!/bin/bash
 set -uo pipefail
 
-PLUGIN_ID="io.github.calebhat.workbook"
+PLUGIN_ID="io.github.calebhat.workscape"
 # Config lives OUTSIDE the plugin dir: the shell watches the plugin folder and
 # reloads the whole plugin on any file change there, which would close the
 # panel and restart the service on every settings save.
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/workbook"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/workscape"
 CONFIG_FILE="$STATE_DIR/config.json"
+PREV_WORKBOOK_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/workbook"
 PREV_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-workspace"
 LEGACY_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/tenzin.auto-workspace/config.json"
 STATE_FILE="$STATE_DIR/state.json"
@@ -15,10 +16,15 @@ MATCH="$PLUGIN_DIR/scripts/match"
 GEOM="$PLUGIN_DIR/scripts/geom"
 GESTURES="$PLUGIN_DIR/scripts/gestures"
 
-mkdir -p "$STATE_DIR"
+mkdir -p -m 700 "$STATE_DIR"
 
 migrate_config() {
   if [[ -f $CONFIG_FILE ]]; then
+    return 0
+  fi
+  mkdir -p -m 700 "$STATE_DIR"
+  if [[ -f $PREV_WORKBOOK_DIR/config.json ]]; then
+    cp -a "$PREV_WORKBOOK_DIR/." "$STATE_DIR/" 2>/dev/null || true
     return 0
   fi
   if [[ -f $PREV_STATE_DIR/config.json ]]; then
@@ -62,17 +68,26 @@ JSON
 
 ensure_config() {
   migrate_config
+  mkdir -p -m 700 "$STATE_DIR"
   if [[ ! -f $CONFIG_FILE ]]; then
     default_config >"$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+    return 0
   fi
-  if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
-    cp "$CONFIG_FILE" "$CONFIG_FILE.bak.$(date +%s)" 2>/dev/null || true
-    default_config >"$CONFIG_FILE"
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "jq is required" >&2
+    return 1
   fi
+  if ! jq empty "$CONFIG_FILE" >/dev/null 2>&1; then
+    echo "invalid config JSON: $CONFIG_FILE (left in place; not overwritten)" >&2
+    return 1
+  fi
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+  return 0
 }
 
 cmd_ensure_config() {
-  ensure_config
+  ensure_config || exit 1
   cat "$CONFIG_FILE"
 }
 
@@ -98,7 +113,7 @@ cmd_match_id() {
 notify() {
   local title=$1 body=$2
   if command -v notify-send >/dev/null 2>&1; then
-    notify-send -a "WorkBook" "$title" "$body" >/dev/null 2>&1 || true
+    notify-send -a "WorkScape" -- "$title" "$body" >/dev/null 2>&1 || true
   fi
 }
 
@@ -151,7 +166,6 @@ restore_unpinned_workspaces() {
     fi
     printf '%s\n' "$enabled" | grep -qx -- "$mon" || continue
     echo "keep workspace $ws on $mon"
-    hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s", persistent = false })' "$ws" "$mon")" >/dev/null 2>&1 || true
     move_workspace_to_monitor "$ws" "$mon"
   done
 }
@@ -217,25 +231,11 @@ cmd_list_apps() {
     seen_name["${extra_name,,}"]=1
   done < <(jq -c '.extraApps[]?' "$CONFIG_FILE" 2>/dev/null)
 
-  local herdr_cmd=""
-  if command -v herdr-shophawk >/dev/null 2>&1; then
-    herdr_cmd="$(command -v herdr-shophawk)"
-  elif [[ -x $HOME/.local/bin/herdr-shophawk ]]; then
-    herdr_cmd="$HOME/.local/bin/herdr-shophawk"
-  elif command -v herdr >/dev/null 2>&1; then
-    herdr_cmd="omarchy-launch-or-focus-tui --app-id=org.omarchy.herdr herdr --session shophawk"
-  fi
-  if [[ -n $herdr_cmd && $seen != *"|$herdr_cmd|"* ]]; then
-    printf "%s\t%s\t%s\t%s\t%s\t%s\n" "ShopHawk Herdr" "$herdr_cmd" "utilities-terminal" "" "extra-herdr" "10000"
-    seen+="|$herdr_cmd|"
-    seen_name["shophawk herdr"]=1
-  fi
-
   # Skip walking the icon themes here — the panel resolves Icon= via Quickshell.
   local hist_txt="" h
   for h in "$HOME/.bash_history" "$HOME/.zsh_history" "$HOME/.local/share/fish/fish_history"; do
     [[ -f $h ]] || continue
-    hist_txt+="$(cat "$h" 2>/dev/null)"
+    hist_txt+="$(tail -c 262144 "$h" 2>/dev/null)"
     hist_txt+="\n"
   done
   local -A tok_count
@@ -337,6 +337,17 @@ wait_for_hyprland() {
   return 0
 }
 
+wait_for_lan() {
+  local n
+  for n in 1 2 3 4 5 6 7 8 9 10; do
+    if ip -4 route show default 2>/dev/null | grep -q .; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 cmd_launch() {
   local workspace="$1"
   local exec_cmd="$2"
@@ -346,7 +357,7 @@ cmd_launch() {
     echo "usage: $0 --launch <workspace> <exec> [silent] [geom-json]" >&2
     exit 1
   fi
-  if ! [[ $workspace =~ ^[0-9]+$ ]] && ! [[ $workspace =~ ^special: ]]; then
+  if ! [[ $workspace =~ ^([1-9]|10)$ ]]; then
     echo "invalid workspace: $workspace" >&2
     exit 1
   fi
@@ -445,8 +456,10 @@ cmd_launch() {
           .[] | select(.address == $a) | if ws_ok($ws) then "true" else "false" end
         ' 2>/dev/null)
         if [[ $on_ws != "true" ]]; then
-          hyprctl eval "hl.dispatch(hl.dsp.window.move({workspace=\"$target_ws\", window=\"address:$addr\", follow=false}))" >/dev/null 2>&1 \
-            || true
+          if [[ $target_ws =~ ^([1-9]|10)$ && $addr =~ ^0x[0-9a-fA-F]+$ ]]; then
+            hyprctl eval "hl.dispatch(hl.dsp.window.move({workspace=\"$target_ws\", window=\"address:$addr\", follow=false}))" >/dev/null 2>&1 \
+              || true
+          fi
         fi
         moved=$((moved + 1))
         placed_addrs+=("$addr")
@@ -526,7 +539,8 @@ find_existing_addr() {
 
 move_window_to_ws() {
   local addr=$1 ws=$2
-  [[ -n $addr && -n $ws ]] || return 0
+  [[ $ws =~ ^([1-9]|10)$ ]] || return 0
+  [[ $addr =~ ^0x[0-9a-fA-F]+$ ]] || return 0
   hyprctl eval "$(printf 'hl.dispatch(hl.dsp.window.move({workspace="%s", window="address:%s", follow=false}))' "$ws" "$addr")" >/dev/null 2>&1 || true
 }
 
@@ -541,6 +555,8 @@ launch_profile_assignments() {
   last_boot=""
   [[ -f $last_boot_file ]] && last_boot=$(cat "$last_boot_file" 2>/dev/null || echo "")
   stagger=$(jq -r '.settings.staggerMs // 80' "$CONFIG_FILE")
+  if ! [[ $stagger =~ ^[0-9]+$ ]]; then stagger=80; fi
+  if ((stagger > 2000)); then stagger=2000; fi
   silent=$(jq -r '.settings.silent // true' "$CONFIG_FILE")
   local clients_json used_addrs=""
   clients_json=$(hyprctl clients -j 2>/dev/null || echo "[]")
@@ -620,6 +636,9 @@ launch_profile_assignments() {
     idx=$((idx + 1))
   done < <(profile_assignments "$profile_id")
 
+  echo "sweeping extras off blocked workspaces"
+  python3 "$PLUGIN_DIR/scripts/watch" --sweep || true
+
   echo "applying window geometry for $profile_id"
   apply_profile_geoms "$profile_id"
 
@@ -631,13 +650,13 @@ cmd_apply() {
   local mode=$1
   local requested_id=${2:-}
   local force=${3:-false}
-  mkdir -p "$STATE_DIR"
+  mkdir -p -m 700 "$STATE_DIR"
   exec 9>"$STATE_DIR/apply.lock"
   if ! flock -n 9; then
     echo "apply already in progress"
     exit 0
   fi
-  ensure_config
+  ensure_config || exit 1
   wait_for_hyprland || exit 1
 
   local enabled
@@ -665,9 +684,16 @@ cmd_apply() {
       echo "already applied this login — skip shell restart"
       exit 0
     fi
+    local needs_identity
+    needs_identity=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --needs-identity 2>/dev/null || echo yes)
+    if [[ $needs_identity == "yes" ]]; then
+      echo "no fallback for this layout — waiting for LAN / Wi-Fi identity…"
+      wait_for_lan || true
+      python3 "$PLUGIN_DIR/scripts/network" --wait-identity 45 >/dev/null || true
+    fi
   fi
 
-  local status_json profile_id profile_name bindings
+  local status_json profile_id profile_name bindings attempt
   status_json=$(cmd_live_status)
   if [[ -n $requested_id ]]; then
     profile_id=$requested_id
@@ -677,11 +703,24 @@ cmd_apply() {
     profile_id=$(printf '%s' "$status_json" | jq -r '.matchedProfileId // empty')
     profile_name=$(printf '%s' "$status_json" | jq -r '.matchedProfileName // empty')
     bindings=$(printf '%s' "$status_json" | jq -c '.bindings // {}')
+    if [[ $mode == "boot" ]]; then
+      for attempt in 1 2 3 4 5 6 7 8; do
+        if [[ -n $profile_id && $profile_id != "null" ]]; then
+          break
+        fi
+        echo "no match yet (try $attempt), waiting for network…"
+        sleep 3
+        status_json=$(cmd_live_status)
+        profile_id=$(printf '%s' "$status_json" | jq -r '.matchedProfileId // empty')
+        profile_name=$(printf '%s' "$status_json" | jq -r '.matchedProfileName // empty')
+        bindings=$(printf '%s' "$status_json" | jq -c '.bindings // {}')
+      done
+    fi
   fi
 
   if [[ -z $profile_id || $profile_id == "null" ]]; then
     echo "no matching profile for the current monitor layout"
-    notify "WorkBook" "No profile matches the current monitors"
+    notify "WorkScape" "No profile matches the current monitors"
     exit 0
   fi
 
@@ -707,7 +746,7 @@ cmd_apply() {
     launch_force=true
   fi
   launch_profile_assignments "$profile_id" "$launch_force"
-  notify "WorkBook" "Applied $profile_name"
+  notify "WorkScape" "Applied $profile_name"
 }
 
 cmd_launch_all() {
@@ -730,7 +769,7 @@ case "${1:-}" in
   --apply-gestures) python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "${2:-}" --apply ;;
   --default-config) default_config ;;
   --help|-h|"") cat <<'HELP'
-workbook.sh — helper for io.github.calebhat.workbook
+workscape.sh — helper for io.github.calebhat.workscape
 
   --ensure-config              ensure config exists and print it
   --list-apps                  list .desktop + extra apps as TSV

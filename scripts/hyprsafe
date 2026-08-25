@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Allowlists for values interpolated into hyprctl eval Lua."""
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+
+_WS_RE = re.compile(r"^(?:[1-9]|1[0-9]|20)$")
+_ADDR_RE = re.compile(r"^(?:0x)?[0-9a-fA-F]+$")
+_CONNECTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+
+
+def safe_ws(ws) -> str | None:
+    s = str(ws or "").strip()
+    if _WS_RE.fullmatch(s):
+        return s
+    return None
+
+
+def safe_addr(addr) -> str | None:
+    s = str(addr or "").strip()
+    if s.startswith("address:"):
+        s = s[8:]
+    if not _ADDR_RE.fullmatch(s):
+        return None
+    if not s.startswith("0x"):
+        s = "0x" + s
+    return s
+
+
+def safe_connector(name: str) -> str | None:
+    n = str(name or "").strip()
+    if _CONNECTOR_RE.fullmatch(n) and "HEADLESS" not in n:
+        return n
+    return None
+
+
+def lua_str(s: str) -> str:
+    return str(s or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def clamp_scale(raw) -> float:
+    try:
+        n = float(raw)
+    except Exception:
+        n = 1.0
+    if n < 0.25:
+        return 0.25
+    if n > 4.0:
+        return 4.0
+    return n
+
+
+def write_nofollow(path: Path, text: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    fd = os.open(path, flags, mode)
+    try:
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)

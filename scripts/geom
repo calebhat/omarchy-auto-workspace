@@ -11,7 +11,11 @@ import json
 import subprocess
 import sys
 import time
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
 from typing import Any
+
+SAFE = SourceFileLoader("workscape_hyprsafe", str(Path(__file__).resolve().parent / "hyprsafe")).load_module()
 
 
 _json_cache: dict[str, Any] = {}
@@ -165,10 +169,13 @@ def config_path() -> str:
     import os
     from pathlib import Path
     state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
-    return str(Path(state) / "omarchy/workbook/config.json")
+    return str(Path(state) / "omarchy/workscape/config.json")
 
 
 def force_tiled(addr: str) -> None:
+    addr = SAFE.safe_addr(addr)
+    if not addr:
+        return
     a = f"address:{addr}"
     hypr_eval(
         f"""
@@ -181,17 +188,27 @@ end
 
 
 def swap_windows(a_addr: str, b_addr: str) -> None:
+    a_addr = SAFE.safe_addr(a_addr)
+    b_addr = SAFE.safe_addr(b_addr)
+    if not a_addr or not b_addr:
+        return
     hypr_eval(
         f'hl.dispatch(hl.dsp.window.swap({{ window = "address:{a_addr}", with = "address:{b_addr}" }}))'
     )
 
 
 def resize_relative(addr: str, dx: int, dy: int) -> None:
+    addr = SAFE.safe_addr(addr)
+    if not addr:
+        return
     a = f"address:{addr}"
     hypr_eval(f'hl.dispatch(hl.dsp.window.resize({{window="{a}", x={int(dx)}, y={int(dy)}, relative=true}}))')
 
 
 def clear_size_lock(addr: str) -> None:
+    addr = SAFE.safe_addr(addr)
+    if not addr:
+        return
     a = f"address:{addr}"
     hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="min_size", value="0 0" }}))')
     hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="max_size", value="0 0" }}))')
@@ -199,6 +216,9 @@ def clear_size_lock(addr: str) -> None:
 
 def set_size_lock(addr: str, w: int, h: int) -> None:
     if w <= 0 or h <= 0:
+        return
+    addr = SAFE.safe_addr(addr)
+    if not addr:
         return
     a = f"address:{addr}"
     # min_size only — max_size makes Hyprland shove locked panes when an extra
@@ -240,6 +260,9 @@ def scrolling_layout_opts(visible_count: int, lock: bool = False, stage: bool = 
 
 
 def force_scrolling(ws: str, visible_count: int = 2, lock: bool = True, stage: bool = False) -> None:
+    ws = SAFE.safe_ws(ws)
+    if not ws:
+        return
     opts = scrolling_layout_opts(visible_count, lock=lock, stage=stage)
     hypr_eval(
         f'hl.workspace_rule({{ workspace = "{ws}", persistent = true, layout = "scrolling", '

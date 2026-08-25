@@ -8,7 +8,7 @@ Item {
     id: root
 
     property QtObject bar: null
-    property string moduleName: "io.github.calebhat.workbook"
+    property string moduleName: "io.github.calebhat.workscape"
     property var settings: ({})
     property var shell: null
     property var manifest: null
@@ -16,9 +16,9 @@ Item {
     readonly property string home: Quickshell.env("HOME")
     readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || home + "/.config"
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
-    readonly property string pluginId: "io.github.calebhat.workbook"
-    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/workbook.sh"
-    readonly property string configFile: stateHome + "/omarchy/workbook/config.json"
+    readonly property string pluginId: "io.github.calebhat.workscape"
+    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/workscape.sh"
+    readonly property string configFile: stateHome + "/omarchy/workscape/config.json"
 
     property bool autoEnabled: true
     property bool applyOnBoot: false
@@ -28,7 +28,7 @@ Item {
     property string lastStatus: ""
 
     function log(msg) {
-        console.log("[workbook] " + msg)
+        console.log("[workscape] " + msg)
     }
 
     Process {
@@ -63,8 +63,8 @@ Item {
 
     Process {
         id: launchProc
-        stdout: SplitParser { onRead: function(d){ console.log("[workbook] launch] " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[workbook] launch err] " + d) } }
+        stdout: SplitParser { onRead: function(d){ console.log("[workscape] launch] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[workscape] launch err] " + d) } }
         onExited: function(code) {
             root.lastStatus = code === 0 ? "launched" : "failed:" + code
             root.launchedThisSession = true
@@ -85,7 +85,7 @@ Item {
         command: ["python3", root.home + "/.config/omarchy/plugins/" + root.pluginId + "/scripts/watch"]
         running: false
         stdout: SplitParser { onRead: function(d){ root.log("extras " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[workbook] extras] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[workscape] extras] " + d) } }
     }
 
     Timer {
@@ -97,8 +97,8 @@ Item {
 
     Process {
         id: manualLaunchProc
-        stdout: SplitParser { onRead: function(d){ console.log("[workbook] manual] " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[workbook] manual err] " + d) } }
+        stdout: SplitParser { onRead: function(d){ console.log("[workscape] manual] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[workscape] manual err] " + d) } }
     }
 
     Timer {
@@ -168,7 +168,6 @@ Item {
         function forceLaunchAll(): void { root.launchAll(true) }
         function applyMatching(): void { root.applyMatching() }
         function applyProfile(profileId: string): void { root.applyProfile(profileId) }
-        function launch(workspace: string, execCmd: string): void { root.launchOnWorkspace(workspace, execCmd) }
         function refreshConfig(): void { root.refreshConfig() }
         function status(): string { return root.status() }
     }

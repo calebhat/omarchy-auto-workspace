@@ -28,7 +28,7 @@ def test_occupied_keyboard():
 def test_four_fingers_sets_four():
     lua = g.render_lua({"fingers": 4, "workspaceSwipe": True})
     assert 'fingers = 4, direction = "horizontal", action = "workspace"' in lua
-    assert "WORKBOOK_SWIPE_FINGERS = 4" in lua
+    assert "WORKSCAPE_SWIPE_FINGERS = 4" in lua
     assert 'action = "unset"' not in lua
 
 
@@ -46,6 +46,8 @@ def test_resolve_profile_vs_global():
     assert g.resolve_gestures(cfg)["skipEmpty"] is False
     cfg["settings"]["gestureSource"] = "profile"
     assert g.resolve_gestures(cfg)["skipEmpty"] is True
+    del cfg["settings"]["gestureSource"]
+    assert g.resolve_gestures(cfg)["skipEmpty"] is False
 
 
 if __name__ == "__main__":

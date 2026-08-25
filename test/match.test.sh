@@ -66,6 +66,44 @@ cat >"$TMP/live-desk-lid.json" <<'JSON'
 JSON
 lid_id=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-desk-lid.json" --print-id)
 [[ $lid_id == "desk-dock" ]]
+
+cat >"$TMP/net-config.json" <<'JSON'
+{
+  "monitors": [
+    { "id": "laptop", "label": "Laptop", "serial": "", "description": "BOE NE135A1M-NY1", "name": "eDP-1" }
+  ],
+  "profiles": [
+    { "id": "home", "name": "Home", "matchMode": "exact", "monitors": ["laptop"], "network": { "ssids": ["Hataj"], "subnets": ["192.168.1.0/24"], "connections": [] }, "claimedAt": 1 },
+    { "id": "office", "name": "Office", "matchMode": "exact", "monitors": ["laptop"], "network": { "ssids": ["Office"], "subnets": ["192.168.2.0/24"], "connections": [] }, "claimedAt": 2 },
+    { "id": "any", "name": "Any", "matchMode": "exact", "monitors": ["laptop"], "network": { "ssids": [], "subnets": [], "connections": [] }, "claimedAt": 0 }
+  ]
+}
+JSON
+cat >"$TMP/net-home.json" <<'JSON'
+{ "ssid": "Hataj", "subnet": "192.168.1.0/24", "connection": "Hataj" }
+JSON
+cat >"$TMP/net-cafe.json" <<'JSON'
+{ "ssid": "Cafe", "subnet": "10.1.1.0/24", "connection": "" }
+JSON
+home_id=$(python3 "$MATCH" --config "$TMP/net-config.json" --live-json "$TMP/live-laptop.json" --network-json "$TMP/net-home.json" --print-id)
+cafe_id=$(python3 "$MATCH" --config "$TMP/net-config.json" --live-json "$TMP/live-laptop.json" --network-json "$TMP/net-cafe.json" --print-id)
+[[ $home_id == "home" ]]
+[[ $cafe_id == "any" ]]
+needs=$(python3 "$MATCH" --config "$TMP/net-config.json" --live-json "$TMP/live-laptop.json" --needs-identity)
+# net-config has unconstrained "any" for laptop, so no wait required
+[[ $needs == "no" ]]
+cat >"$TMP/net-only.json" <<'JSON'
+{
+  "monitors": [
+    { "id": "laptop", "label": "Laptop", "serial": "", "description": "BOE NE135A1M-NY1", "name": "eDP-1" }
+  ],
+  "profiles": [
+    { "id": "home", "name": "Home", "matchMode": "exact", "monitors": ["laptop"], "network": { "ssids": ["Hataj"], "subnets": [], "connections": [] } }
+  ]
+}
+JSON
+needs_only=$(python3 "$MATCH" --config "$TMP/net-only.json" --live-json "$TMP/live-laptop.json" --needs-identity)
+[[ $needs_only == "yes" ]]
 lid_bind=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-desk-lid.json" --profile-id desk-dock --bindings)
 [[ $(printf '%s' "$lid_bind" | jq -r '.["9"]') == "null" ]]
 
@@ -78,6 +116,16 @@ assert m.disable_plan(["eDP-1", "DVI-I-1"], ["eDP-1"]) == ["eDP-1"]
 assert m.disable_plan(["eDP-1", "DVI-I-1"], ["eDP-1", "DVI-I-1"]) == ["eDP-1"]
 assert m.safe_connector("eDP-1") == "eDP-1"
 assert m.safe_connector("eDP-1; rm -rf /") is None
+s = m.SAFE
+assert s.safe_ws("3") == "3"
+assert s.safe_ws("20") == "20"
+assert s.safe_ws("21") is None
+assert s.safe_ws('1"}); os.execute("id")') is None
+assert s.safe_addr("0xabc") == "0xabc"
+assert s.safe_addr("5602fd5c9090") == "0x5602fd5c9090"
+assert s.safe_addr('0x1"}); os.execute("id")') is None
+assert abs(s.clamp_scale("2") - 2.0) < 1e-9
+assert s.clamp_scale("1}); x") == 1.0
 print("disable_plan ok")
 PY
 

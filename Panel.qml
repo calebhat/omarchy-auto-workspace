@@ -9,7 +9,7 @@ import "Model.js" as Model
 
 Panel {
     id: root
-    moduleName: "io.github.calebhat.workbook"
+    moduleName: "io.github.calebhat.workscape"
     manageIpc: false
 
     property var anchorItem: null
@@ -18,9 +18,9 @@ Panel {
     readonly property string home: Quickshell.env("HOME")
     readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || home + "/.config"
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
-    readonly property string pluginId: "io.github.calebhat.workbook"
-    readonly property string configFile: stateHome + "/omarchy/workbook/config.json"
-    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/workbook.sh"
+    readonly property string pluginId: "io.github.calebhat.workscape"
+    readonly property string configFile: stateHome + "/omarchy/workscape/config.json"
+    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/workscape.sh"
 
     signal countsChanged()
 
@@ -72,6 +72,20 @@ Panel {
     readonly property bool showMonitorPicker: monitorOptions.length > 1
     property string copyTargetId: ""
     property bool transferOpen: false
+    property bool newProfileOpen: false
+    property string newProfileName: ""
+    property bool newProfileBindNetwork: true
+    property bool editNetworkOpen: false
+    property string editNetworkProfileId: ""
+    property string editNetworkSsids: ""
+    property string editNetworkSubnets: ""
+    property string editNetworkConnections: ""
+    property var liveNetwork: ({})
+    property string lastLiveJson: ""
+    property bool visibleCountBusy: false
+    property bool overflowOpen: false
+    property var overflowDraft: []
+    property int overflowDraftMax: 1
     property string transferMode: "copy"
     property string transferFromWs: "1"
     property string transferToWs: "1"
@@ -116,9 +130,10 @@ Panel {
     }
     onFormWorkspaceChanged: {
         Qt.callLater(syncMonitorDropdown)
-        if (visibleCountField && !visibleCountField.activeFocus)
-            visibleCountField.text = String(root.currentWsPref.visibleCount)
+        root.syncVisibleCountField()
+        Qt.callLater(function() { if (rightStack) rightStack.forceLayout() })
     }
+    onAnyLockOnWsChanged: Qt.callLater(function() { if (rightStack) rightStack.forceLayout() })
     onActiveProfileIdChanged: Qt.callLater(syncMonitorDropdown)
     readonly property string matchedLabel: liveStatus.matchedProfileName ? ("matches " + liveStatus.matchedProfileName) : "no layout match"
     readonly property int totalCount: {
@@ -169,7 +184,7 @@ Panel {
         assignments = (Model.profileById(cfg, cfg.settings.activeProfileId) || { assignments: [] }).assignments.slice()
         saveProc.pendingJson = JSON.stringify(cfg, null, 2)
         if (saveProc.running) { saveProc.wantsSave = true; return }
-        saveProc.command = ["bash", "-c", "mkdir -p \"$(dirname \"$1\")\"; printf '%s' \"$2\" > \"$1\"; cat \"$1\" | jq empty && echo OK || echo FAIL", "_", root.configFile, saveProc.pendingJson]
+        saveProc.command = ["bash", "-c", "mkdir -p -m 700 \"$(dirname \"$1\")\"; printf '%s' \"$2\" > \"$1.tmp\"; jq empty \"$1.tmp\" && mv -f \"$1.tmp\" \"$1\" && chmod 600 \"$1\" && echo OK || { rm -f \"$1.tmp\"; echo FAIL; }", "_", root.configFile, saveProc.pendingJson]
         saveProc.running = true
     }
     function setActiveProfile(id) {
@@ -192,6 +207,53 @@ Panel {
         transferOpen = true
     }
     function closeTransfer() { transferOpen = false }
+    function closeNewProfile() { newProfileOpen = false }
+    function closeEditNetwork() { editNetworkOpen = false }
+    function profileRecord(id) {
+        return Model.profileById(root.config, id) || {}
+    }
+    function openEditNetwork(id) {
+        var p = root.profileRecord(id)
+        if (!p.id) return
+        var fields = Model.networkFieldText(p.network)
+        editNetworkProfileId = id
+        editNetworkSsids = fields.ssids
+        editNetworkSubnets = fields.subnets
+        editNetworkConnections = fields.connections
+        editNetworkOpen = true
+        Qt.callLater(function() {
+            if (editNetworkSsidField) editNetworkSsidField.forceActiveFocus()
+        })
+    }
+    function confirmEditNetwork() {
+        var id = editNetworkProfileId
+        var net = Model.parseNetworkText(editNetworkSsids, editNetworkSubnets, editNetworkConnections)
+        var cfg = root.currentConfig()
+        var prof = Model.profileById(cfg, id)
+        if (!prof) { editNetworkOpen = false; return }
+        if (!Model.networkConfigured(net)) {
+            var owner = Model.environmentOwner(cfg, Model.monitorKey(prof), Model.emptyNetwork(), id)
+            if (owner) {
+                errorText = owner.name + " is already the fallback for this layout. Keep one unbound profile per layout."
+                return
+            }
+        }
+        var claimed = Model.claimEnvironment(cfg, id, net)
+        config = claimed.config
+        saveConfig()
+        editNetworkOpen = false
+        statusText = Model.networkConfigured(net)
+            ? ("Bound " + Model.networkSummary(net) + "." + root.stolenStatus(claimed.stolen))
+            : "This profile matches any network for its displays"
+        clearStatusTimer.restart()
+        liveProc.running = true
+    }
+    function stolenStatus(stolen) {
+        if (!stolen || !stolen.length) return ""
+        var names = []
+        for (var i = 0; i < stolen.length; i++) names.push(stolen[i].name || stolen[i].id)
+        return " Took this network from " + names.join(", ") + "."
+    }
     function confirmTransfer() {
         var fromWs = parseInt(transferFromWs, 10)
         var toWs = parseInt(transferToWs, 10)
@@ -365,8 +427,9 @@ Panel {
         var ws = String(formWorkspace)
         for (var i = 0; i < cfg.profiles.length; i++) {
             if (cfg.profiles[i].id !== pid) continue
-            var prefs = cfg.profiles[i].workspacePrefs || {}
+            var prefs = Model.clone(cfg.profiles[i].workspacePrefs || {})
             var pref = Model.normalizeWorkspacePref(prefs[ws])
+            if (field === "visibleCount") value = Model.clampVisibleCount(value)
             pref[field] = value
             prefs[ws] = Model.normalizeWorkspacePref(pref)
             cfg.profiles[i].workspacePrefs = prefs
@@ -383,6 +446,25 @@ Panel {
         }
         config = cfg
         saveConfig()
+        if (field === "visibleCount") root.syncVisibleCountField()
+    }
+    function syncVisibleCountField() {
+        if (!visibleCountField || visibleCountField.activeFocus) return
+        var s = String(root.currentWsPref.visibleCount)
+        if (visibleCountField.text !== s) visibleCountField.text = s
+    }
+    function bumpVisibleCount(delta) {
+        root.visibleCountBusy = true
+        var n = Model.clampVisibleCount(root.currentWsPref.visibleCount + delta)
+        if (visibleCountField) visibleCountField.text = String(n)
+        root.setWorkspacePref("visibleCount", n)
+        Qt.callLater(function() { root.visibleCountBusy = false })
+    }
+    function commitVisibleCount() {
+        if (root.visibleCountBusy || !visibleCountField) return
+        var n = Model.clampVisibleCount(visibleCountField.text)
+        visibleCountField.text = String(n)
+        if (n !== root.currentWsPref.visibleCount) root.setWorkspacePref("visibleCount", n)
     }
     function persistFormWorkspace() {
         persistWsTimer.restart()
@@ -435,13 +517,13 @@ Panel {
         clearStatusTimer.restart()
     }
     readonly property var currentGestures: {
-        if ((config.settings && config.settings.gestureSource) === "global")
-            return Model.normalizeGestures(config.settings.gestures)
-        return Model.normalizeGestures(activeProfile.gestures)
+        if ((config.settings && config.settings.gestureSource) === "profile")
+            return Model.normalizeGestures(activeProfile.gestures)
+        return Model.normalizeGestures(config.settings && config.settings.gestures)
     }
     function setGestureSource(src) {
         var cfg = root.currentConfig()
-        cfg.settings.gestureSource = src === "global" ? "global" : "profile"
+        cfg.settings.gestureSource = src === "profile" ? "profile" : "global"
         config = cfg
         saveProc.wantsGestures = true
         saveConfig()
@@ -451,7 +533,7 @@ Panel {
         if (cur && cur[field] === value) return
         var cfg = root.currentConfig()
         var g
-        if (cfg.settings.gestureSource === "global") {
+        if (cfg.settings.gestureSource !== "profile") {
             g = Model.normalizeGestures(cfg.settings.gestures)
             g[field] = value
             cfg.settings.gestures = Model.normalizeGestures(g)
@@ -465,6 +547,15 @@ Panel {
             }
         }
         config = cfg
+        if (field === "invert")
+            root.liveEval("hl.config({ gestures = { workspace_swipe_invert = " + (value ? "true" : "false") + " } })")
+        if (field === "fingers") {
+            var other = value === 4 ? 3 : 4
+            root.liveEval("hl.gesture({ fingers = " + other + ", direction = \"horizontal\", action = \"unset\" })")
+            Qt.callLater(function() {
+                root.liveEval("hl.gesture({ fingers = " + value + ", direction = \"horizontal\", action = \"workspace\" })")
+            })
+        }
         saveProc.wantsGestures = true
         saveConfig()
     }
@@ -498,6 +589,10 @@ Panel {
         statusText = "Applying gestures…"
         clearStatusTimer.restart()
     }
+    function liveEval(lua) {
+        liveEvalProc.command = ["hyprctl", "eval", lua]
+        liveEvalProc.running = true
+    }
     function applyProfile(id) {
         if (root.applyBusy || applyProc.running) return
         root.applyBusy = true
@@ -506,7 +601,20 @@ Panel {
         statusText = "Applying profile…"
         clearStatusTimer.restart()
     }
-    function addProfileFromLive() {
+    function openNewProfile() {
+        liveProc.running = true
+        var live = root.liveMonitors || []
+        if (!live.length) { errorText = "No monitors detected"; return }
+        newProfileName = Model.suggestedProfileName(live)
+        newProfileBindNetwork = true
+        newProfileOpen = true
+        Qt.callLater(function() {
+            if (newProfileNameField) newProfileNameField.forceActiveFocus()
+        })
+    }
+    function confirmNewProfile() {
+        var name = String(newProfileName || "").trim().slice(0, 48)
+        if (!name) { errorText = "Name this profile first"; return }
         var cfg = root.currentConfig()
         var live = root.liveMonitors || []
         if (!live.length) { errorText = "No monitors detected"; return }
@@ -516,11 +624,19 @@ Panel {
             cfg = up.config
             if (up.id) ids.push(up.id)
         }
+        var net = newProfileBindNetwork ? Model.captureNetwork(root.liveNetwork) : Model.emptyNetwork()
+        var key = ids.slice().sort().join(",")
+        var owner = Model.environmentOwner(cfg, key, net, "")
+        if (!Model.networkConfigured(net) && owner) {
+            errorText = owner.name + " is already the fallback for this layout. Bind the current network, or edit that profile."
+            return
+        }
         var prof = Model.defaultProfile()
         prof.id = Model.makeId("pr")
-        prof.name = live.length <= 1 ? "Laptop" : ("Desk " + live.length + " monitors")
+        prof.name = name
         prof.monitors = ids
         prof.matchMode = "exact"
+        prof.network = net
         var layout = {}
         for (var j = 0; j < live.length; j++) {
             if (!ids[j]) continue
@@ -529,11 +645,43 @@ Panel {
         prof.monitorLayout = Model.normalizeMonitorLayout(layout)
         cfg.profiles = cfg.profiles.concat([prof])
         cfg.settings.activeProfileId = prof.id
+        var claimed = Model.claimEnvironment(cfg, prof.id, net)
+        cfg = claimed.config
         config = cfg
         assignments = []
         saveConfig()
-        statusText = "Saved layout as " + prof.name; clearStatusTimer.restart()
+        newProfileOpen = false
+        statusText = "Saved " + prof.name + root.stolenStatus(claimed.stolen)
+        clearStatusTimer.restart()
         mainView = "displays"
+    }
+    function bindProfileNetwork(id) {
+        var net = Model.captureNetwork(root.liveNetwork)
+        if (!Model.networkConfigured(net)) {
+            errorText = "No Wi-Fi / LAN to bind yet"
+            return
+        }
+        var claimed = Model.claimEnvironment(root.currentConfig(), id, net)
+        config = claimed.config
+        saveConfig()
+        statusText = "Bound " + Model.networkSummary(net) + " to this profile." + root.stolenStatus(claimed.stolen)
+        clearStatusTimer.restart()
+        liveProc.running = true
+    }
+    function clearProfileNetwork(id) {
+        var cfg = root.currentConfig()
+        var prof = Model.profileById(cfg, id)
+        if (!prof) return
+        var owner = Model.environmentOwner(cfg, Model.monitorKey(prof), Model.emptyNetwork(), id)
+        if (owner) {
+            errorText = owner.name + " is already the fallback for this layout. Keep one unbound profile per layout."
+            return
+        }
+        var claimed = Model.claimEnvironment(cfg, id, Model.emptyNetwork())
+        config = claimed.config
+        saveConfig()
+        statusText = "This profile matches any network for its displays"
+        clearStatusTimer.restart()
     }
     function renameProfile(id, name) {
         var cfg = root.currentConfig()
@@ -623,6 +771,117 @@ Panel {
         var cfg = root.currentConfig()
         cfg.settings.applyOnBoot = !!on
         config = cfg
+        saveConfig()
+    }
+    function overflowEnabled() {
+        var ov = Model.normalizeOverflow(root.activeProfile.overflow)
+        return ov.enabled === true
+    }
+    function setOverflowEnabled(on) {
+        var cfg = root.currentConfig()
+        var pid = cfg.settings.activeProfileId
+        var last = Model.emptyOverflow()
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== pid) continue
+            var ov = Model.normalizeOverflow(cfg.profiles[i].overflow)
+            ov.enabled = !!on
+            if (ov.enabled && !ov.workspaces.length)
+                ov.workspaces = Model.unsetWorkspaces(cfg.profiles[i])
+            cfg.profiles[i].overflow = ov
+            last = ov
+        }
+        config = cfg
+        saveConfig()
+        statusText = last.enabled
+            ? ("Overflow on · WS " + last.workspaces.join(" → "))
+            : "Overflow off"
+        clearStatusTimer.restart()
+    }
+    function overflowMaxWindows() {
+        return Model.normalizeOverflow(root.activeProfile.overflow).maxWindows
+    }
+    function setOverflowMax(n) {
+        n = Model.clampVisibleCount(n)
+        var cfg = root.currentConfig()
+        var pid = cfg.settings.activeProfileId
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== pid) continue
+            var ov = Model.normalizeOverflow(cfg.profiles[i].overflow)
+            ov.maxWindows = n
+            cfg.profiles[i].overflow = ov
+        }
+        config = cfg
+        saveConfig()
+        overflowDraftMax = n
+    }
+    function bumpOverflowMax(delta) {
+        root.setOverflowMax(root.overflowMaxWindows() + delta)
+    }
+    function openOverflow() {
+        var ov = Model.normalizeOverflow(root.activeProfile.overflow)
+        overflowDraft = ov.workspaces.slice()
+        overflowDraftMax = ov.maxWindows
+        overflowOpen = true
+    }
+    function closeOverflow() { overflowOpen = false }
+    function overflowDraftHas(n) {
+        var list = overflowDraft || []
+        for (var i = 0; i < list.length; i++) if (Number(list[i]) === Number(n)) return true
+        return false
+    }
+    function toggleOverflowDraft(n) {
+        n = Number(n)
+        var next = []
+        var had = false
+        var list = overflowDraft || []
+        for (var i = 0; i < list.length; i++) {
+            var v = Number(list[i])
+            if (v === n) { had = true; continue }
+            next.push(v)
+        }
+        if (!had) next.push(n)
+        next.sort(function(a, b) { return a - b })
+        overflowDraft = next
+    }
+    function overflowDraftSetStage() {
+        overflowDraft = Model.unsetWorkspaces(root.activeProfile)
+    }
+    function overflowDraftNone() { overflowDraft = [] }
+    function confirmOverflow() {
+        var cfg = root.currentConfig()
+        var pid = cfg.settings.activeProfileId
+        var used = Model.assignedWorkspaceSet(root.activeProfile)
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== pid) continue
+            var ov = Model.normalizeOverflow({
+                enabled: true,
+                workspaces: overflowDraft,
+                maxWindows: overflowDraftMax
+            })
+            ov.enabled = true
+            cfg.profiles[i].overflow = ov
+            var prefs = Model.normalizeWorkspacePrefs(cfg.profiles[i].workspacePrefs)
+            var list = ov.workspaces
+            for (var w = 0; w < list.length; w++) {
+                var ws = String(list[w])
+                if (used[list[w]] === true || used[ws] === true) continue
+                var pref = Model.normalizeWorkspacePref(prefs[ws])
+                pref.layout = "stage"
+                prefs[ws] = pref
+            }
+            cfg.profiles[i].workspacePrefs = prefs
+        }
+        config = cfg
+        saveConfig()
+        overflowOpen = false
+        statusText = "Stage overflow · WS " + (overflowDraft.length ? overflowDraft.join(" → ") : "(empty)")
+        clearStatusTimer.restart()
+    }
+    function setPersistHyprGestures(on) {
+        var cfg = root.currentConfig()
+        cfg.settings.persistHyprGestures = !!on
+        config = cfg
+        saveProc.wantsGestures = true
         saveConfig()
     }
     function applyPreviewLayout(tiles) {
@@ -749,7 +1008,7 @@ Panel {
             else root.errorText = ""
             if (saveProc.wantsSave) {
                 saveProc.wantsSave = false
-                saveProc.command = ["bash", "-c", "mkdir -p \"$(dirname \"$1\")\"; printf '%s' \"$2\" > \"$1\"; cat \"$1\" | jq empty && echo OK || echo FAIL", "_", root.configFile, saveProc.pendingJson]
+                saveProc.command = ["bash", "-c", "mkdir -p -m 700 \"$(dirname \"$1\")\"; printf '%s' \"$2\" > \"$1.tmp\"; jq empty \"$1.tmp\" && mv -f \"$1.tmp\" \"$1\" && chmod 600 \"$1\" && echo OK || { rm -f \"$1.tmp\"; echo FAIL; }", "_", root.configFile, saveProc.pendingJson]
                 saveProc.running = true
             } else if (code === 0) {
                 root.countsChanged(); refreshServiceProc.running = true
@@ -760,11 +1019,11 @@ Panel {
             }
         }
     }
-    Process { id: refreshServiceProc; command: ["bash", "-c", "omarchy-shell -q io.github.calebhat.workbook refreshConfig >/dev/null 2>&1 || true"] }
+    Process { id: refreshServiceProc; command: ["bash", "-c", "omarchy-shell -q io.github.calebhat.workscape refreshConfig >/dev/null 2>&1 || true"] }
     Process {
         id: applyProc
-        stdout: SplitParser { onRead: function(d){ console.log("[workbook] " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[workbook] " + d) } }
+        stdout: SplitParser { onRead: function(d){ console.log("[workscape] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[workscape] " + d) } }
         onExited: function(code) {
             root.applyBusy = false
             root.statusText = code === 0 ? "Applied" : "Apply failed"
@@ -787,6 +1046,10 @@ Panel {
         }
     }
     Process {
+        id: liveEvalProc
+        stdout: StdioCollector { waitForEnd: true }
+    }
+    Process {
         id: gestureProc
         command: ["python3", home + "/.config/omarchy/plugins/" + pluginId + "/scripts/gestures", "--config", root.configFile, "--profile-id", root.activeProfileId, "--apply"]
         stdout: StdioCollector { waitForEnd: true }
@@ -802,11 +1065,21 @@ Panel {
         onExited: function(code) {
             if (code !== 0) return
             try {
-                var j = JSON.parse(liveOut.text || "{}")
+                var raw = liveOut.text || "{}"
+                if (raw === root.lastLiveJson) return
+                var j = JSON.parse(raw)
+                root.lastLiveJson = raw
                 root.liveStatus = j
                 root.liveMonitors = j.live || []
+                root.liveNetwork = j.network || {}
             } catch (e) {}
         }
+    }
+    Timer {
+        interval: 12000
+        running: root.opened
+        repeat: true
+        onTriggered: if (!liveProc.running) liveProc.running = true
     }
     Process {
         id: appsProc
@@ -930,10 +1203,10 @@ Panel {
         PanelKeyCatcher {
             id: keyCatcher
             anchors.fill: parent
-            blocked: root.transferOpen || filterField.activeFocus || customField.activeFocus || customNameField.activeFocus || (typeof visibleCountField !== "undefined" && visibleCountField.activeFocus)
-            onMoveRequested: function(dx, dy) { if (!root.transferOpen) root.moveCursor(dx, dy) }
-            onActivateRequested: { if (!root.transferOpen) root.activateCursor() }
-            onCloseRequested: { if (root.transferOpen) root.closeTransfer(); else root.close() }
+            blocked: root.transferOpen || root.newProfileOpen || root.editNetworkOpen || root.overflowOpen || filterField.activeFocus || customField.activeFocus || customNameField.activeFocus || (typeof visibleCountField !== "undefined" && visibleCountField.activeFocus) || (typeof newProfileNameField !== "undefined" && newProfileNameField.activeFocus) || (typeof editNetworkSsidField !== "undefined" && (editNetworkSsidField.activeFocus || editNetworkSubnetField.activeFocus || editNetworkConnField.activeFocus))
+            onMoveRequested: function(dx, dy) { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen) root.moveCursor(dx, dy) }
+            onActivateRequested: { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen) root.activateCursor() }
+            onCloseRequested: { if (root.overflowOpen) root.closeOverflow(); else if (root.editNetworkOpen) root.closeEditNetwork(); else if (root.newProfileOpen) root.closeNewProfile(); else if (root.transferOpen) root.closeTransfer(); else root.close() }
             onTabRequested: function(direction) { root.moveTabCursor(direction) }
             onTextKey: function(t) {
                 if (t === "/") {
@@ -950,7 +1223,7 @@ Panel {
 
                 PanelHero {
                     Layout.fillWidth: true
-                    title: "WorkBook"
+                    title: "WorkScape"
                     meta: (root.activeProfile.name || "Profile") + " · " + root.totalCount + " apps · " + (root.config.profiles || []).length + " profiles"
                     foreground: root.foreground
                     fontFamily: root.fontFamily
@@ -965,7 +1238,7 @@ Panel {
                     trailingControl: Component {
                         Button {
                             text: root.applyBusy ? "Applying…" : "Apply matching"
-                            tooltipText: "Detect connected monitors and load that profile (SUPER+ALT+W)"
+                            tooltipText: "Detect connected monitors and load that profile (middle-click the bar chip)"
                             enabled: !root.applyBusy
                             onClicked: root.applyMatching()
                         }
@@ -1086,7 +1359,7 @@ Panel {
                                 enabled: root.currentWsPref.visibleCount > 1
                                 Layout.preferredHeight: Style.space(28)
                                 Layout.preferredWidth: Style.space(28)
-                                onClicked: root.setWorkspacePref("visibleCount", root.currentWsPref.visibleCount - 1)
+                                onClicked: root.bumpVisibleCount(-1)
                             }
                             TextField {
                                 id: visibleCountField
@@ -1097,18 +1370,15 @@ Panel {
                                 validator: IntValidator { bottom: 1; top: 20 }
                                 inputMethodHints: Qt.ImhDigitsOnly
                                 text: String(root.currentWsPref.visibleCount)
-                                onEditingFinished: {
-                                    var n = Model.clampVisibleCount(text)
-                                    text = String(n)
-                                    if (n !== root.currentWsPref.visibleCount) root.setWorkspacePref("visibleCount", n)
-                                }
+                                onAccepted: root.commitVisibleCount()
+                                onEditingFinished: root.commitVisibleCount()
                             }
                             Button {
                                 text: "+"
                                 enabled: root.currentWsPref.visibleCount < 20
                                 Layout.preferredHeight: Style.space(28)
                                 Layout.preferredWidth: Style.space(28)
-                                onClicked: root.setWorkspacePref("visibleCount", root.currentWsPref.visibleCount + 1)
+                                onClicked: root.bumpVisibleCount(1)
                             }
                         }
                         Text {
@@ -1207,6 +1477,7 @@ Panel {
                     }
 
                     ColumnLayout {
+                        id: rightStack
                         Layout.fillWidth: true
                         Layout.preferredWidth: Math.round(content.width * 0.62)
                         Layout.fillHeight: true
@@ -1286,36 +1557,61 @@ Panel {
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption - 1
                         }
-                        PanelSectionHeader {
-                            text: "PREVIEW · drag splitters · " + root.activeProfile.name
-                            foreground: root.foreground
-                            fontFamily: root.fontFamily
-                        }
-                        WorkspacePreview {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            Layout.minimumHeight: Math.min(Style.space(280), Math.round(panel.screenH * 0.38))
-                            bar: root.bar
-                            workspace: root.formWorkspace
-                            assignedApps: root.addedApps
-                            lockAll: root.currentWsPref.lockSizes === true || root.allAssignedLocked
-                            appList: root.appList
-                            screenW: panel.screenW
-                            screenH: panel.screenH
-                            hyprLayout: root.currentWsPref.layout
-                            columnWidth: 1 / Math.max(1, root.currentWsPref.visibleCount)
-                            onLayoutChanged: function(tiles) { root.applyPreviewLayout(tiles) }
-                            onLayoutCleared: root.resetPreviewLayout()
-                            onAppLockToggled: function(id) { root.toggleAppLockById(id) }
-                        }
                         Toggle {
+                            id: extrasToggle
                             visible: root.anyLockOnWs
                             Layout.fillWidth: true
+                            Layout.preferredHeight: extrasToggle.implicitHeight
+                            Layout.minimumHeight: extrasToggle.visible ? extrasToggle.implicitHeight : 0
                             label: "Send extra windows to the next workspace"
-                            description: "A new window still opens, then WorkBook moves it off this workspace. Off: extras stay here as extra scrolling columns."
+                            description: "A new window still opens, then WorkScape moves it off this workspace. Off: extras stay here as extra scrolling columns."
                             checked: root.currentWsPref.extras === "block"
                             foreground: root.foreground
                             onClicked: root.setWorkspacePref("extras", root.currentWsPref.extras === "block" ? "around" : "block")
+                            onImplicitHeightChanged: if (rightStack) rightStack.forceLayout()
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            Toggle {
+                                id: overflowToggle
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: overflowToggle.implicitHeight
+                                label: "Fill next open workspace"
+                                description: Model.overflowSummary(root.activeProfile)
+                                checked: root.overflowEnabled()
+                                foreground: root.foreground
+                                onClicked: root.setOverflowEnabled(!root.overflowEnabled())
+                                onImplicitHeightChanged: if (rightStack) rightStack.forceLayout()
+                            }
+                            Button {
+                                text: "−"
+                                enabled: root.overflowMaxWindows() > 1
+                                Layout.preferredHeight: Style.space(28)
+                                Layout.preferredWidth: Style.space(28)
+                                tooltipText: "Global max windows per overflow workspace (not the Visible columns on a unique Stage workspace)"
+                                onClicked: root.bumpOverflowMax(-1)
+                            }
+                            Text {
+                                text: String(root.overflowMaxWindows())
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                font.bold: true
+                            }
+                            Button {
+                                text: "+"
+                                enabled: root.overflowMaxWindows() < 20
+                                Layout.preferredHeight: Style.space(28)
+                                Layout.preferredWidth: Style.space(28)
+                                tooltipText: "Global max windows per overflow workspace"
+                                onClicked: root.bumpOverflowMax(1)
+                            }
+                            Button {
+                                text: "Choose…"
+                                tooltipText: "Pick which of 1–20 participate. Set Stage selects unused workspaces as Stage. None clears the list."
+                                onClicked: root.openOverflow()
+                            }
                         }
                         Text {
                             Layout.fillWidth: true
@@ -1330,6 +1626,32 @@ Panel {
                             color: root.dim
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption - 1
+                        }
+                        PanelSectionHeader {
+                            text: "PREVIEW · drag splitters · " + root.activeProfile.name
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+                        }
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.minimumHeight: Style.space(140)
+                            clip: true
+                            WorkspacePreview {
+                                anchors.fill: parent
+                                bar: root.bar
+                                workspace: root.formWorkspace
+                                assignedApps: root.addedApps
+                                lockAll: root.currentWsPref.lockSizes === true || root.allAssignedLocked
+                                appList: root.appList
+                                screenW: panel.screenW
+                                screenH: panel.screenH
+                                hyprLayout: root.currentWsPref.layout
+                                columnWidth: 1 / Math.max(1, root.currentWsPref.visibleCount)
+                                onLayoutChanged: function(tiles) { root.applyPreviewLayout(tiles) }
+                                onLayoutCleared: root.resetPreviewLayout()
+                                onAppLockToggled: function(id) { root.toggleAppLockById(id) }
+                            }
                         }
                     }
                 }
@@ -1403,21 +1725,21 @@ Panel {
                 }
 
                 // ——— Gestures ———
-                Flickable {
+                ScrollView {
                     visible: root.mainView === "gestures"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    contentWidth: width
-                    contentHeight: gestureCol.implicitHeight
+                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                    contentWidth: availableWidth
                     ColumnLayout {
                         id: gestureCol
-                        width: parent.width
+                        width: content.width
                         spacing: Style.space(8)
                         Text {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
-                            text: "Trackpad workspace swipes. Hyprland applies these for the whole session; pick whether they follow this profile or stay the same on every profile."
+                            text: "Trackpad workspace swipes. Global is the default and applies for every profile. Switch to This profile only if you want a separate set for the header profile — those edits do not change Global."
                             color: root.dim
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
@@ -1425,15 +1747,23 @@ Panel {
                         ButtonGroup {
                             Layout.fillWidth: true
                             foreground: root.foreground
-                            value: (root.config.settings && root.config.settings.gestureSource) === "global" ? "global" : "profile"
+                            value: (root.config.settings && root.config.settings.gestureSource) === "profile" ? "profile" : "global"
                             options: [
-                                { value: "profile", label: "This profile" },
-                                { value: "global", label: "Global" }
+                                { value: "global", label: "Global" },
+                                { value: "profile", label: "This profile" }
                             ]
                             onChanged: function(v) {
-                                var cur = (root.config.settings && root.config.settings.gestureSource) === "global" ? "global" : "profile"
+                                var cur = (root.config.settings && root.config.settings.gestureSource) === "profile" ? "profile" : "global"
                                 if (v !== cur) root.setGestureSource(v)
                             }
+                        }
+                        Toggle {
+                            Layout.fillWidth: true
+                            label: "Keep swipes after Hyprland reload"
+                            description: "Writes ~/.config/hypr/workscape-gestures.lua. Off: apply in this session only (and at login if that toggle is on). On: persist across compositor reload."
+                            checked: root.config.settings && root.config.settings.persistHyprGestures === true
+                            foreground: root.foreground
+                            onClicked: root.setPersistHyprGestures(!(root.config.settings && root.config.settings.persistHyprGestures === true))
                         }
                         Toggle {
                             Layout.fillWidth: true
@@ -1473,26 +1803,29 @@ Panel {
                             foreground: root.foreground
                             onClicked: root.setGestureField("touch", !root.currentGestures.touch)
                         }
-                        Text {
-                            visible: root.currentGestures.workspaceSwipe
-                            text: "Swipe direction"
-                            color: root.dim
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
-                            font.bold: true
-                        }
-                        ButtonGroup {
+                        RowLayout {
                             visible: root.currentGestures.workspaceSwipe
                             Layout.fillWidth: true
-                            foreground: root.foreground
-                            value: root.currentGestures.invert ? "natural" : "swapped"
-                            options: [
-                                { value: "natural", label: "Natural (Hyprland default)" },
-                                { value: "swapped", label: "Swap left / right" }
-                            ]
-                            onChanged: function(v) {
-                                var want = v === "natural"
-                                if (want !== root.currentGestures.invert) root.setGestureField("invert", want)
+                            spacing: Style.space(8)
+                            Text {
+                                text: "Swipe method"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                            }
+                            ButtonGroup {
+                                Layout.fillWidth: true
+                                foreground: root.foreground
+                                value: root.currentGestures.invert === false ? "swap" : "natural"
+                                options: [
+                                    { value: "natural", label: "Natural" },
+                                    { value: "swap", label: "Swap left / right" }
+                                ]
+                                onChanged: function(v) {
+                                    var invert = v !== "swap"
+                                    if (root.currentGestures.invert !== invert)
+                                        root.setGestureField("invert", invert)
+                                }
                             }
                         }
                         Text {
@@ -1558,40 +1891,30 @@ Panel {
                             foreground: root.foreground
                             onClicked: root.setProfileField("persistentWorkspaces", !(root.activeProfile.persistentWorkspaces === true))
                         }
-                        RowLayout {
+                        Text {
                             Layout.fillWidth: true
-                            Text {
-                                text: "After apply, go to"
-                                color: root.dim
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                            }
-                            Dropdown {
-                                Layout.fillWidth: true
-                                showLabel: false
-                                label: "Workspace"
-                                foreground: root.foreground
-                                value: String(root.activeProfile.defaultWorkspace || 0)
-                                options: [
-                                    { value: "0", label: "Leave as-is" },
-                                    { value: "1", label: "Workspace 1" },
-                                    { value: "2", label: "Workspace 2" },
-                                    { value: "3", label: "Workspace 3" },
-                                    { value: "4", label: "Workspace 4" },
-                                    { value: "5", label: "Workspace 5" },
-                                    { value: "6", label: "Workspace 6" },
-                                    { value: "7", label: "Workspace 7" },
-                                    { value: "8", label: "Workspace 8" },
-                                    { value: "9", label: "Workspace 9" },
-                                    { value: "10", label: "Workspace 10" }
-                                ]
-                                onChanged: function(v) { root.setProfileField("defaultWorkspace", parseInt(v, 10) || 0) }
-                            }
+                            text: "After apply, go to workspace"
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
                         }
-                        Button {
-                            text: "Apply gestures now"
-                            tooltipText: "Finger count and other toggles apply automatically. Use this if a swipe did not pick up."
-                            onClicked: root.applyGestures()
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: Style.space(4)
+                            Button {
+                                text: "Stay"
+                                selected: (root.activeProfile.defaultWorkspace || 0) === 0
+                                onClicked: root.setProfileField("defaultWorkspace", 0)
+                            }
+                            Repeater {
+                                model: 10
+                                delegate: Button {
+                                    required property int index
+                                    text: String(index + 1)
+                                    selected: root.activeProfile.defaultWorkspace === (index + 1)
+                                    onClicked: root.setProfileField("defaultWorkspace", index + 1)
+                                }
+                            }
                         }
                     }
                 }
@@ -1606,7 +1929,7 @@ Panel {
                     Toggle {
                         Layout.fillWidth: true
                         label: "Apply matching profile at login"
-                        description: "At OS login only — not when the shell restarts (plugin install). SUPER+ALT+W still applies any time."
+                        description: "Picks one profile from connected displays, then Wi-Fi name / LAN subnet if you bound a network. One layout per environment. Middle-click the bar chip or Apply matching any time."
                         checked: root.config.settings && root.config.settings.applyOnBoot === true
                         foreground: root.foreground
                         onClicked: root.setApplyOnBoot(!(root.config.settings && root.config.settings.applyOnBoot === true))
@@ -1615,7 +1938,7 @@ Panel {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: Style.space(8)
-                        Button { text: "Save current monitors as profile"; onClicked: root.addProfileFromLive() }
+                        Button { text: "Save current layout as profile"; onClicked: root.openNewProfile() }
                         Button { text: "Refresh layout"; onClicked: liveProc.running = true }
                     }
 
@@ -1624,12 +1947,32 @@ Panel {
                         wrapMode: Text.WordWrap
                         text: {
                             var live = root.liveMonitors || []
-                            if (!live.length) return "No monitors reported by Hyprland."
-                            var parts = []
-                            for (var i = 0; i < live.length; i++) parts.push(live[i].label || live[i].description || live[i].name)
-                            return "Connected now: " + parts.join(" · ")
+                            var mon = "No monitors reported by Hyprland."
+                            if (live.length) {
+                                var parts = []
+                                for (var i = 0; i < live.length; i++) parts.push(live[i].label || live[i].description || live[i].name)
+                                mon = "Connected now: " + parts.join(" · ")
+                            }
+                            return mon + "  ·  " + Model.liveNetworkSummary(root.liveNetwork)
                         }
                         color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                    }
+                    Text {
+                        visible: root.liveStatus.conflict === true
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: {
+                            var ids = root.liveStatus.conflictProfileIds || []
+                            var names = []
+                            var list = root.config.profiles || []
+                            for (var i = 0; i < ids.length; i++) {
+                                for (var p = 0; p < list.length; p++) if (list[p].id === ids[i]) names.push(list[p].name)
+                            }
+                            return "Also matches " + names.join(", ") + ". Bound-network profiles win; only one layout applies."
+                        }
+                        color: Color.urgent || "#ff4444"
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
                     }
@@ -1678,7 +2021,7 @@ Panel {
                                                 text: {
                                                     var b = root.profileMatchBadge(modelData.id)
                                                     if (!b) return ""
-                                                    return b.matches ? "matches now" : b.reason
+                                                    return b.matches ? "matches now" : Model.matchReasonLabel(b.reason)
                                                 }
                                                 color: {
                                                     var b = root.profileMatchBadge(modelData.id)
@@ -1695,6 +2038,18 @@ Panel {
                                             font.family: root.fontFamily
                                             font.pixelSize: Style.font.caption
                                         }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            wrapMode: Text.WordWrap
+                                            text: Model.boundNetworkLine(root.profileRecord(modelData.id), root.liveNetwork)
+                                            color: {
+                                                var p = root.profileRecord(modelData.id)
+                                                var hit = Model.networkMatches(p.network, root.liveNetwork)
+                                                return (Model.networkConfigured(p.network) && hit.matches) ? Color.accent : root.dim
+                                            }
+                                            font.family: root.fontFamily
+                                            font.pixelSize: Style.font.caption
+                                        }
                                         RowLayout {
                                             Layout.fillWidth: true
                                             spacing: Style.space(6)
@@ -1702,6 +2057,19 @@ Panel {
                                             Button { text: "Displays"; onClicked: { root.setActiveProfile(modelData.id); root.mainView = "displays" } }
                                             Button { text: "Apply"; onClicked: root.applyProfile(modelData.id) }
                                             Item { Layout.fillWidth: true }
+                                            Button {
+                                                text: Model.networkConfigured(root.profileRecord(modelData.id).network) ? "Rebind now" : "Bind this network"
+                                                onClicked: root.bindProfileNetwork(modelData.id)
+                                            }
+                                            Button {
+                                                text: "Edit network"
+                                                onClicked: root.openEditNetwork(modelData.id)
+                                            }
+                                            Button {
+                                                visible: Model.networkConfigured(root.profileRecord(modelData.id).network)
+                                                text: "Clear network"
+                                                onClicked: root.clearProfileNetwork(modelData.id)
+                                            }
                                             Button { text: "Delete"; onClicked: root.deleteProfile(modelData.id) }
                                         }
                                     }
@@ -1859,6 +2227,288 @@ Panel {
                                 text: root.transferMode === "move" ? "Move" : "Copy"
                                 onClicked: root.confirmTransfer()
                             }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                id: newProfileScrim
+                visible: root.newProfileOpen
+                z: 210
+                anchors.fill: parent
+                color: Qt.rgba(0, 0, 0, 0.45)
+                MouseArea { anchors.fill: parent; onClicked: root.closeNewProfile() }
+
+                Rectangle {
+                    width: Math.min(parent.width - Style.space(28), Style.space(420))
+                    implicitHeight: newProfileCol.implicitHeight + Style.space(28)
+                    height: implicitHeight
+                    anchors.centerIn: parent
+                    radius: Style.cornerRadius
+                    color: Color.background
+                    border.width: 1
+                    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+                    MouseArea { anchors.fill: parent; onClicked: function(e) { e.accepted = true } }
+
+                    ColumnLayout {
+                        id: newProfileCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Style.space(16)
+                        spacing: Style.space(10)
+
+                        Text {
+                            text: "New profile"
+                            color: root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.title
+                            font.bold: true
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: "Name this layout first. One profile owns a given display set + network. Binding Wi-Fi / LAN lets the same dock look different at home vs work."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                        }
+                        TextField {
+                            id: newProfileNameField
+                            Layout.fillWidth: true
+                            foreground: root.foreground
+                            placeholderText: "Profile name"
+                            text: root.newProfileName
+                            onTextChanged: root.newProfileName = text
+                            onAccepted: root.confirmNewProfile()
+                        }
+                        Toggle {
+                            Layout.fillWidth: true
+                            label: "Bind current network"
+                            description: Model.liveNetworkSummary(root.liveNetwork) + ". SSID when on Wi-Fi, otherwise the LAN subnet — not Tailscale or public IP."
+                            checked: root.newProfileBindNetwork
+                            foreground: root.foreground
+                            onClicked: root.newProfileBindNetwork = !root.newProfileBindNetwork
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            Item { Layout.fillWidth: true }
+                            Button { text: "Cancel"; onClicked: root.closeNewProfile() }
+                            Button { text: "Create"; onClicked: root.confirmNewProfile() }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                id: editNetworkScrim
+                visible: root.editNetworkOpen
+                z: 211
+                anchors.fill: parent
+                color: Qt.rgba(0, 0, 0, 0.45)
+                MouseArea { anchors.fill: parent; onClicked: root.closeEditNetwork() }
+
+                Rectangle {
+                    width: Math.min(parent.width - Style.space(28), Style.space(440))
+                    implicitHeight: editNetworkCol.implicitHeight + Style.space(28)
+                    height: implicitHeight
+                    anchors.centerIn: parent
+                    radius: Style.cornerRadius
+                    color: Color.background
+                    border.width: 1
+                    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+                    MouseArea { anchors.fill: parent; onClicked: function(e) { e.accepted = true } }
+
+                    ColumnLayout {
+                        id: editNetworkCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Style.space(16)
+                        spacing: Style.space(8)
+
+                        Text {
+                            text: "Edit network"
+                            color: root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.title
+                            font.bold: true
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: "Use this when you are not on the network that should load this profile. SSID is enough for Wi-Fi; subnet (192.168.2.0/24) covers ethernet. Leave all empty for any-network fallback. Now: " + Model.liveNetworkSummary(root.liveNetwork)
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                        }
+                        Text { text: "Wi-Fi SSID"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                        TextField {
+                            id: editNetworkSsidField
+                            Layout.fillWidth: true
+                            foreground: root.foreground
+                            placeholderText: "HomeWiFi"
+                            text: root.editNetworkSsids
+                            onTextChanged: root.editNetworkSsids = text
+                            onAccepted: root.confirmEditNetwork()
+                        }
+                        Text { text: "LAN subnet"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                        TextField {
+                            id: editNetworkSubnetField
+                            Layout.fillWidth: true
+                            foreground: root.foreground
+                            placeholderText: "192.168.1.0/24"
+                            text: root.editNetworkSubnets
+                            onTextChanged: root.editNetworkSubnets = text
+                            onAccepted: root.confirmEditNetwork()
+                        }
+                        Text { text: "Connection name (optional)"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                        TextField {
+                            id: editNetworkConnField
+                            Layout.fillWidth: true
+                            foreground: root.foreground
+                            placeholderText: "NetworkManager name"
+                            text: root.editNetworkConnections
+                            onTextChanged: root.editNetworkConnections = text
+                            onAccepted: root.confirmEditNetwork()
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            Button {
+                                text: "Use current"
+                                onClicked: {
+                                    var live = root.liveNetwork || {}
+                                    if (live.ssid) root.editNetworkSsids = String(live.ssid)
+                                    if (live.subnet) root.editNetworkSubnets = String(live.subnet)
+                                    if (live.connection) root.editNetworkConnections = String(live.connection)
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
+                            Button { text: "Cancel"; onClicked: root.closeEditNetwork() }
+                            Button { text: "Save"; onClicked: root.confirmEditNetwork() }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                id: overflowScrim
+                visible: root.overflowOpen
+                z: 212
+                anchors.fill: parent
+                color: Qt.rgba(0, 0, 0, 0.45)
+                MouseArea { anchors.fill: parent; onClicked: root.closeOverflow() }
+
+                Rectangle {
+                    width: Math.min(parent.width - Style.space(28), Style.space(480))
+                    implicitHeight: overflowCol.implicitHeight + Style.space(28)
+                    height: implicitHeight
+                    anchors.centerIn: parent
+                    radius: Style.cornerRadius
+                    color: Color.background
+                    border.width: 1
+                    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+                    MouseArea { anchors.fill: parent; onClicked: function(e) { e.accepted = true } }
+
+                    ColumnLayout {
+                        id: overflowCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Style.space(16)
+                        spacing: Style.space(10)
+
+                        Text {
+                            text: "Overflow chain"
+                            color: root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.title
+                            font.bold: true
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: "Checked workspaces take the next new window in this order. Max windows / workspace is for this global Stage chain only — unique Stage workspaces keep their own Visible columns. Set Stage selects workspaces with no pinned apps."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                        }
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: 5
+                            columnSpacing: Style.space(6)
+                            rowSpacing: Style.space(6)
+                            Repeater {
+                                model: 20
+                                delegate: Button {
+                                    required property int index
+                                    readonly property int ws: index + 1
+                                    readonly property bool assigned: {
+                                        var used = Model.assignedWorkspaceSet(root.activeProfile)
+                                        return used[ws] === true
+                                    }
+                                    text: assigned ? (ws + "·") : String(ws)
+                                    selected: root.overflowDraftHas(ws)
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: Style.space(32)
+                                    tooltipText: assigned ? ("WS " + ws + " has pinned apps") : ("WS " + ws + " — no pinned apps")
+                                    onClicked: root.toggleOverflowDraft(ws)
+                                }
+                            }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: root.overflowDraft && root.overflowDraft.length
+                                ? ("Order: " + root.overflowDraft.join(" → "))
+                                : "No workspaces selected."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            Text {
+                                text: "Max / workspace"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                            }
+                            Button {
+                                text: "−"
+                                enabled: root.overflowDraftMax > 1
+                                Layout.preferredHeight: Style.space(28)
+                                Layout.preferredWidth: Style.space(28)
+                                onClicked: root.overflowDraftMax = Model.clampVisibleCount(root.overflowDraftMax - 1)
+                            }
+                            Text {
+                                text: String(root.overflowDraftMax)
+                                color: root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                font.bold: true
+                            }
+                            Button {
+                                text: "+"
+                                enabled: root.overflowDraftMax < 20
+                                Layout.preferredHeight: Style.space(28)
+                                Layout.preferredWidth: Style.space(28)
+                                onClicked: root.overflowDraftMax = Model.clampVisibleCount(root.overflowDraftMax + 1)
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(8)
+                            Button { text: "Set Stage"; tooltipText: "Select workspaces with no pinned apps and use Stage. Max windows uses the global setting above, not each workspace’s Visible columns."; onClicked: root.overflowDraftSetStage() }
+                            Button { text: "None"; onClicked: root.overflowDraftNone() }
+                            Item { Layout.fillWidth: true }
+                            Button { text: "Cancel"; onClicked: root.closeOverflow() }
+                            Button { text: "Save"; onClicked: root.confirmOverflow() }
                         }
                     }
                 }

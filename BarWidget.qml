@@ -6,29 +6,41 @@ import qs.Ui
 
 BarWidget {
     id: root
-    moduleName: "io.github.calebhat.workbook"
+    moduleName: "io.github.calebhat.workscape"
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
-    readonly property string pluginId: "io.github.calebhat.workbook"
+    readonly property string pluginId: "io.github.calebhat.workscape"
     readonly property string home: Quickshell.env("HOME")
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
-    readonly property string configFile: stateHome + "/omarchy/workbook/config.json"
-    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/workbook.sh"
+    readonly property string configFile: stateHome + "/omarchy/workscape/config.json"
+    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/workscape.sh"
 
     property int totalCount: 0
     property int enabledCount: 0
     property int profileCount: 0
     property bool pluginEnabled: true
     property string lastError: ""
+    property bool pendingOpen: false
 
     readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
     readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
 
-    function open() { if (panelLoader.item) panelLoader.item.open() }
+    function ensurePanel() {
+        if (!panelLoader.active) panelLoader.active = true
+    }
+    function open() {
+        if (panelLoader.item) { panelLoader.item.open(); return }
+        pendingOpen = true
+        ensurePanel()
+    }
     function close() { if (panelLoader.item) panelLoader.item.close() }
-    function toggle() { if (panelLoader.item) panelLoader.item.toggle() }
+    function toggle() {
+        if (panelLoader.item) { panelLoader.item.toggle(); return }
+        pendingOpen = true
+        ensurePanel()
+    }
     function togglePanel() { toggle() }
     function closeForPopoutSwitch() { if (panelLoader.item) panelLoader.item.closeForPopoutSwitch() }
 
@@ -71,8 +83,8 @@ BarWidget {
 
     Process {
         id: applyProc
-        stdout: SplitParser { onRead: function(d){ console.log("[workbook] " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[workbook] " + d) } }
+        stdout: SplitParser { onRead: function(d){ console.log("[workscape] " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[workscape] " + d) } }
     }
 
     Timer {
@@ -84,6 +96,13 @@ BarWidget {
         onTriggered: root.refreshCounts()
     }
 
+    IpcHandler {
+        target: root.pluginId
+        function toggle(): void { root.toggle() }
+        function open(): void { root.open() }
+        function close(): void { root.close() }
+    }
+
     Connections {
         target: panelLoader.item
         ignoreUnknownSignals: true
@@ -92,12 +111,16 @@ BarWidget {
 
     Loader {
         id: panelLoader
-        active: true
-        source: Qt.resolvedUrl("Panel.qml") + "?v=gestures-apply-4"
+        active: false
+        source: Qt.resolvedUrl("Panel.qml")
         visible: false
         onLoaded: {
             root.injectPanel()
             Qt.callLater(root.injectPanel)
+            if (root.pendingOpen && panelLoader.item) {
+                root.pendingOpen = false
+                panelLoader.item.open()
+            }
         }
     }
 
@@ -108,8 +131,8 @@ BarWidget {
         text: "󱂬"
         slotSize: Style.bar.statusSlot
         tooltipText: root.pluginEnabled
-            ? ("WorkBook • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching")
-            : "WorkBook • disabled • click to enable"
+            ? ("WorkScape • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching")
+            : "WorkScape • disabled • click to enable"
         onPressed: function(btn){
             if (btn === Qt.LeftButton) root.toggle()
             else if (btn === Qt.MiddleButton) root.applyMatching()

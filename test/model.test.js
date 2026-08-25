@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, layoutDescription, visibleCountHelp, clampVisibleCount }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -15,6 +15,11 @@ if (v1.version !== 2) throw new Error("migrate version")
 if (v1.profiles.length !== 1) throw new Error("migrate profile")
 if (v1.profiles[0].assignments.length !== 1) throw new Error("migrate assignments")
 if (v1.settings.applyOnBoot !== false) throw new Error("boot default off")
+if (m.defaultConfig().settings.gestureSource !== "global") throw new Error("gestures default global")
+const gsrcMissing = m.sanitizeConfig({ version: 2, settings: {}, profiles: [{ id: "p", name: "P" }] })
+if (gsrcMissing.settings.gestureSource !== "global") throw new Error("sanitize missing source is global")
+const gsrcKeep = m.sanitizeConfig({ version: 2, settings: { gestureSource: "profile" }, profiles: [{ id: "p", name: "P" }] })
+if (gsrcKeep.settings.gestureSource !== "profile") throw new Error("sanitize keeps explicit profile gestures")
 
 const laptop = { id: "laptop", label: "Laptop", serial: "", description: "BOE NE135A1M-NY1", name: "eDP-1" }
 const left = { id: "desk-left", label: "Desk left", serial: "", description: "HP Inc. HP E24 G5 CNK436071M", name: "DVI-I-1" }
@@ -219,5 +224,55 @@ if (m.canonicalExec(wrap).indexOf("outlook.office.com/mail") < 0) throw new Erro
 if (m.sameAppExec(wrap, "omarchy-launch-webapp 'https://calendar.google.com/'")) throw new Error("webapps must not share launcher name")
 if (m.sameAppExec(wrap, "/home/caleb/.local/bin/brave")) throw new Error("outlook is not brave")
 if (!m.sameAppExec("/home/caleb/.local/bin/brave", "/home/caleb/.local/bin/brave")) throw new Error("brave match")
+const teamsPwa = "/opt/brave-bin/brave --profile-directory=Default --app-id=ompifgpmddkgmclendfeacglnodjjndh %U"
+if (m.sameAppExec("/home/caleb/.local/bin/brave", teamsPwa)) throw new Error("brave must not match Teams PWA")
+if (m.sameAppExec(teamsPwa, "/home/caleb/.local/bin/brave %U")) throw new Error("Teams PWA must not match brave")
+if (!m.sameAppExec(teamsPwa, "/opt/brave-bin/brave --app-id=ompifgpmddkgmclendfeacglnodjjndh")) throw new Error("same PWA app-id")
+if (m.sameAppExec(teamsPwa, "/opt/brave-bin/brave --app-id=otherid")) throw new Error("different PWA app-id")
+
+if (m.suggestedProfileName([{ name: "eDP-1" }]) !== "Laptop") throw new Error("suggest laptop name")
+if (!m.networkConfigured(m.captureNetwork({ ssid: "Hataj", subnet: "192.168.1.0/24" }))) throw new Error("capture wifi")
+const netHome = { ssids: ["Hataj"], subnets: ["192.168.1.0/24"], connections: ["Hataj"] }
+const netOffice = { ssids: ["Office"], subnets: ["192.168.2.0/24"], connections: [] }
+if (!m.networkMatches(netHome, { ssid: "Hataj", subnet: "192.168.1.0/24" }).matches) throw new Error("ssid match")
+if (m.networkMatches(netHome, { ssid: "Office", subnet: "192.168.2.0/24" }).matches) throw new Error("ssid mismatch")
+if (!m.networksOverlap(netHome, { ssids: ["hataj"], subnets: [], connections: [] })) throw new Error("ssid overlap case")
+if (m.networksOverlap(netHome, netOffice)) throw new Error("home/office must not overlap")
+if (!m.networksOverlap(m.emptyNetwork(), m.emptyNetwork())) throw new Error("two fallbacks overlap")
+if (m.networksOverlap(netHome, m.emptyNetwork())) throw new Error("bound vs fallback do not overlap")
+
+const netCfg = m.sanitizeConfig({
+  version: 2,
+  settings: { activeProfileId: "home" },
+  monitors: [laptop],
+  profiles: [
+    { id: "home", name: "Home", monitors: ["laptop"], network: netHome, claimedAt: 1 },
+    { id: "office", name: "Office", monitors: ["laptop"], network: netOffice, claimedAt: 2 },
+    { id: "any", name: "Any", monitors: ["laptop"], network: {}, claimedAt: 0 }
+  ]
+})
+if (m.bestProfile(netCfg, liveLaptop, { ssid: "Hataj", subnet: "192.168.1.0/24" }).id !== "home") throw new Error("home wifi wins")
+if (m.bestProfile(netCfg, liveLaptop, { ssid: "Office", subnet: "192.168.2.0/24" }).id !== "office") throw new Error("office wifi wins")
+if (m.bestProfile(netCfg, liveLaptop, { ssid: "Cafe", subnet: "10.0.0.0/24" }).id !== "any") throw new Error("unbound fallback on unknown net")
+const owner = m.environmentOwner(netCfg, "laptop", netHome, "home")
+if (owner) throw new Error("home should uniquely own Hataj")
+const claimed = m.claimEnvironment(netCfg, "office", netHome)
+if (!claimed.stolen.some(function(s) { return s.id === "home" })) throw new Error("steal Hataj from home")
+const homeAfter = claimed.config.profiles.find(function(p) { return p.id === "home" })
+if (m.networkConfigured(homeAfter.network) && homeAfter.network.ssids.indexOf("Hataj") >= 0) throw new Error("stolen ssid remains")
+const parsed = m.parseNetworkText("Hataj, Guest", "192.168.2.0/24", "")
+if (parsed.ssids[1] !== "Guest" || parsed.subnets[0] !== "192.168.2.0/24") throw new Error("parse network text")
+const boundLine = m.boundNetworkLine({ network: netHome }, { ssid: "Hataj", subnet: "192.168.1.0/24" })
+if (boundLine.indexOf("Hataj") < 0 || boundLine.indexOf("connected now") < 0) throw new Error("bound line live")
+if (m.matchReasonLabel("network") !== "wrong network") throw new Error("reason label")
+if (m.maxWorkspace() !== 20) throw new Error("max ws 20")
+const ovProf = { assignments: [{ workspace: 1 }, { workspace: 2 }], overflow: { enabled: true, workspaces: [5, 5, 0, 21, 6] } }
+const ov = m.normalizeOverflow(ovProf.overflow)
+if (ov.workspaces.join(",") !== "5,6") throw new Error("overflow unique 1-20")
+if (ov.maxWindows !== 1) throw new Error("overflow default max 1")
+if (m.normalizeOverflow({ enabled: true, workspaces: [8], maxWindows: 4 }).maxWindows !== 4) throw new Error("overflow max persist")
+if (m.normalizeOverflow({ maxWindows: 99 }).maxWindows !== 20) throw new Error("overflow max clamp")
+if (m.unsetWorkspaces(ovProf).indexOf(1) >= 0) throw new Error("unset excludes assigned")
+if (m.unsetWorkspaces(ovProf).indexOf(5) < 0) throw new Error("unset includes 5")
 
 console.log("model.test.js ok")

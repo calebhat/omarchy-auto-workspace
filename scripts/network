@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""Live LAN / Wi-Fi identity for WorkScape profile matching.
+
+Use Wi-Fi SSID when associated, plus the default-route IPv4 subnet
+(ethernet or wifi). Ignore Tailscale, VPNs, docker, and public IP.
+"""
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import json
+import subprocess
+import time
+from pathlib import Path
+from typing import Any
+
+
+SKIP_IFACE_PREFIXES = (
+    "lo",
+    "tailscale",
+    "tun",
+    "wg",
+    "docker",
+    "veth",
+    "virbr",
+    "br-",
+    "zt",
+    "cni",
+    "podman",
+)
+
+
+def empty_network() -> dict[str, list[str]]:
+    return {"ssids": [], "subnets": [], "connections": []}
+
+
+def _uniq(items: list[str], max_len: int = 64, max_count: int = 8) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        s = str(raw or "").strip()[:max_len]
+        k = s.lower()
+        if not s or k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if len(out) >= max_count:
+            break
+    return out
+
+
+def normalize_network(raw: Any) -> dict[str, list[str]]:
+    src = raw if isinstance(raw, dict) else {}
+    return {
+        "ssids": _uniq(list(src.get("ssids") or [])),
+        "subnets": _uniq(list(src.get("subnets") or [])),
+        "connections": _uniq(list(src.get("connections") or [])),
+    }
+
+
+def network_configured(raw: Any) -> bool:
+    n = normalize_network(raw)
+    return bool(n["ssids"] or n["subnets"] or n["connections"])
+
+
+def capture_from_live(live: dict[str, Any] | None) -> dict[str, list[str]]:
+    live = live if isinstance(live, dict) else {}
+    return normalize_network(
+        {
+            "ssids": [live.get("ssid")] if live.get("ssid") else [],
+            "subnets": [live.get("subnet")] if live.get("subnet") else [],
+            "connections": [live.get("connection")] if live.get("connection") else [],
+        }
+    )
+
+
+def _any_hit(saved: list[str], live_val: str) -> bool:
+    if not live_val:
+        return False
+    want = live_val.lower()
+    return any(str(x).lower() == want for x in saved)
+
+
+def network_matches(saved: Any, live: dict[str, Any] | None) -> dict[str, bool]:
+    n = normalize_network(saved)
+    if not network_configured(n):
+        return {"constrained": False, "matches": True}
+    live = live if isinstance(live, dict) else {}
+    hit = (
+        _any_hit(n["ssids"], str(live.get("ssid") or ""))
+        or _any_hit(n["subnets"], str(live.get("subnet") or ""))
+        or _any_hit(n["connections"], str(live.get("connection") or ""))
+    )
+    return {"constrained": True, "matches": hit}
+
+
+def networks_overlap(a: Any, b: Any) -> bool:
+    na, nb = normalize_network(a), normalize_network(b)
+    ca, cb = network_configured(na), network_configured(nb)
+    if not ca and not cb:
+        return True
+    if ca != cb:
+        return False
+
+    def share(left: list[str], right: list[str]) -> bool:
+        other = {x.lower() for x in right}
+        return any(x.lower() in other for x in left)
+
+    return (
+        share(na["ssids"], nb["ssids"])
+        or share(na["subnets"], nb["subnets"])
+        or share(na["connections"], nb["connections"])
+    )
+
+
+def monitor_key(profile: dict[str, Any] | None) -> str:
+    mons = [str(x) for x in ((profile or {}).get("monitors") or []) if x]
+    mons.sort()
+    return ",".join(mons)
+
+
+def subtract_network(from_net: Any, claimed: Any) -> dict[str, list[str]]:
+    n, c = normalize_network(from_net), normalize_network(claimed)
+
+    def drop(arr: list[str], other: list[str]) -> list[str]:
+        skip = {x.lower() for x in other}
+        return [x for x in arr if x.lower() not in skip]
+
+    return normalize_network(
+        {
+            "ssids": drop(n["ssids"], c["ssids"]),
+            "subnets": drop(n["subnets"], c["subnets"]),
+            "connections": drop(n["connections"], c["connections"]),
+        }
+    )
+
+
+def environment_owner(cfg: dict[str, Any], key: str, network: Any, except_id: str = "") -> dict[str, Any] | None:
+    for p in cfg.get("profiles") or []:
+        if except_id and p.get("id") == except_id:
+            continue
+        if monitor_key(p) != key:
+            continue
+        if networks_overlap(p.get("network"), network):
+            return p
+    return None
+
+
+def claim_environment(cfg: dict[str, Any], profile_id: str, network: Any) -> dict[str, Any]:
+    net = normalize_network(network)
+    stolen: list[dict[str, str]] = []
+    profiles = list(cfg.get("profiles") or [])
+    owner = next((p for p in profiles if p.get("id") == profile_id), None)
+    if not owner:
+        return {"config": cfg, "stolen": stolen}
+    key = monitor_key(owner)
+    out_profiles: list[dict[str, Any]] = []
+    for p in profiles:
+        q = dict(p)
+        if q.get("id") == profile_id:
+            q["network"] = net
+            out_profiles.append(q)
+            continue
+        if monitor_key(q) == key and networks_overlap(q.get("network"), net) and network_configured(net) and network_configured(q.get("network")):
+            nxt = subtract_network(q.get("network"), net)
+            if nxt != normalize_network(q.get("network")):
+                stolen.append({"id": str(q.get("id") or ""), "name": str(q.get("name") or q.get("id") or "")})
+                q["network"] = nxt
+        out_profiles.append(q)
+    out = dict(cfg)
+    out["profiles"] = out_profiles
+    return {"config": out, "stolen": stolen}
+
+
+def empty_live() -> dict[str, str]:
+    return {"ssid": "", "connection": "", "subnet": "", "gateway": "", "iface": "", "kind": ""}
+
+
+def _skip_iface(name: str) -> bool:
+    n = str(name or "").strip().lower()
+    if not n:
+        return True
+    return any(n == p or n.startswith(p) for p in SKIP_IFACE_PREFIXES)
+
+
+def _run(cmd: list[str]) -> str:
+    try:
+        return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return ""
+
+
+def _default_route() -> dict[str, str]:
+    text = _run(["ip", "-4", "route", "show", "default"])
+    for line in text.splitlines():
+        parts = line.split()
+        via = ""
+        dev = ""
+        for i, tok in enumerate(parts):
+            if tok == "via" and i + 1 < len(parts):
+                via = parts[i + 1]
+            if tok == "dev" and i + 1 < len(parts):
+                dev = parts[i + 1]
+        if dev and not _skip_iface(dev):
+            return {"via": via, "dev": dev}
+    return {}
+
+
+def _is_wifi(iface: str) -> bool:
+    return Path(f"/sys/class/net/{iface}/wireless").exists()
+
+
+def _ssid(iface: str) -> str:
+    link = _run(["iw", "dev", iface, "link"])
+    for line in link.splitlines():
+        s = line.strip()
+        if s.startswith("SSID:"):
+            return s.split(":", 1)[1].strip()
+    table = _run(["nmcli", "-t", "-f", "ACTIVE,SSID,DEVICE", "dev", "wifi"])
+    for line in table.splitlines():
+        bits = line.split(":")
+        if len(bits) >= 3 and bits[0] == "yes" and bits[-1] == iface:
+            return ":".join(bits[1:-1]).replace("\\:", ":")
+    return ""
+
+
+def _nm_connection(iface: str) -> str:
+    text = _run(["nmcli", "-g", "GENERAL.CONNECTION", "device", "show", iface])
+    if text and text != "--":
+        return text.splitlines()[0].strip()
+    return ""
+
+
+def _subnet(iface: str) -> str:
+    text = _run(["ip", "-4", "-o", "addr", "show", "dev", iface, "scope", "global"])
+    for line in text.splitlines():
+        parts = line.split()
+        if "inet" in parts:
+            cidr = parts[parts.index("inet") + 1]
+            try:
+                net = ipaddress.IPv4Interface(cidr).network
+                return str(net)
+            except Exception:
+                continue
+    return ""
+
+
+def network_ready(live: dict[str, Any] | None) -> bool:
+    live = live if isinstance(live, dict) else {}
+    return bool(str(live.get("ssid") or "").strip() or str(live.get("subnet") or "").strip())
+
+
+def wait_for_identity(timeout: int = 45) -> dict[str, str]:
+    deadline = time.time() + max(1, int(timeout))
+    last = empty_live()
+    while time.time() < deadline:
+        last = detect_network()
+        if network_ready(last):
+            return last
+        time.sleep(1)
+    return last
+
+
+def detect_network() -> dict[str, str]:
+    out = empty_live()
+    route = _default_route()
+    if not route:
+        return out
+    iface = route["dev"]
+    out["iface"] = iface
+    out["gateway"] = route.get("via") or ""
+    out["subnet"] = _subnet(iface)
+    out["connection"] = _nm_connection(iface)
+    if _is_wifi(iface):
+        out["kind"] = "wifi"
+        out["ssid"] = _ssid(iface)
+    else:
+        out["kind"] = "ethernet"
+    return out
+
+
+def live_summary(live: dict[str, Any] | None) -> str:
+    live = live if isinstance(live, dict) else {}
+    ssid = str(live.get("ssid") or "")
+    subnet = str(live.get("subnet") or "")
+    kind = str(live.get("kind") or "")
+    if kind == "wifi" and ssid:
+        return f"Wi-Fi {ssid}" + (f" · {subnet}" if subnet else "")
+    if subnet:
+        return ("Ethernet " if kind == "ethernet" else "") + subnet
+    if live.get("iface"):
+        return str(live["iface"])
+    return "No LAN / Wi-Fi yet"
+
+
+def main() -> int:
+    import sys
+
+    parser = argparse.ArgumentParser(description="WorkScape network identity")
+    parser.add_argument("--detect", action="store_true")
+    parser.add_argument("--wait-identity", type=int, default=0, metavar="SECONDS")
+    args = parser.parse_args()
+    if args.wait_identity > 0:
+        json.dump(wait_for_identity(args.wait_identity), sys.stdout)
+    else:
+        json.dump(detect_network(), sys.stdout)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

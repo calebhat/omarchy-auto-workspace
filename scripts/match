@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Match WorkBook profiles to currently connected Hyprland monitors.
+"""Match WorkScape profiles to currently connected Hyprland monitors.
 
 Identities prefer EDID serial, then description (make+model+serial), and only
 then the Hyprland connector name (DP-1 / DVI-I-1), which is unstable on docks.
@@ -11,7 +11,12 @@ import json
 import re
 import subprocess
 import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
 from typing import Any
+
+NET = SourceFileLoader("workscape_network", str(Path(__file__).resolve().parent / "network")).load_module()
+SAFE = SourceFileLoader("workscape_hyprsafe", str(Path(__file__).resolve().parent / "hyprsafe")).load_module()
 
 _CONNECTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
@@ -84,7 +89,7 @@ def find_live(saved: dict[str, Any], live_list: list[dict[str, Any]], enabled_on
     return None
 
 
-def profile_match(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
+def profile_match(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]], live_net: dict[str, Any] | None = None) -> dict[str, Any]:
     live = [m for m in live_list if live_is_connected(m)]
     required = list(profile.get("monitors") or [])
     missing: list[str] = []
@@ -111,6 +116,10 @@ def profile_match(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[
         exact = matches
         all_present = matches
     reason = "exact" if exact and matches else "all-present" if matches else "missing" if missing else "extra"
+    net = NET.network_matches(profile.get("network"), live_net or {})
+    if matches and net["constrained"] and not net["matches"]:
+        matches = False
+        reason = "network"
     return {
         "matches": matches,
         "exact": exact,
@@ -120,25 +129,48 @@ def profile_match(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[
         "matchedCount": len(required) - len(missing),
         "requiredCount": len(required),
         "reason": reason,
+        "networkConstrained": net["constrained"],
+        "networkMatches": net["matches"],
     }
 
 
-def best_profile(cfg: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any] | None:
-    exact: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    present: list[tuple[dict[str, Any], dict[str, Any]]] = []
+def _match_rank(profile: dict[str, Any], info: dict[str, Any]) -> tuple:
+    net_boost = 2 if info.get("networkConstrained") and info.get("networkMatches") else 1
+    exact_boost = 2 if info.get("exact") else 1
+    claimed = int(profile.get("claimedAt") or 0)
+    return (net_boost, exact_boost, int(info.get("requiredCount") or 0), claimed)
+
+
+def best_profile(cfg: dict[str, Any], live_list: list[dict[str, Any]], live_net: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    live_net = live_net if isinstance(live_net, dict) else {}
+    scored: list[tuple[tuple, dict[str, Any]]] = []
     for profile in cfg.get("profiles") or []:
-        info = profile_match(cfg, profile, live_list)
-        if info["exact"]:
-            exact.append((profile, info))
-        elif info["allPresent"]:
-            present.append((profile, info))
-    exact.sort(key=lambda pair: pair[1]["requiredCount"], reverse=True)
-    present.sort(key=lambda pair: pair[1]["requiredCount"], reverse=True)
-    if exact:
-        return exact[0][0]
-    if present:
-        return present[0][0]
-    return None
+        info = profile_match(cfg, profile, live_list, live_net)
+        if not info["matches"]:
+            continue
+        scored.append((_match_rank(profile, info), profile))
+    if not scored:
+        return None
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return scored[0][1]
+
+
+def has_unconstrained_match(cfg: dict[str, Any], live_list: list[dict[str, Any]]) -> bool:
+    """True if some profile matches these monitors with no network filter (a fallback)."""
+    for profile in cfg.get("profiles") or []:
+        info = profile_match(cfg, profile, live_list, {})
+        if info["matches"] and not info.get("networkConstrained"):
+            return True
+    return False
+
+
+def matching_profiles(cfg: dict[str, Any], live_list: list[dict[str, Any]], live_net: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    live_net = live_net if isinstance(live_net, dict) else {}
+    out = []
+    for profile in cfg.get("profiles") or []:
+        if profile_match(cfg, profile, live_list, live_net)["matches"]:
+            out.append(profile)
+    return out
 
 
 def workspace_bindings(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, str]:
@@ -165,7 +197,7 @@ def enable_monitor(m: dict[str, Any]) -> None:
     w = int(m.get("width") or 0)
     h = int(m.get("height") or 0)
     refresh = float(m.get("refreshRate") or 60)
-    scale = m.get("scale") or 1
+    scale = SAFE.clamp_scale(m.get("scale") or 1)
     if w <= 0 or h <= 0:
         _keyword_monitor(f"{name},preferred,auto,1")
         return
@@ -186,13 +218,13 @@ def place_monitor(m: dict[str, Any], x: int, y: int) -> None:
     w = int(m.get("width") or 0)
     h = int(m.get("height") or 0)
     refresh = float(m.get("refreshRate") or 60)
-    scale = m.get("scale") or 1
+    scale = SAFE.clamp_scale(m.get("scale") or 1)
     if w <= 0 or h <= 0:
         return
     hz = f"{refresh:.2f}".rstrip("0").rstrip(".")
     pos = f"{int(x)}x{int(y)}"
     lua = (
-        f'hl.monitor({{ output = "{name}", mode = "{w}x{h}@{hz}", '
+        f'hl.monitor({{ output = "{SAFE.lua_str(name)}", mode = "{w}x{h}@{hz}", '
         f'position = "{pos}", scale = {scale} }})'
     )
     subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -278,12 +310,14 @@ def apply_outputs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[
     return {"changed": changed}
 
 
-def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
+def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]], live_net: dict[str, Any] | None = None) -> dict[str, Any]:
     live = [m for m in live_list if live_is_connected(m)]
-    matched = best_profile(cfg, live)
+    net = live_net if isinstance(live_net, dict) else NET.detect_network()
+    matched = best_profile(cfg, live, net)
+    hits = matching_profiles(cfg, live, net)
     profiles = []
     for profile in cfg.get("profiles") or []:
-        info = profile_match(cfg, profile, live)
+        info = profile_match(cfg, profile, live, net)
         profiles.append({
             "id": profile.get("id"),
             "name": profile.get("name"),
@@ -291,8 +325,11 @@ def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[st
             "reason": info["reason"],
             "missing": info["missing"],
             "extra": info["extra"],
+            "networkConstrained": info.get("networkConstrained"),
+            "networkMatches": info.get("networkMatches"),
         })
     bindings = workspace_bindings(cfg, matched, live) if matched else {}
+    conflicts = [p.get("id") for p in hits if matched and p.get("id") != matched.get("id")]
     return {
         "live": [
             {
@@ -315,6 +352,11 @@ def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[st
         "matchedProfileName": (matched or {}).get("name"),
         "bindings": bindings,
         "profiles": profiles,
+        "network": net,
+        "conflictProfileIds": conflicts,
+        "conflict": bool(conflicts),
+        "needsNetworkWait": not has_unconstrained_match(cfg, live),
+        "networkReady": bool((net or {}).get("ssid") or (net or {}).get("subnet")),
     }
 
 
@@ -329,7 +371,10 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
     ws_ids.discard("None")
     applied = []
     for ws in sorted(ws_ids, key=lambda s: int(s) if s.isdigit() else 99):
-        pref = prefs.get(ws) or {}
+        ws = SAFE.safe_ws(ws)
+        if not ws:
+            continue
+        pref = prefs.get(ws) or prefs.get(int(ws)) or {}
         requested = pref.get("layout") if pref.get("layout") in ("dwindle", "scrolling", "master", "stage") else ""
         layout = requested
         vis = int(pref.get("visibleCount") or 2)
@@ -367,15 +412,21 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
         subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if mon:
             subprocess.run(
-                ["hyprctl", "eval", f'hl.dispatch(hl.dsp.workspace.move({{workspace="{ws}", monitor="{mon}"}}))'],
-                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                [
+                    "hyprctl",
+                    "eval",
+                    f'hl.dispatch(hl.dsp.workspace.move({{workspace="{SAFE.lua_str(ws)}", monitor="{SAFE.lua_str(mon)}"}}))',
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
         applied.append({"workspace": ws, "layout": requested or layout or "dwindle", "monitor": mon, "visibleCount": vis, "lockSizes": lock, "extras": extras})
     return {"ok": True, "workspaces": applied}
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Match WorkBook profiles to live monitors")
+    parser = argparse.ArgumentParser(description="Match WorkScape profiles to live monitors")
     parser.add_argument("--config", required=True)
     parser.add_argument("--live-json", default="")
     parser.add_argument("--profile-id", default="")
@@ -384,6 +435,8 @@ def main() -> int:
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--apply-outputs", action="store_true")
     parser.add_argument("--apply-ws-prefs", action="store_true")
+    parser.add_argument("--network-json", default="")
+    parser.add_argument("--needs-identity", action="store_true")
     args = parser.parse_args()
     with open(args.config, encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -395,15 +448,23 @@ def main() -> int:
     if not isinstance(live, list):
         print("live monitors JSON must be an array", file=sys.stderr)
         return 1
+    live_net: dict[str, Any] | None = None
+    if args.network_json:
+        with open(args.network_json, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+        live_net = loaded if isinstance(loaded, dict) else {}
+    if args.needs_identity:
+        print("yes" if has_unconstrained_match(cfg, live) is False else "no")
+        return 0
     if args.status:
-        json.dump(live_status(cfg, live), sys.stdout)
+        json.dump(live_status(cfg, live, live_net if live_net is not None else None), sys.stdout)
         sys.stdout.write("\n")
         return 0
     if args.apply_outputs:
         pid = args.profile_id
         prof = next((p for p in (cfg.get("profiles") or []) if p.get("id") == pid), None)
         if not prof:
-            prof = best_profile(cfg, live)
+            prof = best_profile(cfg, live, live_net or {})
         if not prof:
             json.dump({"changed": []}, sys.stdout)
             sys.stdout.write("\n")
@@ -425,7 +486,7 @@ def main() -> int:
     if args.profile_id:
         matched = next((p for p in (cfg.get("profiles") or []) if p.get("id") == args.profile_id), None)
     else:
-        matched = best_profile(cfg, live)
+        matched = best_profile(cfg, live, live_net or {})
     if args.print_id:
         print((matched or {}).get("id") or "")
         return 0 if matched else 2

@@ -1,24 +1,36 @@
 # Contributing
 
 Source of truth: this repository, installed as a normal Omarchy plugin.
-Display name is **WorkBook**; plugin id is `io.github.calebhat.workbook`.
+Display name is **WorkScape**; plugin id is `io.github.calebhat.workscape`.
 
 ```bash
-omarchy plugin add https://github.com/calebhat/omarchy-workbook.git --enable
-omarchy plugin validate ~/.config/omarchy/plugins/io.github.calebhat.workbook
+omarchy plugin add https://github.com/calebhat/omarchy-workscape.git --enable
+omarchy plugin validate ~/.config/omarchy/plugins/io.github.calebhat.workscape
 ```
 
-On this machine, development lives in `~/Work/omarchy-workbook` and deploys with rsync (plugin folders must not contain symlinks):
+On a development machine, rsync into the user plugin dir (plugin folders must
+not contain symlinks):
 
 ```bash
-rsync -a --delete --exclude .git --exclude .gitignore --exclude test --exclude CONTRIBUTING.md \
-  ~/Work/omarchy-workbook/ \
-  ~/.config/omarchy/plugins/io.github.calebhat.workbook/
+rsync -a --delete --exclude .git --exclude .gitignore --exclude test \
+  --exclude CONTRIBUTING.md \
+  ./ ~/.config/omarchy/plugins/io.github.calebhat.workscape/
 omarchy restart shell
 ```
 
-Do not keep a second copy inside private dotfiles.
+Run tests from the repo root:
 
-Commit as `calebhat <97716470+calebhat@users.noreply.github.com>`.
+```bash
+node test/model.test.js
+python3 test/gestures.test.py
+python3 test/network.test.py
+bash test/match.test.sh
+omarchy plugin validate .
+```
 
-Do not submit this plugin to the Omarchy plugin marketplace unless that is asked for explicitly.
+Marketplace listing: only after this tree is on GitHub `master` (the site
+clones HEAD). Do not file the omarchyplugins.com issue until the owner has
+day-to-day tested the pushed commit.
+
+Suggested listing: category Desktop; tags Hyprland, Workspaces, Bar.
+Copy the “Marketplace blurb” from README.md into the issue form.
