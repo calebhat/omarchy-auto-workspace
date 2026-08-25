@@ -9,6 +9,14 @@ It is a fork of [tenzin.auto-workspace](https://github.com/yesheytenzin/auto-wor
 Plugin id: `io.github.calebhat.workscape`  
 Formerly **WorkBook**. Existing data under `~/.local/state/omarchy/workbook/` is copied on first run.
 
+<p align="center"><img src="preview.png" alt="WorkScape — workspace presets, overflow, and live preview" width="900"></p>
+
+| Workspaces | Displays | Gestures | Profiles |
+|---|---|---|---|
+| [![Workspaces](docs/screenshots/workspaces.png)](docs/screenshots/workspaces.png) | [![Displays](docs/screenshots/displays.png)](docs/screenshots/displays.png) | [![Gestures](docs/screenshots/gestures.png)](docs/screenshots/gestures.png) | [![Profiles](docs/screenshots/profiles.png)](docs/screenshots/profiles.png) |
+
+`preview.png` is the omarchyplugins.com card and detail image (16:9). Extra shots live in `docs/screenshots/` and in this README.
+
 ---
 
 ## Marketplace blurb
@@ -21,7 +29,7 @@ Use this on [omarchyplugins.com](https://omarchyplugins.com) / the marketplace i
 
 **Longer (about / README excerpt)**
 
-> WorkScape is an Omarchy + Hyprland suite for people who live on more than one monitor layout. Save a **laptop** profile and a **desk** profile: connected displays (EDID, not `DP-1`) pick the match, optional Wi‑Fi SSID / LAN subnet splits two identical laptop-only setups. Each profile presets apps onto workspaces, pins those workspaces to named monitors, and chooses tiling (dwindle, scrolling, master, stage), locked pane sizes, and whether extras stay or move to the next workspace. **Fill next open workspace** chains unused workspaces as Stage with a global max windows per workspace. Trackpad workspace swipes can follow the profile or stay global. Apply from the bar, a middle-click, or optionally at login.
+> WorkScape is an Omarchy + Hyprland suite for people who live on more than one monitor layout. Save a **laptop** profile and a **desk** profile: connected displays (EDID, not `DP-1`) pick the match, optional Wi‑Fi SSID / LAN subnet splits two identical laptop-only setups. Each profile presets apps onto workspaces, pins those workspaces to named monitors, and chooses tiling (dwindle, scrolling, master, stage), locked pane sizes, and whether extras stay or move to the next workspace. The **organizer** edits up to 20 panes with horizontal and vertical splits, drag-to-swap, tile vs float, and per-window opacity/borders. **Fill next open workspace** chains unused workspaces as Stage with a global max windows per workspace. Trackpad workspace swipes can follow the profile or stay global. Apply from the bar, a middle-click, or optionally at login. Occupied workspaces are left alone unless you **Fresh set**.
 
 **Suggested listing metadata**
 
@@ -108,7 +116,7 @@ SSID names can be spoofed. Treat network matching as home vs office convenience,
 
 ### 2. Displays — monitors for this profile
 
-- Canvas of the profile’s monitors; drag to arrange; **Apply this profile** writes Hyprland output layout.
+- Canvas of the profile’s monitors; drag to arrange; **Apply this profile** writes Hyprland output layout. **Fresh set** closes windows on this profile’s preset workspaces, then applies empty so apps and layouts load from scratch.
 - Turn a display **off** for this profile (keep at least one on).
 - Match mode: **exact layout** vs **all required present**.
 - Capture live arrangement after you rearrange in the compositor.
@@ -119,7 +127,11 @@ Pick workspace **1–10** for app presets (overflow chain can use **1–20**).
 
 **Load workspace on** pins that workspace to a named monitor in this profile.
 
-**Toggle apps** in the list to place them on the selected workspace. Custom commands go in the bottom row. Apps without a `.desktop` file (TUIs) need a desktop entry or WorkScape **extraApps** in config.
+**Toggle apps** in the list to place them on the selected workspace. The name shows a live **×N** count of that app on this workspace; the subtitle says **N on this workspace** when there is more than one. **+** adds another window of the same app (two Braves, two terminals). Toggle off removes one instance (the last). Custom commands go in the bottom row.
+
+**Capture WS** snapshots whatever is open on this workspace into the profile: size/place, terminal working directory (from the shell child of `foot` / Ghostty), and a URL when Hyprland exposes it (Brave *web apps* encode the site in the window class; a normal Brave tab only has the page title — that URL cannot be read). Apps without a `.desktop` file (TUIs) need a desktop entry or WorkScape **extraApps** in config.
+
+**What can be saved per window:** exec, name, class, title, tile vs float, geometry, opacity/borders, lock, **cwd** (terminals), **url** (web apps / explicit `https://` in the command). Not available: the URL of an ordinary browser tab, scroll position, cookies/login, tmux sessions, SSH remote cwd unless it is the local shell.
 
 **Layouts** (per workspace)
 
@@ -141,9 +153,21 @@ Pick workspace **1–10** for app presets (overflow chain can use **1–20**).
 - **Choose…** lists workspaces 1–20. Dots mark workspaces that already have pinned apps. **Set Stage** selects unused workspaces and uses Stage on them. **None** clears the list. **Max / workspace** in that dialog is the same global cap.
 - Assigned workspaces keep their own send-extra / lock / Visible columns. Overflow only fills the chain (typically empty Stage workspaces).
 
-The extras watcher listens to Hyprland window events (no extra polling). A bounced window focuses the **destination workspace and that window**. After **Apply**, leftover windows on blocked workspaces are swept off so they do not steal lock geometry.
+The extras watcher listens to Hyprland window events (no extra polling). A bounced window focuses the **destination workspace and that window**. After **Apply**, leftover windows on blocked workspaces are swept off so they do not steal lock geometry — except **occupied** workspaces, which Apply never touches.
 
-**Preview** on the right: drag **vertical and horizontal** splitters between preset panes. **Expand** opens the full organizer (almost the whole panel): drop a pane on another to **swap** or on an edge to **split** (left/right/up/down), **Tile / Float** per window, **⚙** for focused/unfocused opacity and borders. Up to **20** windows on a workspace. Apply keeps tiled splits in the compositor; float windows are placed at their organizer boxes.
+**Preview and organizer**
+
+- Mini preview (right column): drag **vertical and horizontal** splitters. **×** on a pane removes that window from the workspace; the left list updates live (toggle, **+**, and **×N**). Right-click a pane to lock/unlock its size. **Expand** opens the full organizer.
+- **Organizer** (almost the whole panel): up to **20** panes.
+  - Drag a **shared edge** to resize both tiled neighbors.
+  - Drag a **tiled** pane as a whole: onto another pane’s **center** to **swap** cells; onto an **edge** to **split** that way (left/right/up/down). Dropping off a pane snaps back. Tiled panes stay in the grid (no overlapping).
+  - **← → ↑ ↓** split the selected pane with the next tiled app.
+  - **Tile / Float** per window. **Float** lifts that pane out of the tiling set; remaining tiled panes **expand to fill the hole** (like Hyprland when you float a window). The float is drawn and applied **above** tiled windows (`alter_zorder top`). Drag a float by the body (clamped to the workspace); drag its edges to resize it alone.
+  - **Tile** again **snaps** the window into the tiled cell under it (left/right/top/bottom of the tile you are over), and neighbors shrink — same idea as unfloating in Hyprland.
+  - **⚙** sets focused and unfocused **opacity**, border on/off, and border width for that window. Focus changes update chrome without extra polling.
+  - **×** removes that window from the workspace.
+  - **Reset** clears custom geoms and re-packs from the workspace layout.
+- Apply places tiled splits in the compositor; float windows are placed at their organizer boxes and raised above tiles. Workspaces that already have windows are still skipped on Apply.
 
 ### 4. Gestures — trackpad workspace swipes
 
@@ -177,10 +201,12 @@ Config: `~/.local/state/omarchy/workscape/config.json` (outside the plugin tree 
 workscape.sh --live-status
 workscape.sh --apply-matching
 workscape.sh --apply-profile desk-dock
+workscape.sh --fresh-apply-profile laptop   # close that profile’s preset workspaces, then apply empty
+workscape.sh --capture-workspace 2          # snapshot live windows on WS 2 as JSON
 omarchy-shell -q io.github.calebhat.workscape applyMatching
 omarchy-shell -q io.github.calebhat.workscape applyProfile laptop
 omarchy-shell -q io.github.calebhat.workscape status
-omarchy-shell -q io.github.calebhat.workscape.panel toggle
+omarchy-shell -q io.github.calebhat.workscape.panel toggle   # open/close the popout
 ```
 
 ---
