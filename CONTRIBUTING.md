@@ -21,16 +21,23 @@ omarchy restart shell
 Run tests from the repo root:
 
 ```bash
-node test/model.test.js
-python3 test/gestures.test.py
-python3 test/network.test.py
-bash test/match.test.sh
+test/run
 omarchy plugin validate .
 ```
 
-Marketplace listing: only after this tree is on GitHub `master` (the site
-clones HEAD). Do not file the omarchyplugins.com issue until the owner has
-day-to-day tested the pushed commit.
+`test/run` is unit tests plus the dummy-profile self-check. It does **not** spawn windows or write `~/.local/state/omarchy/workscape/config.json`.
 
-Suggested listing: category Desktop; tags Hyprland, Workspaces, Bar.
-Copy the “Marketplace blurb” from README.md into the issue form.
+Dummy matrix (all layouts/extras, workspaces 11–19, user config untouched):
+
+```bash
+python3 test/dummy_live.py              # isolation self-check
+python3 test/dummy_live.py --live       # spawn workscape-dummy-* foots only
+```
+
+Checklist, issue history, and scenario IDs: `test/CHECKLIST.md`, `test/ISSUES.md`. Read ISSUES.md before changing extras, restore, or layoutmsg.
+
+Marketplace listing: only after this tree is on GitHub `master` (the site
+clones HEAD). Submit via `HANCORE-linux/omarchy-plugin-marketplace` using
+`SUBMISSION.md` (category Desktop; tags hyprland, workspaces, bar).
+
+Version in `manifest.json` is **1.7.0**.

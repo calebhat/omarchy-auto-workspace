@@ -6,18 +6,18 @@ n = SourceFileLoader("workscape_network", str(Path(__file__).resolve().parent.pa
 
 
 def test_normalize_and_match():
-    live = {"ssid": "Hataj", "subnet": "192.168.1.0/24", "connection": "Hataj"}
+    live = {"ssid": "HomeNet", "subnet": "192.168.1.0/24", "connection": "HomeNet"}
     captured = n.capture_from_live(live)
-    assert captured["ssids"] == ["Hataj"]
+    assert captured["ssids"] == ["HomeNet"]
     assert n.network_matches(captured, live)["matches"] is True
     assert n.network_matches(captured, {"ssid": "Office", "subnet": "192.168.2.0/24"})["matches"] is False
     assert n.network_matches(n.empty_network(), live) == {"constrained": False, "matches": True}
 
 
 def test_overlap_and_claim():
-    home = {"ssids": ["Hataj"], "subnets": ["192.168.1.0/24"], "connections": []}
+    home = {"ssids": ["HomeNet"], "subnets": ["192.168.1.0/24"], "connections": []}
     office = {"ssids": ["Office"], "subnets": ["192.168.2.0/24"], "connections": []}
-    assert n.networks_overlap(home, {"ssids": ["hataj"], "subnets": [], "connections": []})
+    assert n.networks_overlap(home, {"ssids": ["homenet"], "subnets": [], "connections": []})
     assert not n.networks_overlap(home, office)
     assert n.networks_overlap(n.empty_network(), n.empty_network())
     assert not n.networks_overlap(home, n.empty_network())
@@ -30,7 +30,7 @@ def test_overlap_and_claim():
     claimed = n.claim_environment(cfg, "office", home)
     assert any(s["id"] == "home" for s in claimed["stolen"])
     home_after = next(p for p in claimed["config"]["profiles"] if p["id"] == "home")
-    assert "Hataj" not in home_after["network"]["ssids"]
+    assert "HomeNet" not in home_after["network"]["ssids"]
 
 
 if __name__ == "__main__":

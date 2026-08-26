@@ -131,7 +131,7 @@ BarWidget {
         text: "󱂬"
         slotSize: Style.bar.statusSlot
         tooltipText: root.pluginEnabled
-            ? ("WorkScape • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching")
+            ? ("WorkScape • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching (Fresh is in the panel)")
             : "WorkScape • disabled • click to enable"
         onPressed: function(btn){
             if (btn === Qt.LeftButton) root.toggle()

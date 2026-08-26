@@ -20,6 +20,7 @@ SAFE = SourceFileLoader("workscape_hyprsafe", str(Path(__file__).resolve().paren
 
 
 _json_cache: dict[str, Any] = {}
+_layout_ready = False
 
 
 def hypr_j(cmd: str, cached: bool = False) -> Any:
@@ -37,7 +38,16 @@ def cache_clear() -> None:
 
 
 def hypr_eval(lua: str) -> None:
-    subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.run(
+            ["hyprctl", "eval", lua],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _css_box(option: str, fallback: int) -> tuple[int, int, int, int]:
@@ -148,13 +158,15 @@ def lock_plan_for_workspace(profile: dict[str, Any], ws: str) -> dict[str, Any]:
     stage = pref.get("layout") == "stage"
     set_width = pref.get("layout") == "set-width"
     locked = []
-    for a in profile.get("assignments") or []:
-        if a.get("enabled") is False:
-            continue
-        if str(a.get("workspace") or "") != str(ws):
-            continue
-        if lock_all or a.get("lockPlace") is True:
-            locked.append(a)
+    # Set-width is 1/Visible for every column, including a lockPlace app.
+    if not set_width:
+        for a in profile.get("assignments") or []:
+            if a.get("enabled") is False:
+                continue
+            if str(a.get("workspace") or "") != str(ws):
+                continue
+            if lock_all or a.get("lockPlace") is True:
+                locked.append(a)
     if stage and not locked:
         for a in profile.get("assignments") or []:
             if a.get("enabled") is False:
@@ -194,8 +206,9 @@ def active_profile(cfg: dict[str, Any], profile_id: str = "") -> dict[str, Any] 
 
 
 def config_path() -> str:
-    import os
-    from pathlib import Path
+    override = os.environ.get("WORKSCAPE_CONFIG", "").strip()
+    if override:
+        return override
     state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
     return str(Path(state) / "omarchy/workscape/config.json")
 
@@ -228,6 +241,17 @@ def apply_chrome(addr: str, chrome: dict[str, Any] | None, focused: bool) -> Non
             hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="bordercolor", value="rgb({col[:6]})" }}))')
 
 
+def _float_window(addr: str, want_float: bool) -> None:
+    """Force float on/off. Never toggle — toggle on a full-size pane sticks (I-031)."""
+    addr = SAFE.safe_addr(addr)
+    if not addr:
+        return
+    a = f"address:{addr}"
+    action = "on" if want_float else "off"
+    hypr_eval(f'hl.dispatch(hl.dsp.window.float({{ action = "{action}", window = "{a}" }}))')
+    cache_clear()
+
+
 def ensure_floating(addr: str, want: bool) -> None:
     addr = SAFE.safe_addr(addr)
     if not addr:
@@ -237,8 +261,7 @@ def ensure_floating(addr: str, want: bool) -> None:
         return
     is_f = c.get("floating") is True
     if bool(is_f) != bool(want):
-        hypr_eval(f'hl.dispatch(hl.dsp.window.float({{ action = "toggle", window = "address:{addr}" }}))')
-        cache_clear()
+        _float_window(addr, want)
 
 
 def raise_window(addr: str) -> None:
@@ -281,18 +304,19 @@ def apply_abs_box(addr: str, px: dict[str, Any]) -> dict[str, int] | None:
 
 
 def force_tiled(addr: str) -> None:
+    """Tile by address. Full-size floats ignore Super+T; shrink once, then off again (I-031)."""
     addr = SAFE.safe_addr(addr)
     if not addr:
         return
-    a = f"address:{addr}"
-    hypr_eval(
-        f"""
-local w = hl.get_window("{a}")
-if w and w.floating then
-  hl.dispatch(hl.dsp.window.float({{ action = "toggle", window = "{a}" }}))
-end
-"""
-    )
+    _float_window(addr, False)
+    c = client_by_addr(addr)
+    if not c or c.get("floating") is not True:
+        return
+    box = actual_box(addr)
+    if box and int(box.get("w") or 0) >= 80 and int(box.get("h") or 0) >= 80:
+        resize_relative(addr, -64, -64)
+        cache_clear()
+    _float_window(addr, False)
 
 
 def swap_windows(a_addr: str, b_addr: str) -> None:
@@ -314,25 +338,60 @@ def resize_relative(addr: str, dx: int, dy: int) -> None:
 
 
 def clear_size_lock(addr: str) -> None:
-    addr = SAFE.safe_addr(addr)
-    if not addr:
-        return
-    a = f"address:{addr}"
-    hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="min_size", value="0 0" }}))')
-    hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="max_size", value="0 0" }}))')
+    """No-op. set_prop min_size/max_size SIGABRT'd Hyprland (I-031 / 20:51 crash)."""
+    return
 
 
 def set_size_lock(addr: str, w: int, h: int) -> None:
-    if w <= 0 or h <= 0:
+    """No-op. Tiled min_size blocked Super+T and kept panes floating (I-021/I-024)."""
+    return
+
+
+def clear_all_size_locks(addrs: list[str] | None = None) -> int:
+    """Clear min_size/max_size on given addresses, or every mapped client."""
+    n = 0
+    if addrs is None:
+        try:
+            clients = hypr_j("clients")
+        except Exception:
+            return 0
+        addrs = [str(c.get("address") or "") for c in (clients or [])]
+    for addr in addrs:
+        if SAFE.safe_addr(addr):
+            clear_size_lock(addr)
+            n += 1
+    return n
+
+
+def exec_silent_lua(cmd: str, ws: str, monitor: str = "") -> str:
+    """Lua for spawn that must not steal focus. Tests assert this string."""
+    ws = SAFE.safe_ws(ws) or ""
+    cmd_s = SAFE.lua_str(cmd)
+    parts = [f'workspace = "{ws} silent"', "no_initial_focus = true", "tile = true"]
+    mon = SAFE.safe_connector(monitor) if monitor else None
+    if mon:
+        parts.append(f'monitor = "{mon} silent"')
+    return f'hl.dispatch(hl.dsp.exec_cmd("{cmd_s}", {{ {", ".join(parts)} }}))'
+
+
+def exec_silent(cmd: str, ws: str, monitor: str = "") -> str:
+    """Spawn onto `ws` without focusing it. Returns the eval string sent."""
+    lua = exec_silent_lua(cmd, ws, monitor)
+    if SAFE.safe_ws(ws) and str(cmd or "").strip():
+        hypr_eval(lua)
+    return lua
+
+
+def pin_workspace_silent(ws: str, monitor: str) -> None:
+    """Bind a workspace to a monitor without focusing either."""
+    ws = SAFE.safe_ws(ws)
+    mon = SAFE.safe_connector(monitor)
+    if not ws or not mon:
         return
-    addr = SAFE.safe_addr(addr)
-    if not addr:
-        return
-    a = f"address:{addr}"
-    # min_size only — max_size makes Hyprland shove locked panes when an extra
-    # window needs space. Restore-on-open puts the size back if min is ignored.
-    hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="min_size", value="{int(w)} {int(h)}" }}))')
-    hypr_eval(f'hl.dispatch(hl.dsp.window.set_prop({{ window="{a}", prop="max_size", value="0 0" }}))')
+    hypr_eval(f'hl.workspace_rule({{ workspace = "{ws}", monitor = "{mon}" }})')
+    hypr_eval(
+        f'hl.dispatch(hl.dsp.workspace.move({{ workspace = "{ws}", monitor = "{mon}" }}))'
+    )
 
 
 def clamp_visible_count(visible_count: int | str | None) -> int:
@@ -377,26 +436,60 @@ def fit_column_fracs(fracs: list[float], metrics: dict[str, float], n_cols: int)
 
 
 def clamp_scrolling_to_monitor(ws: str, metrics: dict[str, float], items: list[dict[str, Any]]) -> None:
-    """Left-align the tape. Do not colresize — that overwrites locked splits."""
+    """Remove extra side padding. Hyprland centers a short scrolling tape.
+
+    A lone column is colresize 1.0. Several columns: fit expand the last one
+    into leftover space. Do not pan a small gutter (that looked off-center
+    until the workspace was focused).
+    """
     lw = float(metrics.get("lw") or metrics.get("w") or 0)
     if lw < 80:
         return
-    _gt, _gr, _gb, gl = gaps_out()
-    left = int(round(float(metrics.get("x") or gl)))
-    for _ in range(4):
+    left = int(round(float(metrics.get("x") or 0)))
+    right_edge = int(round(left + float(metrics.get("w") or lw)))
+    cache_clear()
+    tiled = [c for c in sort_clients_axis(clients_on_workspace(ws), "x") if not c.get("floating")]
+    if not tiled:
+        return
+    first = tiled[0]
+    last = tiled[-1]
+    first_addr = first.get("address")
+    last_addr = last.get("address")
+    first_x = int(((first.get("at") or [0, 0]) + [0, 0])[0])
+    last_at = last.get("at") or [0, 0]
+    last_sz = last.get("size") or [0, 0]
+    last_end = int(last_at[0]) + int(last_sz[0])
+    left_slack = first_x - left
+    right_slack = right_edge - last_end
+    # Fresh apply can pan the tape to the last-launched pane (Control). A
+    # 67/33 split then sits ~300px right with the last column cut off.
+    # 16px (user desk WS2 after Fresh) is enough to look "both panes shifted".
+    if abs(left_slack) > 8 and first_addr:
+        focus_window(str(first_addr))
+        if not layout_msg_on(str(ws), f"move {-left_slack}"):
+            layout_msg(f"move {-left_slack}")
+        time.sleep(0.03)
         cache_clear()
         tiled = [c for c in sort_clients_axis(clients_on_workspace(ws), "x") if not c.get("floating")]
         if not tiled:
             return
-        addr = tiled[0].get("address")
-        if not addr:
-            return
+        last = tiled[-1]
+        last_addr = last.get("address")
+        last_at = last.get("at") or [0, 0]
+        last_sz = last.get("size") or [0, 0]
+        last_end = int(last_at[0]) + int(last_sz[0])
         first_x = int(((tiled[0].get("at") or [0, 0]) + [0, 0])[0])
-        dx = first_x - left
-        if abs(dx) <= 3:
-            return
-        focus_window(str(addr))
-        layout_msg(f"move {-dx}")
+        left_slack = first_x - left
+        right_slack = right_edge - last_end
+    if len(tiled) == 1:
+        if (left_slack > 8 or right_slack > 8) and first_addr:
+            focus_window(str(tiled[0].get("address") or first_addr))
+            layout_msg("colresize 1.0")
+            time.sleep(0.02)
+        return
+    if right_slack > 6 and last_addr:
+        focus_window(str(last_addr))
+        layout_msg("fit expand")
         time.sleep(0.02)
 
 
@@ -406,10 +499,26 @@ def scrolling_layout_opts(visible_count: int, lock: bool = False, stage: bool = 
     # makes a lone Set-width / extra column eat the whole monitor.
     expand = bool(fill_one or (stage and not lock))
     fs = "true" if expand else "false"
-    return f"column_width = {col}, fullscreen_on_one_column = {fs}, follow_focus = false"
+    # Hover-focus must not pan the camera (I-040). Click and Super+arrows pan.
+    return (
+        f"column_width = {col}, fullscreen_on_one_column = {fs}, "
+        f"follow_focus = false, follow_min_visible = 1.0, focus_fit_method = 1"
+    )
 
 
 OMARCHY_SCROLLING_COLUMN_WIDTH = 0.49
+
+
+def apply_scrolling_globals() -> None:
+    """Hyprland ignores follow_focus / fullscreen_on_one_column on workspace_rule.
+
+    Live getoption showed both still at defaults (set: false) after layout_opts.
+    Stage lone panes still get colresize 1.0 from stageFill.
+    """
+    hypr_eval(
+        "hl.config({ scrolling = { follow_focus = false, fullscreen_on_one_column = false, "
+        "follow_min_visible = 1.0 } })"
+    )
 
 
 def sync_column_width_for_workspace(ws: str, visible_count: int | None = None) -> None:
@@ -427,20 +536,14 @@ def sync_column_width_for_workspace(ws: str, visible_count: int | None = None) -
             visible_count = None
     if not visible_count:
         apply_spawn_width_rule(ws, None)
-        set_global_column_width(OMARCHY_SCROLLING_COLUMN_WIDTH, fill_one=True)
+        if layout in ("", "dwindle") and SAFE.safe_ws(ws):
+            force_dwindle(ws)
         return
     extra = extra_column_frac(int(visible_count))
     apply_spawn_width_rule(ws, extra)
-    set_width = layout == "set-width"
-    stage = layout == "stage"
-    set_global_column_width(extra, fill_one=not set_width)
-    force_scrolling(
-        str(ws),
-        int(visible_count),
-        lock=not set_width and not stage,
-        stage=stage,
-        fill_one=not set_width,
-    )
+    # Workspace scrolling_width is enough. Global column_width restamps
+    # unassigned scrolling sessions (WS5 Grok CLI) to 1/N.
+    repair_unmanaged_workspaces()
 
 
 def apply_spawn_width_rule(ws: str, frac: float | None) -> None:
@@ -473,11 +576,15 @@ def set_global_column_width(frac: float, fill_one: bool | None = None) -> None:
         f = OMARCHY_SCROLLING_COLUMN_WIDTH
     f = max(0.1, min(1.0, f))
     if fill_one is None:
-        hypr_eval(f"hl.config({{ scrolling = {{ column_width = {round(f, 4)} }} }})")
+        hypr_eval(
+            f"hl.config({{ scrolling = {{ column_width = {round(f, 4)}, follow_focus = false, "
+            f"follow_min_visible = 1.0, focus_fit_method = 1 }} }})"
+        )
         return
     fs = "true" if fill_one else "false"
     hypr_eval(
-        f"hl.config({{ scrolling = {{ column_width = {round(f, 4)}, fullscreen_on_one_column = {fs} }} }})"
+        f"hl.config({{ scrolling = {{ column_width = {round(f, 4)}, fullscreen_on_one_column = {fs}, "
+        f"follow_focus = false, follow_min_visible = 1.0, focus_fit_method = 1 }} }})"
     )
 
 
@@ -489,23 +596,122 @@ def restamp_scrolling_default(
     n_cols: int = 1,
     set_width: bool = False,
 ) -> None:
-    """Keep new columns at 1/visibleCount. colresize of a locked pane must not
-    become the default for the next extra (Hyprland then uses 0.5)."""
+    """Keep new columns at 1/visibleCount without restamping existing splits.
+
+    force_scrolling on an already-scrolling workspace restamps column_width
+    and collapses locked panes (I-021). Only set the layout when it is not
+    scrolling yet; otherwise just the spawn-width window rule.
+    """
     vis = clamp_visible_count(visible_count)
     extra = extra_column_frac(vis)
-    force_scrolling(
-        ws,
-        vis,
-        lock=bool(lock) and n_cols > 1,
-        stage=stage,
-        fill_one=n_cols <= 1 and not set_width,
-    )
+    already = workspace_is_scrolling(ws)
+    # Set-width must restamp layout_opts even when already scrolling so a
+    # leftover fullscreen_on_one_column=true does not eat the lone pane (I-039).
+    if set_width or not already:
+        force_scrolling(
+            ws,
+            vis,
+            lock=False if set_width else (bool(lock) and n_cols > 1),
+            stage=False if set_width else stage,
+            fill_one=False if set_width else (n_cols <= 1 and not set_width),
+        )
     apply_spawn_width_rule(ws, extra)
-    set_global_column_width(extra, fill_one=n_cols <= 1 and not set_width)
+
+
+def _tiled_addr_order(ws: str) -> list[str]:
+    cache_clear()
+    tiled = [c for c in clients_on_workspace(ws) if not c.get("floating")]
+    tiled = sorted(tiled, key=lambda c: int(((c.get("at") or [0, 0]) + [0, 0])[0]))
+    out = []
+    for c in tiled:
+        a = SAFE.safe_addr(str(c.get("address") or ""))
+        if a:
+            out.append(a)
+    return out
+
+
+def extra_is_after_locked(addr: str, ws: str, locked_addrs: set[str]) -> bool:
+    addr = SAFE.safe_addr(addr) or ""
+    locked = {SAFE.safe_addr(a) or "" for a in locked_addrs}
+    locked.discard("")
+    addrs = _tiled_addr_order(ws)
+    if not addr or addr not in addrs:
+        return False
+    lock_is = [addrs.index(a) for a in locked if a in addrs]
+    if not lock_is:
+        return False
+    return addrs.index(addr) > max(lock_is)
+
+
+def set_no_anim(addr: str, on: bool) -> None:
+    addr = SAFE.safe_addr(addr)
+    if not addr:
+        return
+    v = "1" if on else "0"
+    hypr_eval(
+        f'hl.dispatch(hl.dsp.window.set_prop({{ window = "address:{addr}", prop = "no_anim", value = "{v}" }}))'
+    )
+
+
+def pack_locked_left(ws: str, locked_addrs: set[str], manage_inhibit: bool = True) -> None:
+    """Bubble extras left of locked panes to the right of them.
+
+    Caller should debounce so a burst of extras is one pack, not a cascade.
+    """
+    locked = {SAFE.safe_addr(a) or "" for a in locked_addrs}
+    locked.discard("")
+    if not locked:
+        return
+    if not ensure_layout_workspace(str(ws)):
+        return
+    if manage_inhibit:
+        layout_msg_on(str(ws), "inhibit_scroll true")
+    try:
+        stalled = 0
+        for _ in range(6):
+            addrs = _tiled_addr_order(str(ws))
+            if not addrs:
+                return
+            lock_is = [addrs.index(a) for a in locked if a in addrs]
+            if not lock_is:
+                return
+            before = [i for i, a in enumerate(addrs) if a not in locked and i < max(lock_is)]
+            if not before:
+                return
+            victim = addrs[before[0]]
+            prev_i = before[0]
+            focus_window(victim)
+            layout_msg_on(str(ws), "movewindowto r")
+            time.sleep(0.06)
+            after = _tiled_addr_order(str(ws))
+            if victim in after and after.index(victim) <= prev_i:
+                layout_msg_on(str(ws), "swapcol r")
+                time.sleep(0.05)
+                after = _tiled_addr_order(str(ws))
+            if victim not in after:
+                return
+            new_i = after.index(victim)
+            if new_i < prev_i:
+                layout_msg_on(str(ws), "swapcol l")
+                return
+            if new_i <= prev_i:
+                stalled += 1
+                if stalled >= 2:
+                    return
+            else:
+                stalled = 0
+    finally:
+        if manage_inhibit:
+            layout_msg_on(str(ws), "inhibit_scroll false")
 
 
 def push_column_after_locked(addr: str, ws: str, locked_addrs: set[str] | int) -> None:
-    """Move a new column to the right of every locked pane (not between them)."""
+    """Move a new column to the right of every locked pane (not between them).
+
+    Bounded swaps only — a 16-step swapcol loop wraps the tape and looks like
+    extras loading on the left then cascading right (live WS2).
+    """
+    addr = SAFE.safe_addr(addr) or ""
     if not addr:
         return
     if isinstance(locked_addrs, int):
@@ -514,33 +720,112 @@ def push_column_after_locked(addr: str, ws: str, locked_addrs: set[str] | int) -
         locked_set: set[str] = set()
         n_locked = locked_addrs
     else:
-        locked_set = {a for a in locked_addrs if a and a != addr}
+        locked_set = {SAFE.safe_addr(a) or "" for a in locked_addrs if a and a != addr}
+        locked_set.discard("")
         if not locked_set:
             return
         n_locked = len(locked_set)
-    focus_window(addr)
-    layout_msg("expel")
-    time.sleep(0.02)
-    for _ in range(14):
-        cache_clear()
-        rank = column_rank(addr, ws)
-        if rank is None:
+    if locked_set:
+        pack_locked_left(str(ws), locked_set)
+        return
+    addrs = _tiled_addr_order(str(ws))
+    if not addrs or addr not in addrs:
+        return
+    extra_i = addrs.index(addr)
+    while extra_i < n_locked and extra_i + 1 < len(addrs):
+        swap_windows(addrs[extra_i], addrs[extra_i + 1])
+        time.sleep(0.02)
+        addrs = _tiled_addr_order(str(ws))
+        if addr not in addrs:
             return
-        if locked_set:
-            locked_ranks = [column_rank(a, ws) for a in locked_set]
-            locked_ranks = [r for r in locked_ranks if r is not None]
-            if locked_ranks and rank > max(locked_ranks):
-                return
-        elif rank >= n_locked:
-            return
-        layout_msg("swapcol r")
-        time.sleep(0.015)
-        cache_clear()
-        new_rank = column_rank(addr, ws)
-        if new_rank is not None and new_rank < rank:
-            layout_msg("swapcol l")
-            layout_msg("expel")
+        extra_i = addrs.index(addr)
+
+
+def locked_colresize_frac(it: dict[str, Any], metrics: dict[str, float], extra_frac: float) -> float:
+    """colresize is a fraction of monitor width. Prefer saved pixel width."""
+    lw = float(metrics.get("lw") or metrics.get("w") or 1) or 1.0
+    px = it.get("px") or {}
+    w = float(px.get("w") or 0)
+    if w >= 80:
+        return max(0.08, min(0.98, round(w / lw, 4)))
+    return column_width_frac(it, extra_frac)
+
+
+def pin_locked_column_sizes(
+    ws: str,
+    locked_items: list[dict[str, Any]],
+    extra_addr: str,
+    extra_frac: float,
+    metrics: dict[str, float],
+    manage_inhibit: bool = True,
+) -> None:
+    """Keep locked panes at saved widths; only the extra uses Visible 1/N."""
+    if not ensure_layout_workspace(str(ws)):
+        return
+    if manage_inhibit:
+        layout_msg_on(str(ws), "inhibit_scroll true")
+    try:
+        for it in locked_items:
+            addr = str(it.get("addr") or "")
+            if not addr:
+                continue
+            force_tiled(addr)
+            frac = locked_colresize_frac(it, metrics, extra_frac)
+            focus_window(addr)
+            layout_msg_on(str(ws), f"colresize {frac}")
             time.sleep(0.02)
+        if extra_addr:
+            clear_size_lock(extra_addr)
+            focus_window(extra_addr)
+            layout_msg_on(str(ws), f"colresize {extra_frac}")
+            time.sleep(0.02)
+        if locked_items:
+            focus_window(str(locked_items[0].get("addr") or ""))
+        cache_clear()
+    finally:
+        if manage_inhibit:
+            layout_msg_on(str(ws), "inhibit_scroll false")
+
+
+def append_extra_after_locked(ws: str, addr: str, cfg: dict[str, Any] | None = None, profile_id: str = "") -> dict[str, Any]:
+    """Keep locked panes put. lua:workscape places extras after them; no swapcol."""
+    addr = SAFE.safe_addr(addr) or addr
+    if not addr:
+        return {"ok": False, "error": "no addr"}
+    if cfg is None:
+        try:
+            cfg = load_config(config_path())
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+    profile = active_profile(cfg, profile_id)
+    if not profile:
+        return {"ok": False, "error": "no profile"}
+    plan = lock_plan_for_workspace(profile, str(ws))
+    locked = plan.get("locked") or []
+    if len(locked) < 2:
+        return {"ok": True, "skipped": True}
+    if not uses_workscape_tape(plan):
+        return {"ok": True, "skipped": True}
+    vis = plan["visibleCount"]
+    extra = extra_column_frac(vis)
+    cache_clear()
+    if workspace_tiled_layout(str(ws)) == "lua:workscape":
+        return {"ok": True, "skipped": True, "reason": "already_tape", "workspace": str(ws), "addr": addr}
+    monitors = hypr_j("monitors", cached=True)
+    workspaces = hypr_j("workspaces", cached=True)
+    mon = monitor_for_workspace(str(ws), monitors, workspaces)
+    if not mon:
+        return {"ok": False, "error": "no monitor"}
+    metrics = layout_metrics(mon)
+    cache_clear()
+    on_ws = clients_on_workspace(str(ws))
+    locked_items = match_locked_items(str(ws), plan, metrics, on_ws)
+    locked_addrs = {it["addr"] for it in locked_items}
+    if addr in locked_addrs:
+        return {"ok": True, "skipped": True, "reason": "locked"}
+    push_workscape_plan(str(ws), locked_items, extra, on_ws, mark_fresh=False, reset_offset=False)
+    force_workscape_layout(str(ws))
+    return {"ok": True, "workspace": str(ws), "addr": addr, "mode": "lua:workscape"}
 
 
 def size_new_scrolling_column(
@@ -573,14 +858,29 @@ def size_new_scrolling_column(
     restamp_scrolling_default(ws, visible_count, lock=n_locked > 1, stage=stage, n_cols=n, set_width=set_width)
     if not addr:
         return
-    if locked_addrs and addr not in locked_addrs:
+    addr = SAFE.safe_addr(addr) or addr
+    if locked_addrs and addr not in {SAFE.safe_addr(a) or a for a in locked_addrs}:
         push_column_after_locked(addr, str(ws), locked_addrs)
-    focus_window(addr)
-    if set_width or n > 1:
-        layout_msg(f"colresize {extra}")
+    if set_width:
+        # colresize all is a layoutmsg: it hits the *active* workspace.
+        # Activating WS3 to send it (ensure_layout_workspace) focuses the
+        # first column and drops the camera (I-043). Only resize when the
+        # user is already looking at this workspace.
+        try:
+            aw = hypr_j("activeworkspace")
+            already = str((aw or {}).get("id") or "") == str(ws)
+        except Exception:
+            already = False
+        if already:
+            layout_msg(f"colresize all {extra}")
         return
-    # Stage / unlocked scrolling: the first column fills until extras exist.
-    layout_msg("colresize 1.0")
+    if not ensure_layout_workspace(str(ws)):
+        return
+    focus_window(addr)
+    if n > 1:
+        layout_msg_on(str(ws), f"colresize {extra}")
+        return
+    layout_msg_on(str(ws), "colresize 1.0")
 
 
 def force_scrolling(
@@ -594,14 +894,198 @@ def force_scrolling(
     ws = SAFE.safe_ws(ws)
     if not ws:
         return
+    apply_scrolling_globals()
     opts = scrolling_layout_opts(visible_count, lock=lock, stage=stage, fill_one=fill_one)
-    if "follow_focus" not in opts:
-        opts = (opts + ", " if opts else "") + "follow_focus = false"
     persist_s = "true" if persist else "false"
     hypr_eval(
         f'hl.workspace_rule({{ workspace = "{ws}", persistent = {persist_s}, layout = "scrolling", '
         f"layout_opts = {{ {opts} }} }})"
     )
+
+
+def force_dwindle(ws: str) -> None:
+    ws = SAFE.safe_ws(ws)
+    if not ws:
+        return
+    hypr_eval(f'hl.workspace_rule({{ workspace = "{ws}", persistent = false, layout = "dwindle" }})')
+
+
+def uses_workscape_tape(plan: dict[str, Any]) -> bool:
+    """Two locked panes + extras=around: compositor tape, not swapcol packing."""
+    if not isinstance(plan, dict):
+        return False
+    if plan.get("extras") == "block":
+        return False
+    if plan.get("setWidth") is True or plan.get("stage") is True:
+        return False
+    return len(plan.get("locked") or []) >= 2
+
+
+def workspace_tiled_layout(ws: str) -> str:
+    try:
+        for w in hypr_j("workspaces", cached=True) or []:
+            if str(w.get("id")) == str(ws) or str(w.get("name")) == str(ws):
+                return str(w.get("tiledLayout") or "")
+    except Exception:
+        pass
+    return ""
+
+
+def reset_workscape_layout_cache() -> None:
+    global _layout_ready
+    _layout_ready = False
+
+
+def ensure_workscape_layout() -> None:
+    """Register lua:workscape once per compositor connection. Repeat require during map stalls the extra (I-035)."""
+    global _layout_ready
+    if _layout_ready:
+        return
+    hypr_eval('pcall(function() require("hypr.workscape-layout") end)')
+    _layout_ready = True
+
+
+def force_workscape_layout(ws: str, persist: bool = False) -> None:
+    ws = SAFE.safe_ws(ws)
+    if not ws:
+        return
+    ensure_workscape_layout()
+    persist_s = "true" if persist else "false"
+    hypr_eval(
+        f'hl.workspace_rule({{ workspace = "{ws}", persistent = {persist_s}, layout = "lua:workscape" }})'
+    )
+
+
+def _lua_quote(s: str) -> str:
+    return '"' + SAFE.lua_str(s) + '"'
+
+
+def push_workscape_plan(
+    ws: str,
+    locked_items: list[dict[str, Any]],
+    extra_frac: float,
+    clients: list[dict[str, Any]] | None = None,
+    mark_fresh: bool = True,
+    reset_offset: bool = True,
+) -> None:
+    """Publish locked fractions so lua:workscape can place without layoutmsg.
+
+    Extra-open must not set fresh or reset the tape camera (I-035).
+    """
+    ws = str(ws or "")
+    if not SAFE.safe_ws(ws):
+        return
+    extra_frac = max(0.08, min(0.98, float(extra_frac)))
+    by_addr: dict[str, dict[str, Any]] = {}
+    for c in clients or []:
+        addr = str(c.get("address") or "")
+        if addr:
+            by_addr[addr] = c
+    parts: list[str] = []
+    for it in locked_items:
+        addr = str(it.get("addr") or "")
+        hit = by_addr.get(addr) or {}
+        cls = str(hit.get("class") or hit.get("initialClass") or "")
+        title = str(hit.get("title") or "")
+        frac = column_width_frac(it, extra_frac)
+        parts.append(
+            "{ class = "
+            + _lua_quote(cls)
+            + ", title = "
+            + _lua_quote(title)
+            + ", address = "
+            + _lua_quote(addr)
+            + f", w = {round(frac, 4)} }}"
+        )
+    locked_lua = ", ".join(parts)
+    ws_q = _lua_quote(ws)
+    lines = [
+        'pcall(function() require("hypr.workscape-layout") end)',
+        "Workscape = Workscape or { plans = {}, offsets = {}, extraIds = {}, fresh = {} }",
+        "Workscape.plans[" + ws_q + "] = { extraFrac = " + str(round(extra_frac, 4)) + ", locked = { " + locked_lua + " } }",
+    ]
+    if mark_fresh:
+        lines.append("Workscape.fresh = Workscape.fresh or {}")
+        lines.append("Workscape.fresh[" + ws_q + "] = true")
+    if reset_offset:
+        lines.append("Workscape.offsets[" + ws_q + "] = 0")
+    global _layout_ready
+    _layout_ready = True
+    hypr_eval(" ".join(lines))
+
+
+def match_locked_items(
+    ws: str,
+    plan: dict[str, Any],
+    metrics: dict[str, float],
+    clients: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    locked = plan.get("locked") or []
+    on_ws = clients if clients is not None else clients_on_workspace(str(ws))
+    used: set[str] = set()
+    items: list[dict[str, Any]] = []
+    for i, assignment in enumerate(locked):
+        hit = match_client(assignment, on_ws, used)
+        if not hit or not hit.get("address"):
+            continue
+        used.add(hit["address"])
+        g = assignment.get("geom") or fallback_geom(i, len(locked))
+        items.append({
+            "addr": str(hit["address"]),
+            "geom": g,
+            "px": geom_pixels(g, metrics),
+            "name": assignment.get("name"),
+            "lock": True,
+            "class": str(hit.get("class") or hit.get("initialClass") or ""),
+            "title": str(hit.get("title") or ""),
+        })
+    return items
+
+
+def place_workscape_tape(
+    ws: str,
+    plan: dict[str, Any],
+    metrics: dict[str, float],
+    prefer_addr: str = "",
+) -> list[dict[str, Any]]:
+    """Ask lua:workscape to place; do not swapcol/colresize/focus extras."""
+    cache_clear()
+    on_ws = clients_on_workspace(str(ws))
+    items = match_locked_items(str(ws), plan, metrics, on_ws)
+    locked_addrs = {it["addr"] for it in items}
+    for it in items:
+        force_tiled(it["addr"])
+        clear_size_lock(it["addr"])
+    for c in on_ws:
+        addr = str(c.get("address") or "")
+        if not addr or addr in locked_addrs:
+            continue
+        if c.get("floating"):
+            force_tiled(addr)
+            clear_size_lock(addr)
+    extra = extra_column_frac(plan.get("visibleCount") or 2)
+    push_workscape_plan(str(ws), items, extra, on_ws)
+    already = workspace_tiled_layout(str(ws)) == "lua:workscape"
+    force_workscape_layout(str(ws))
+    if already and items:
+        addr = SAFE.safe_addr(str(items[0].get("addr") or "")) or ""
+        if addr:
+            hypr_eval(
+                f'hl.dispatch(hl.dsp.window.resize({{ window = "address:{addr}", x = 0, y = 0, relative = true }}))'
+            )
+    time.sleep(0.05)
+    cache_clear()
+    locked_addrs = {it["addr"] for it in items}
+    extras: list[dict[str, Any]] = []
+    for c in clients_on_workspace(str(ws)):
+        addr = str(c.get("address") or "")
+        if not addr or addr in locked_addrs or c.get("floating"):
+            continue
+        g = {"x": 1.0, "y": 0.0, "w": extra, "h": 1.0}
+        extras.append({"addr": addr, "geom": g, "px": geom_pixels(g, metrics), "lock": False})
+    sequence = items + extras
+    _ = prefer_addr
+    return [{**it, "place": actual_box(it["addr"]) or it.get("px") or {}} for it in sequence]
 
 
 def active_window_addr() -> str | None:
@@ -619,8 +1103,25 @@ def focus_window(addr: str) -> None:
     addr = SAFE.safe_addr(addr) or ""
     if not addr:
         return
-    # Hyprland 0.56: layoutmsg hits the *active* workspace layout. Focus first
-    # so colresize/expel go to scrolling on the target workspace, not dwindle.
+    # layoutmsg always hits the *active* workspace. On a dock, focusing a
+    # window on another monitor may leave the laptop workspace active — then
+    # colresize/fit/expel cut off unassigned windows (e.g. WS5).
+    c = client_by_addr(addr)
+    if c:
+        ws = str((c.get("workspace") or {}).get("id") or "")
+        mon_id = c.get("monitor")
+        if mon_id is not None:
+            try:
+                for m in hypr_j("monitors", cached=True) or []:
+                    if m.get("id") == mon_id:
+                        name = SAFE.safe_connector(str(m.get("name") or ""))
+                        if name:
+                            hypr_eval(f'hl.dispatch(hl.dsp.focus({{ monitor = "{name}" }}))')
+                        break
+            except Exception:
+                pass
+        if ws:
+            hypr_eval(f'hl.dispatch(hl.dsp.focus({{ workspace = "{ws}" }}))')
     hypr_eval(f'hl.dispatch(hl.dsp.focus({{ window = "address:{addr}" }}))')
 
 
@@ -630,7 +1131,193 @@ def focus_workspace(ws: str) -> None:
     hypr_eval(f'hl.dispatch(hl.dsp.focus({{ workspace = "{ws}" }}))')
 
 
+def activate_workspace_for_layout(ws: str) -> bool:
+    """Make `ws` the active workspace on its monitor so layoutmsg hits it."""
+    ws = str(ws or "")
+    if not SAFE.safe_ws(ws):
+        return False
+    try:
+        cache_clear()
+        mon = monitor_for_workspace(ws, hypr_j("monitors", cached=True), hypr_j("workspaces", cached=True))
+        if mon:
+            name = SAFE.safe_connector(str(mon.get("name") or ""))
+            if name:
+                hypr_eval(f'hl.dispatch(hl.dsp.focus({{ monitor = "{name}" }}))')
+        focus_workspace(ws)
+        time.sleep(0.05)
+        cache_clear()
+        aw = hypr_j("activeworkspace")
+        return str((aw or {}).get("id") or "") == ws
+    except Exception:
+        return False
+
+
+def ensure_layout_workspace(ws: str, attempts: int = 6) -> bool:
+    """Retry activate until `ws` is active. False means do not layoutmsg (would hit the user's WS)."""
+    ws = SAFE.safe_ws(ws) or ""
+    if not ws:
+        return False
+    if ws not in managed_workspaces():
+        return False
+    for _ in range(max(1, attempts)):
+        if activate_workspace_for_layout(ws):
+            return True
+        time.sleep(0.04)
+    return False
+
+
+def layout_msg_on(ws: str, msg: str) -> bool:
+    """Send layoutmsg only after `ws` is the active managed workspace."""
+    if not ensure_layout_workspace(ws):
+        return False
+    layout_msg(msg)
+    return True
+
+
+def managed_workspaces(profile: dict[str, Any] | None = None) -> set[str]:
+    """Workspaces this profile actually lays out. Never layoutmsg anywhere else."""
+    if profile is None:
+        try:
+            profile = active_profile(load_config(config_path()))
+        except Exception:
+            return set()
+    if not profile:
+        return set()
+    out: set[str] = set()
+    for a in profile.get("assignments") or []:
+        if a.get("enabled") is False:
+            continue
+        ws = str(a.get("workspace") or "")
+        if ws:
+            out.add(ws)
+    for key, pref in (profile.get("workspacePrefs") or {}).items():
+        if isinstance(pref, dict) and pref.get("layout") in ("scrolling", "stage", "set-width"):
+            out.add(str(key))
+    return out
+
+
+def _user_managed_workspaces() -> set[str]:
+    """Always include the on-disk user profile so dummy tests cannot dwindle WS1–4."""
+    override = os.environ.get("WORKSCAPE_CONFIG", "").strip()
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
+    user = str(Path(state) / "omarchy/workscape/config.json")
+    if not override or os.path.abspath(override) == os.path.abspath(user):
+        return set()
+    try:
+        return managed_workspaces(active_profile(load_config(user)))
+    except Exception:
+        return set()
+
+
+def covers_work_area(box: dict[str, Any] | None, metrics: dict[str, float] | None) -> bool:
+    """True if box is the usable monitor pane (full-size overlay or filled tile)."""
+    if not isinstance(box, dict) or not isinstance(metrics, dict):
+        return False
+    return (
+        abs(int(box.get("x") or 0) - int(metrics.get("x") or 0)) <= 40
+        and abs(int(box.get("w") or 0) - int(metrics.get("w") or 0)) <= 80
+        and abs(int(box.get("h") or 0) - int(metrics.get("h") or 0)) <= 80
+    )
+
+
+def tile_covering_floats(ws: str) -> list[str]:
+    """Tile full-monitor floats on `ws`. Session overlays (I-031), not small dialogs."""
+    ws = SAFE.safe_ws(ws) or ""
+    if not ws:
+        return []
+    cache_clear()
+    try:
+        mons = hypr_j("monitors")
+        spaces = hypr_j("workspaces")
+    except Exception:
+        return []
+    mon = monitor_for_workspace(ws, mons, spaces)
+    if not mon:
+        return []
+    metrics = layout_metrics(mon)
+    done: list[str] = []
+    for c in clients_on_workspace(ws):
+        if c.get("floating") is not True:
+            continue
+        addr = str(c.get("address") or "")
+        box = actual_box(addr)
+        if not box or not covers_work_area(box, metrics):
+            continue
+        force_tiled(addr)
+        done.append(addr)
+    return done
+
+
+def fill_window_to_monitor(addr: str, metrics: dict[str, float]) -> None:
+    """Resize/move a tiled window. Never grow a float into a full-size overlay."""
+    force_tiled(addr)
+    cache_clear()
+    c = client_by_addr(addr)
+    if not c or c.get("floating") is True:
+        return
+    box = actual_box(addr)
+    if not box:
+        return
+    dx = int(metrics["w"]) - int(box.get("w") or 0)
+    dy = int(metrics["h"]) - int(box.get("h") or 0)
+    if abs(dx) >= 8 or abs(dy) >= 8:
+        resize_relative(addr, dx, dy)
+        cache_clear()
+        box = actual_box(addr) or box
+    mx = int(metrics["x"]) - int(box.get("x") or 0)
+    my = int(metrics["y"]) - int(box.get("y") or 0)
+    if abs(mx) >= 4 or abs(my) >= 4:
+        hypr_eval(
+            f'hl.dispatch(hl.dsp.window.move({{ window = "address:{addr}", x = {int(mx)}, y = {int(my)}, relative = true }}))'
+        )
+
+
+def repair_unmanaged_workspaces(also_keep: set[str] | None = None) -> None:
+    """Unassigned sessions (Grok CLI on WS5/8) must stay dwindle tiles, not overlays."""
+    keep = set(managed_workspaces())
+    keep |= _user_managed_workspaces()
+    if also_keep:
+        keep |= {str(x) for x in also_keep}
+    cache_clear()
+    try:
+        spaces = hypr_j("workspaces")
+        mons = hypr_j("monitors")
+    except Exception:
+        return
+    for w in spaces or []:
+        ws = str(w.get("id") or "")
+        if not ws or ws in keep:
+            continue
+        force_dwindle(ws)
+        tile_covering_floats(ws)
+        cache_clear()
+        on = [c for c in clients_on_workspace(ws) if not c.get("floating")]
+        if len(on) != 1:
+            continue
+        mon = monitor_for_workspace(ws, mons, spaces)
+        if not mon:
+            continue
+        metrics = layout_metrics(mon)
+        box = actual_box(str(on[0].get("address") or ""))
+        if not box:
+            continue
+        if covers_work_area(box, metrics):
+            continue
+        fill_window_to_monitor(str(on[0]["address"]), metrics)
+
+
 def layout_msg(msg: str) -> None:
+    # layoutmsg always hits the active workspace. Abort unless that workspace
+    # is managed. Do not retarget to the previously focused window — that
+    # sent colresize/expel to the laptop session (I-014) and undid dummy
+    # settle on WS 11–19.
+    try:
+        aw = hypr_j("activeworkspace")
+        cur = str((aw or {}).get("id") or "")
+        if cur not in managed_workspaces():
+            return
+    except Exception:
+        return
     safe = str(msg).replace("\\", "\\\\").replace('"', '\\"')
     hypr_eval(f'hl.dispatch(hl.dsp.layout("{safe}"))')
 
@@ -747,7 +1434,10 @@ def apply_tiled_split(items: list[dict[str, Any]], metrics: dict[str, float]) ->
 
     out = []
     for it in ordered:
-        out.append({**it, "place": actual_box(it["addr"]) or it["px"]})
+        box = actual_box(it["addr"]) or it["px"]
+        if box:
+            clear_size_lock(it["addr"])
+        out.append({**it, "place": box})
     return out
 
 
@@ -849,6 +1539,7 @@ def place_scrolling_columns(
     """
     extra_frac = max(0.05, min(1.0, float(extra_frac)))
     vis = clamp_visible_count(visible_count) if visible_count else clamp_visible_count(int(round(1.0 / extra_frac)))
+    activate_workspace_for_layout(str(ws))
     cache_clear()
     locked_addrs = {it["addr"] for it in items if it.get("addr")}
     extras: list[dict[str, Any]] = []
@@ -1000,26 +1691,78 @@ def restore_locks_for_workspace(
     profile = active_profile(cfg, profile_id)
     if not profile:
         return {"ok": False, "error": "no profile"}
+    occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
+    if str(ws) in occupied and os.environ.get("WORKSCAPE_MIGRATE_OCCUPIED") != "1":
+        return {"ok": True, "skipped": True, "workspace": str(ws), "reason": "occupied"}
     plan = lock_plan_for_workspace(profile, str(ws))
     locked = plan["locked"]
     if not locked:
+        vis = plan["visibleCount"]
+        if plan.get("setWidth") is True:
+            extra = extra_column_frac(vis)
+            force_scrolling(str(ws), vis, lock=False, fill_one=False)
+            apply_spawn_width_rule(str(ws), extra)
+            tiled = [c for c in clients_on_workspace(str(ws)) if not c.get("floating")]
+            addr = str((tiled[0].get("address") if tiled else "") or "")
+            size_new_scrolling_column(str(ws), addr, vis, set_width=True)
+        elif plan.get("stage") is True:
+            force_scrolling(str(ws), vis, lock=False, stage=True, fill_one=True)
+            apply_spawn_width_rule(str(ws), extra_column_frac(vis))
         return {"ok": True, "skipped": True, "workspace": str(ws)}
+    result = _settle_workspace_once(str(ws), plan, prefer_addr)
+    if result.get("closeEnough") is False:
+        time.sleep(0.1)
+        cache_clear()
+        result = _settle_workspace_once(str(ws), plan, prefer_addr)
+    repair_unmanaged_workspaces(also_keep={str(ws)})
+    for it in (result.get("windows") or []):
+        clear_size_lock(str(it.get("addr") or ""))
+    if keep_focus:
+        cache_clear()
+        if prev_addr and client_by_addr(prev_addr):
+            focus_window(prev_addr)
+        elif prev_ws:
+            focus_workspace(prev_ws)
+    return result
+
+
+def _settle_workspace_once(ws: str, plan: dict[str, Any], prefer_addr: str = "") -> dict[str, Any]:
+    """One layout pass. 2-lock around uses lua:workscape; stage/set-width stay scrolling."""
     cache_clear()
-    tiled_now = [c for c in clients_on_workspace(str(ws)) if not c.get("floating")]
-    force_scrolling(
-        str(ws),
-        plan["visibleCount"],
-        lock=not plan.get("stage") or plan.get("lock_all") is True,
-        stage=plan.get("stage") is True,
-        fill_one=len(locked) == 1 and len(tiled_now) <= 1 and not plan.get("setWidth"),
+    tiled_now = [c for c in clients_on_workspace(ws) if not c.get("floating")]
+    locked = plan["locked"]
+    n_lock = len(locked)
+    n_tiled = len(tiled_now)
+    extras_n = max(0, n_tiled - n_lock)
+    set_width = plan.get("setWidth") is True
+    stage = plan.get("stage") is True
+    around = plan.get("extras") != "block"
+    use_tape = uses_workscape_tape(plan)
+    use_scrolling = bool(
+        not use_tape and (set_width or stage or n_lock <= 1 or extras_n > 0 or (n_lock >= 2 and around))
     )
+    if use_tape:
+        pass
+    elif use_scrolling:
+        force_scrolling(
+            ws,
+            plan["visibleCount"],
+            lock=n_lock > 1,
+            stage=stage,
+            fill_one=n_lock <= 1 and extras_n == 0 and not set_width,
+        )
+    else:
+        force_dwindle(ws)
+    if not use_tape:
+        activate_workspace_for_layout(ws)
+    cache_clear()
     monitors = hypr_j("monitors", cached=True)
     workspaces = hypr_j("workspaces", cached=True)
-    mon = monitor_for_workspace(str(ws), monitors, workspaces)
+    mon = monitor_for_workspace(ws, monitors, workspaces)
     if not mon:
-        return {"ok": False, "error": "no monitor", "workspace": str(ws)}
+        return {"ok": False, "error": "no monitor", "workspace": ws}
     metrics = layout_metrics(mon)
-    clients = clients_on_workspace(str(ws))
+    clients = clients_on_workspace(ws)
     used: set[str] = set()
     items: list[dict[str, Any]] = []
     for i, a in enumerate(locked):
@@ -1030,7 +1773,7 @@ def restore_locks_for_workspace(
         g = a.get("geom")
         if not g:
             box = actual_box(hit["address"])
-            g = box_to_geom(box, metrics) if box else fallback_geom(i, len(locked))
+            g = box_to_geom(box, metrics) if box else fallback_geom(i, n_lock)
         items.append({
             "addr": hit["address"],
             "geom": g,
@@ -1039,32 +1782,34 @@ def restore_locks_for_workspace(
             "lock": True,
         })
     if not items:
-        return {"ok": True, "skipped": True, "workspace": str(ws), "reason": "no clients"}
-    extra_frac = extra_column_frac(plan["visibleCount"])
-    last = place_scrolling_columns(
-        items,
-        metrics,
-        str(ws),
-        extra_frac,
-        prefer_addr=prefer_addr,
-        visible_count=plan["visibleCount"],
-        stage=plan.get("stage") is True,
-        set_width=plan.get("setWidth") is True,
-    )
+        return {"ok": True, "skipped": True, "workspace": ws, "reason": "no clients"}
+    for it in items:
+        clear_size_lock(it["addr"])
+    if use_tape:
+        last = place_workscape_tape(ws, plan, metrics, prefer_addr=prefer_addr)
+    elif use_scrolling:
+        last = place_scrolling_columns(
+            items,
+            metrics,
+            ws,
+            extra_column_frac(plan["visibleCount"]),
+            prefer_addr=prefer_addr,
+            visible_count=plan["visibleCount"],
+            stage=stage,
+            set_width=set_width,
+        )
+    else:
+        last = apply_tiled_split(items, metrics)
     locked_placed = [it for it in last if it.get("lock")]
     extras_placed = [it for it in last if not it.get("lock")]
     extra_ok = all(int((it.get("place") or {}).get("w") or 0) >= 40 for it in extras_placed) if extras_placed else True
     ok = bool(locked_placed) and all(close_enough(it.get("place"), it.get("px"), tol=32) for it in locked_placed) and extra_ok
-    if keep_focus:
-        cache_clear()
-        if prev_addr and client_by_addr(prev_addr):
-            focus_window(prev_addr)
-        elif prev_ws:
-            focus_workspace(prev_ws)
+    mode = "lua:workscape" if use_tape else ("scrolling" if use_scrolling else "dwindle")
     return {
         "ok": True,
-        "workspace": str(ws),
+        "workspace": ws,
         "closeEnough": ok,
+        "mode": mode,
         "windows": [{"addr": it.get("addr"), "actual": it.get("place"), "requested": it.get("px"), "lock": it.get("lock") is True} for it in last],
     }
 
@@ -1084,10 +1829,22 @@ def apply_one(addr: str, geom_json: str, ws: str) -> dict[str, Any]:
     return {"ok": True, "metrics": metrics, "requested": px, "actual": box, "placed": items[0]["place"] if items else px}
 
 
+def exec_app_id(exec_cmd: str) -> str:
+    """Hyprland class for `foot --app-id=foo` stays `foo` even after the title changes."""
+    parts = str(exec_cmd or "").split()
+    for i, tok in enumerate(parts):
+        if tok.startswith("--app-id="):
+            return tok.split("=", 1)[1].strip().lower()
+        if tok in ("--app-id", "-a") and i + 1 < len(parts):
+            return parts[i + 1].strip().lower()
+    return ""
+
+
 def match_client(assignment: dict[str, Any], clients: list[dict[str, Any]], used: set[str]) -> dict[str, Any] | None:
     exec_cmd = str(assignment.get("exec") or assignment.get("command") or "")
     base = exec_cmd.split()[0].split("/")[-1].lower() if exec_cmd else ""
     name = str(assignment.get("name") or "").lower()
+    app_id = exec_app_id(exec_cmd)
     best = None
     best_score = 0
     for c in clients:
@@ -1097,7 +1854,10 @@ def match_client(assignment: dict[str, Any], clients: list[dict[str, Any]], used
         cls = str(c.get("class") or "").lower()
         title = str(c.get("title") or "").lower()
         initial = str(c.get("initialClass") or "").lower()
+        initial_title = str(c.get("initialTitle") or "").lower()
         score = 0
+        if app_id and (app_id == cls or app_id == initial or app_id in cls):
+            score += 14
         if "herdr" in exec_cmd.lower() and "herdr" in cls:
             score += 12
         shophawk_slot = "shophawk-panel" in exec_cmd.lower() or (
@@ -1128,8 +1888,9 @@ def match_client(assignment: dict[str, Any], clients: list[dict[str, Any]], used
         elif base and base not in {"uwsm-app", "omarchy-launch-tui", "omarchy-launch-or-focus-tui", "sh", "bash"}:
             if base == cls or base in cls or base in initial:
                 score += 6
-        if name and name in title and not (base in {"brave", "chromium"} and site_app):
-            score += 4
+        if name and not (base in {"brave", "chromium"} and site_app):
+            if name in title or name in initial_title or name in cls:
+                score += 4
         at = c.get("at") or [0, 0]
         size = c.get("size") or [0, 0]
         x = int(at[0] or 0)
@@ -1168,7 +1929,7 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
         if not geom and not locked:
             continue
         ws = str(a.get("workspace") or "1")
-        if ws in occupied:
+        if ws in occupied and os.environ.get("WORKSCAPE_MIGRATE_OCCUPIED") != "1":
             continue
         on_ws = [
             c for c in clients
@@ -1187,7 +1948,8 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
             "chrome": a.get("chrome") if isinstance(a.get("chrome"), dict) else None,
         })
     results = []
-    for ws, windows in by_ws.items():
+    prev_focus = active_window_addr()
+    for ws, windows in sorted(by_ws.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 99):
         cache_clear()
         monitors = hypr_j("monitors", cached=True)
         workspaces = hypr_j("workspaces", cached=True)
@@ -1200,64 +1962,7 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
                 box = actual_box(win["addr"])
                 win["geom"] = box_to_geom(box, metrics) if box else fallback_geom(i, len(windows))
         floats = [w for w in windows if w.get("place") == "float"]
-        windows = [w for w in windows if w.get("place") != "float"]
-        pref = prefs.get(str(ws)) or {}
-        vis = clamp_visible_count(pref.get("visibleCount"))
-        result = {"ok": True, "windows": []}
-        lock_any = any(w.get("lock") for w in windows) or pref.get("lockSizes") is True
-        stage = pref.get("layout") == "stage" and not lock_any
-        set_width = pref.get("layout") == "set-width"
-        geoms = [w.get("geom") or {} for w in windows if w.get("geom")]
-        cols = bool(geoms) and all(abs(float(g.get("h") or 1) - 1) < 0.08 and float(g.get("y") or 0) < 0.08 for g in geoms)
-        rows = bool(geoms) and all(abs(float(g.get("w") or 1) - 1) < 0.08 and float(g.get("x") or 0) < 0.08 for g in geoms)
-        scrolling = (lock_any or pref.get("layout") in ("scrolling", "stage", "set-width")) and cols
-        if not windows:
-            pass
-        elif rows and not cols:
-            metrics = layout_metrics(mon) if mon else {"x": 0, "y": 0, "w": 1, "h": 1}
-            items = []
-            for win in windows:
-                if not win.get("geom"):
-                    continue
-                items.append({"addr": win["addr"], "geom": win["geom"], "px": geom_pixels(win["geom"], metrics), "lock": win.get("lock") is True})
-            placed_list = apply_tiled_split(items, metrics)
-            result = {"ok": True, "metrics": metrics, "windows": [{"addr": it.get("addr"), "place": it.get("place"), "actual": it.get("place")} for it in placed_list]}
-        elif scrolling:
-            tiled_now = [c for c in clients_on_workspace(ws) if not c.get("floating")]
-            force_scrolling(
-                ws,
-                vis,
-                lock=lock_any,
-                stage=stage,
-                fill_one=len(windows) == 1 and len(tiled_now) <= 1 and not set_width,
-            )
-            if stage:
-                for win in windows:
-                    if not win.get("lock"):
-                        win["lock"] = True
-                        win["geom"] = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
-                        break
-            metrics = layout_metrics(mon) if mon else {"x": 0, "y": 0, "w": 1, "h": 1}
-            for win in windows:
-                win["px"] = geom_pixels(win["geom"], metrics) if win.get("geom") else win.get("px")
-            placed_list = place_scrolling_columns(
-                windows,
-                metrics,
-                ws,
-                extra_column_frac(vis),
-                visible_count=vis,
-                stage=stage,
-                set_width=set_width,
-            )
-            result = {"ok": True, "metrics": metrics, "windows": [{"addr": it.get("addr"), "place": it.get("place"), "actual": it.get("place")} for it in placed_list]}
-        else:
-            result = apply_many({"workspace": ws, "windows": windows})
-            placed = {it.get("addr"): it for it in (result.get("windows") or []) if it.get("addr")}
-            for win in windows:
-                addr = win.get("addr")
-                if not addr:
-                    continue
-                clear_size_lock(addr)
+        result = restore_locks_for_workspace(str(ws), cfg, profile_id, keep_focus=True)
         metrics = layout_metrics(mon) if mon else {"x": 0, "y": 0, "w": 1, "h": 1}
         floats_sorted = sorted(
             floats,
@@ -1277,6 +1982,8 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
             if win.get("chrome"):
                 apply_chrome(win["addr"], win["chrome"], False)
         results.append(result)
+    if prev_focus:
+        focus_window(prev_focus)
     return {"ok": True, "workspaces": results}
 
 
@@ -1322,7 +2029,18 @@ def main() -> int:
     parser.add_argument("--payload", default="")
     parser.add_argument("--workspace", default="1")
     parser.add_argument("--metrics", action="store_true")
+    parser.add_argument("--clear-size-locks", action="store_true")
+    parser.add_argument("--exec-silent", default="")
+    parser.add_argument("--monitor", default="")
     args = parser.parse_args()
+    if args.clear_size_locks:
+        n = clear_all_size_locks()
+        print(json.dumps({"ok": True, "cleared": n}))
+        return 0
+    if args.exec_silent:
+        lua = exec_silent(args.exec_silent, args.workspace, args.monitor)
+        print(lua)
+        return 0
     if args.metrics:
         monitors = hypr_j("monitors")
         workspaces = hypr_j("workspaces")

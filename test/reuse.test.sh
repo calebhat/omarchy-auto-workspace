@@ -13,16 +13,16 @@ clients='[
   {"address":"0x5","class":"foot","title":"grok","initialClass":"foot","workspace":{"id":6,"name":"6"}}
 ]'
 
-got=$(find_existing_addr "/home/caleb/.local/bin/brave" "Brave" "$clients" "1" "")
+got=$(find_existing_addr "/home/user/.local/bin/brave" "Brave" "$clients" "1" "")
 [[ $got == "0x2" ]] || { echo "brave on assigned ws: $got"; exit 1; }
 
-got=$(find_existing_addr "/home/caleb/.local/bin/brave" "Brave" "$clients" "3" "")
+got=$(find_existing_addr "/home/user/.local/bin/brave" "Brave" "$clients" "3" "")
 [[ -z $got ]] || { echo "brave stole extra: $got"; exit 1; }
 
-got=$(find_existing_addr "/home/caleb/.local/bin/grok-bot" "Grok Bot" "$clients" "3" "")
+got=$(find_existing_addr "/home/user/.local/bin/grok-bot" "Grok Bot" "$clients" "3" "")
 [[ $got == "0x3" ]] || { echo "grok unique off-target: $got"; exit 1; }
 
-got=$(find_existing_addr "/home/caleb/.local/bin/grok-bot" "Grok Bot" "$clients" "3" "0x3")
+got=$(find_existing_addr "/home/user/.local/bin/grok-bot" "Grok Bot" "$clients" "3" "0x3")
 [[ -z $got ]] || { echo "grok used-addr leaked: $got"; exit 1; }
 
 got=$(find_existing_addr "omarchy-launch-webapp 'https://outlook.office.com/mail/'" "Outlook" "$clients" "4" "")
@@ -31,9 +31,9 @@ got=$(find_existing_addr "omarchy-launch-webapp 'https://outlook.office.com/mail
 got=$(find_existing_addr "omarchy-launch-webapp 'https://outlook.office.com/mail/'" "Outlook" "$clients" "3" "")
 [[ -z $got ]] || { echo "outlook stole: $got"; exit 1; }
 
-prot=$(browser_reuse_only_on_target "/home/caleb/.local/bin/brave")
+prot=$(browser_reuse_only_on_target "/home/user/.local/bin/brave")
 [[ $prot == "true" ]] || { echo "brave not protected: $prot"; exit 1; }
-prot=$(browser_reuse_only_on_target "/home/caleb/.local/bin/grok-bot")
+prot=$(browser_reuse_only_on_target "/home/user/.local/bin/grok-bot")
 [[ $prot == "false" ]] || { echo "grok should move: $prot"; exit 1; }
 prot=$(browser_reuse_only_on_target "omarchy-launch-webapp 'https://outlook.office.com/mail/'")
 [[ $prot == "true" ]] || { echo "webapp not protected: $prot"; exit 1; }

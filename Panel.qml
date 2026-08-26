@@ -47,6 +47,7 @@ Panel {
     property var liveStatus: ({ live: [], profiles: [], matchedProfileId: "", bindings: {} })
     property var liveMonitors: []
     property bool applyBusy: false
+    property string lastFollowedMatchId: ""
     onFormTypeChanged: { updateFormPreview(); updateAutofillName() }
 
     property string hyprLayout: "dwindle"
@@ -159,10 +160,35 @@ Panel {
         return n
     })()
 
-    function open() { root.controller.show(); loadConfig(); appsProc.running = true; layoutProc.running = true; liveProc.running = true; root.workspacePicked = true }
+    function open() {
+        root.controller.show()
+        loadConfig()
+        appsProc.running = true
+        layoutProc.running = true
+        liveProc.running = true
+        root.workspacePicked = true
+        Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+    }
     function close() {
         saveConfig()
         root.controller.hide()
+    }
+    function dismissOrClose() {
+        if (root.chromeOpen) { root.chromeOpen = false; return }
+        if (root.organizerOpen) { root.organizerOpen = false; return }
+        if (root.overflowOpen) { root.closeOverflow(); return }
+        if (root.editNetworkOpen) { root.closeEditNetwork(); return }
+        if (root.newProfileOpen) { root.closeNewProfile(); return }
+        if (root.transferOpen) { root.closeTransfer(); return }
+        root.close()
+    }
+    function followLiveMatch() {
+        var id = Model.nextFollowedMatch((liveStatus && liveStatus.matchedProfileId) || "", lastFollowedMatchId)
+        if (!id) return
+        lastFollowedMatchId = id
+        if (id === activeProfileId) return
+        if (!Model.profileById(config, id)) return
+        setActiveProfile(id)
     }
     function toggle() { root.opened ? root.close() : root.open() }
     function closeForPopoutSwitch() { root.close() }
@@ -388,6 +414,7 @@ Panel {
         return Model.assignmentIsLocked(a, root.activeProfile)
     }
     function toggleAppLock(execStr) {
+        if (root.currentWsPref.layout === "set-width") return
         var a = root.assignmentForExec(execStr)
         if (!a) return
         var cfg = root.currentConfig()
@@ -651,8 +678,19 @@ Panel {
         liveEvalProc.command = ["hyprctl", "eval", lua]
         liveEvalProc.running = true
     }
+    function profileCanApply(id) {
+        var p = Model.profileById(config, id) || {}
+        var h = Model.applyHint(config, p, liveMonitors, liveNetwork, liveStatus)
+        if (h && h.canApply) return true
+        var msg = (h && h.refuseText) ? h.refuseText : "This profile doesn't match the connected displays"
+        statusText = msg
+        errorText = msg
+        clearStatusTimer.restart()
+        return false
+    }
     function applyProfile(id) {
         if (root.applyBusy || applyProc.running) return
+        if (!root.profileCanApply(id)) return
         root.applyBusy = true
         applyProc.command = ["bash", root.script, "--apply-profile", id]
         applyProc.running = true
@@ -661,11 +699,17 @@ Panel {
     }
     function applyFreshProfile(id) {
         if (root.applyBusy || applyProc.running) return
+        var matchId = String((liveStatus && liveStatus.matchedProfileId) || "")
+        var target = id
+        if (matchId && Model.profileById(config, matchId)) target = matchId
+        if (target !== activeProfileId) setActiveProfile(target)
+        if (!root.profileCanApply(target)) return
         root.applyBusy = true
-        applyProc.command = ["bash", root.script, "--fresh-apply-profile", id]
+        applyProc.command = ["bash", root.script, "--fresh-apply-profile", target]
         applyProc.running = true
         statusText = "Closing workspaces that have apps in this profile, then applying fresh…"
         clearStatusTimer.restart()
+        root.close()
     }
     function resetEmptyWorkspaces() {
         if (root.applyBusy || applyProc.running) return
@@ -1254,11 +1298,12 @@ Panel {
                 root.liveStatus = j
                 root.liveMonitors = j.live || []
                 root.liveNetwork = j.network || {}
+                root.followLiveMatch()
             } catch (e) {}
         }
     }
     Timer {
-        interval: 12000
+        interval: 2500
         running: root.opened
         repeat: true
         onTriggered: if (!liveProc.running) liveProc.running = true
@@ -1348,7 +1393,8 @@ Panel {
         for (var i = 0; i < assignments.length; i++) if (assignments[i].workspace === formWorkspace) out.push(assignments[i])
         return out
     }
-    readonly property bool lockAllViable: addedApps.length >= 2
+    readonly property bool lockUiEnabled: currentWsPref.layout !== "set-width"
+    readonly property bool lockAllViable: lockUiEnabled && addedApps.length >= 2
     readonly property bool anyLockOnWs: currentWsPref.lockSizes === true || Model.workspaceHasLockedApp(activeProfile, formWorkspace)
     readonly property bool allAssignedLocked: {
         if (currentWsPref.lockSizes === true) return addedApps.length >= 2
@@ -1366,6 +1412,13 @@ Panel {
     readonly property string activeMatchLabel: {
         var h = root.activeApplyHint
         return (h && h.text) ? h.text : ""
+    }
+
+    Shortcut {
+        sequence: "Escape"
+        enabled: root.opened
+        context: Qt.ApplicationShortcut
+        onActivated: root.dismissOrClose()
     }
 
     KeyboardPanel {
@@ -1386,7 +1439,7 @@ Panel {
             blocked: root.transferOpen || root.newProfileOpen || root.editNetworkOpen || root.overflowOpen || root.organizerOpen || root.chromeOpen || filterField.activeFocus || customField.activeFocus || customNameField.activeFocus || (typeof visibleCountField !== "undefined" && visibleCountField.activeFocus) || (typeof newProfileNameField !== "undefined" && newProfileNameField.activeFocus) || (typeof editNetworkSsidField !== "undefined" && (editNetworkSsidField.activeFocus || editNetworkSubnetField.activeFocus || editNetworkConnField.activeFocus))
             onMoveRequested: function(dx, dy) { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen && !root.organizerOpen && !root.chromeOpen) root.moveCursor(dx, dy) }
             onActivateRequested: { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen && !root.organizerOpen && !root.chromeOpen) root.activateCursor() }
-            onCloseRequested: { if (root.chromeOpen) root.chromeOpen = false; else if (root.organizerOpen) root.organizerOpen = false; else if (root.overflowOpen) root.closeOverflow(); else if (root.editNetworkOpen) root.closeEditNetwork(); else if (root.newProfileOpen) root.closeNewProfile(); else if (root.transferOpen) root.closeTransfer(); else root.close() }
+            onCloseRequested: root.dismissOrClose()
             onTabRequested: function(direction) { root.moveTabCursor(direction) }
             onTextKey: function(t) {
                 if (t === "/") {
@@ -1420,14 +1473,16 @@ Panel {
                             spacing: Style.space(6)
                             Button {
                                 text: root.applyBusy ? "Applying…" : "Apply matching"
-                                tooltipText: "Detect connected monitors and load that profile (middle-click the bar chip)"
+                                tooltipText: "Load the profile for the connected displays. Moves existing workspaces onto that layout’s monitors. Does not close windows — use Fresh to relaunch."
                                 enabled: !root.applyBusy
                                 onClicked: root.applyMatching()
                             }
                             Button {
-                                text: "Fresh set"
-                                tooltipText: "Close workspaces that have apps in the last applied profile, then apply that profile from scratch. Other workspaces stay put."
-                                enabled: !root.applyBusy && root.activeProfileId !== ""
+                                text: "Fresh Workscape"
+                                tooltipText: (root.activeApplyHint && !root.activeApplyHint.canApply)
+                                    ? (root.activeApplyHint.refuseText || "This profile doesn't match the connected displays")
+                                    : "Close workspaces that have apps in this profile, then apply from scratch. Refused if this profile's displays aren't connected."
+                                enabled: !root.applyBusy && root.activeProfileId !== "" && !!(root.activeApplyHint && root.activeApplyHint.canApply)
                                 onClicked: root.applyFreshProfile(root.activeProfileId)
                             }
                         }
@@ -1587,7 +1642,7 @@ Panel {
                                 foreground: root.foreground
                                 onClicked: root.setWorkspacePref("lockSizes", !root.allAssignedLocked)
                             }
-                            HintMark { tooltipText: "Pins each assigned pane. Same as tapping 🔒 on every app in the list." }
+                            HintMark { tooltipText: "Pins each assigned pane. Same as tapping 🔒 on every app in the list. Hidden on Set width; locks return if you switch this workspace back to Stage or Scrolling." }
                         }
                         }
 
@@ -1771,19 +1826,15 @@ Panel {
                             WrapToggle {
                                 id: extrasToggle
                                 Layout.fillWidth: true
-                                label: root.currentWsPref.layout === "set-width"
-                                    ? "Scroll extras at this width"
-                                    : "Send extra windows to the next workspace"
-                                checked: root.currentWsPref.layout === "set-width"
-                                    ? root.currentWsPref.extras !== "block"
-                                    : root.currentWsPref.extras === "block"
+                                label: "Keep extra windows on this workspace"
+                                checked: root.currentWsPref.extras !== "block"
                                 foreground: root.foreground
                                 onClicked: root.setWorkspacePref("extras", root.currentWsPref.extras === "block" ? "around" : "block")
                             }
                             HintMark {
                                 tooltipText: root.currentWsPref.layout === "set-width"
-                                    ? "On: extra windows stay here as more 1/Visible scrolling columns. Off: after Visible columns are filled, a new window still opens, then WorkScape moves it to the next workspace."
-                                    : "This workspace only. Locked panes stay; a new extra window still opens, then WorkScape moves it off. Off: extras stay here as extra scrolling columns. Profiles → Stage overflow is a separate profile-wide chain."
+                                    ? "On: extras stay as more 1/Visible columns. Off: after Visible columns fill, extras still open, then move to the next workspace. Super+W closes the focused column and focuses the next one in order, even if it is a thin strip."
+                                    : "On: extras stay as more columns after locked panes. Off: extras still open, then move to the next workspace. Super+W focuses the next column in order (including narrow ones). Profiles → Stage overflow is a separate chain."
                             }
                         }
                         Text {
@@ -1820,7 +1871,7 @@ Panel {
                                 bar: root.bar
                                 workspace: root.formWorkspace
                                 assignedApps: root.addedApps
-                                lockAll: root.currentWsPref.lockSizes === true || root.allAssignedLocked
+                                lockAll: root.lockUiEnabled && (root.currentWsPref.lockSizes === true || root.allAssignedLocked)
                                 appList: root.appList
                                 screenW: panel.screenW
                                 screenH: panel.screenH
@@ -1858,10 +1909,20 @@ Panel {
                             onClicked: root.setMatchMode(root.activeProfileId, root.activeProfile.matchMode === "all-present" ? "exact" : "all-present")
                         }
                         Item { Layout.fillWidth: true }
-                        Button { text: "Apply this profile"; onClicked: root.applyProfile(root.activeProfileId) }
                         Button {
-                            text: "Fresh set"
-                            tooltipText: "Close only workspaces that have apps in this profile, then apply empty. Workspaces with no assigned apps are not closed."
+                            text: "Apply this profile"
+                            enabled: !root.applyBusy && !!(root.activeApplyHint && root.activeApplyHint.canApply)
+                            tooltipText: (root.activeApplyHint && !root.activeApplyHint.canApply)
+                                ? (root.activeApplyHint.refuseText || "This profile doesn't match the connected displays")
+                                : "Bind workspaces and launch this profile. Refused if its displays aren't connected."
+                            onClicked: root.applyProfile(root.activeProfileId)
+                        }
+                        Button {
+                            text: "Fresh Workscape"
+                            enabled: !root.applyBusy && !!(root.activeApplyHint && root.activeApplyHint.canApply)
+                            tooltipText: (root.activeApplyHint && !root.activeApplyHint.canApply)
+                                ? (root.activeApplyHint.refuseText || "This profile doesn't match the connected displays")
+                                : "Close only workspaces that have apps in this profile, then apply empty. Workspaces with no assigned apps are not closed."
                             onClicked: root.applyFreshProfile(root.activeProfileId)
                         }
                     }
@@ -2095,7 +2156,7 @@ Panel {
 
                         SectionCard {
                             title: "KEYBOARD"
-                            hint: "Comma and period (the < > keys). Follows Skip empty above."
+                            hint: "SUPER+, / . is previous and next workspace (follows Skip empty). On a two-lock tape (lua:workscape), SUPER+ALT+, / . pans extra columns."
                             foreground: root.foreground
                             fontFamily: root.fontFamily
                             RowLayout {
@@ -2387,10 +2448,30 @@ Panel {
                                             spacing: Style.space(6)
                                             Button { text: "Workspaces"; onClicked: { root.setActiveProfile(modelData.id); root.mainView = "workspaces" } }
                                             Button { text: "Displays"; onClicked: { root.setActiveProfile(modelData.id); root.mainView = "displays" } }
-                                            Button { text: "Apply"; onClicked: root.applyProfile(modelData.id) }
                                             Button {
-                                                text: "Fresh set"
-                                                tooltipText: "Close only workspaces that have apps in this profile, then apply from scratch. Other workspaces stay put."
+                                                text: "Apply"
+                                                enabled: {
+                                                    var h = Model.applyHint(root.config, modelData, root.liveMonitors, root.liveNetwork, root.liveStatus)
+                                                    return !root.applyBusy && !!(h && h.canApply)
+                                                }
+                                                tooltipText: {
+                                                    var h = Model.applyHint(root.config, modelData, root.liveMonitors, root.liveNetwork, root.liveStatus)
+                                                    return (h && !h.canApply) ? (h.refuseText || "Doesn't match connected displays") : "Apply this profile"
+                                                }
+                                                onClicked: root.applyProfile(modelData.id)
+                                            }
+                                            Button {
+                                                text: "Fresh Workscape"
+                                                enabled: {
+                                                    var h = Model.applyHint(root.config, modelData, root.liveMonitors, root.liveNetwork, root.liveStatus)
+                                                    return !root.applyBusy && !!(h && h.canApply)
+                                                }
+                                                tooltipText: {
+                                                    var h = Model.applyHint(root.config, modelData, root.liveMonitors, root.liveNetwork, root.liveStatus)
+                                                    return (h && !h.canApply)
+                                                        ? (h.refuseText || "Doesn't match connected displays")
+                                                        : "Close only workspaces that have apps in this profile, then apply from scratch. Other workspaces stay put."
+                                                }
                                                 onClicked: root.applyFreshProfile(modelData.id)
                                             }
                                             Item { Layout.fillWidth: true }
@@ -3033,7 +3114,7 @@ Panel {
                 onClicked: if (app) root.addInstance(app.exec, app.name)
             }
             Button {
-                visible: app ? root.isInList(root.addedApps, app.exec) : false
+                visible: app ? (root.lockUiEnabled && root.isInList(root.addedApps, app.exec)) : false
                 Layout.preferredWidth: Style.space(36)
                 Layout.minimumWidth: Style.space(36)
                 Layout.maximumWidth: Style.space(40)

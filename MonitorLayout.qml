@@ -7,7 +7,7 @@ import "Model.js" as Model
 // Drag monitors in Hyprland layout pixels. Delegates stay alive for the
 // whole drag so the grab is not destroyed. Snap runs on release only.
 Item {
-    id: root
+    id: layoutRoot
     property var tiles: []
     property bool dragging: false
     property var layoutModel: []
@@ -99,7 +99,7 @@ Item {
 
     function commit(draggedId) {
         var positions = collectPositions(draggedId)
-        if (Object.keys(positions).length) root.layoutChanged(positions)
+        if (Object.keys(positions).length) layoutRoot.layoutChanged(positions)
     }
 
     Rectangle {
@@ -112,7 +112,7 @@ Item {
         clip: true
 
         Text {
-            visible: root.layoutModel.length === 0
+            visible: layoutRoot.layoutModel.length === 0
             anchors.centerIn: parent
             text: "No on-displays in this profile"
             color: Qt.darker(Color.foreground, 1.4)
@@ -124,12 +124,12 @@ Item {
             id: stage
             anchors.fill: parent
             anchors.margins: 12
-            onWidthChanged: root.computeScale()
-            onHeightChanged: root.computeScale()
+            onWidthChanged: layoutRoot.computeScale()
+            onHeightChanged: layoutRoot.computeScale()
 
             Repeater {
                 id: tileRepeater
-                model: root.layoutModel
+                model: layoutRoot.layoutModel
                 delegate: Rectangle {
                     id: tile
                     required property var modelData
@@ -140,10 +140,10 @@ Item {
                     property real layoutW: modelData ? modelData.w : 1920
                     property real layoutH: modelData ? modelData.h : 1080
 
-                    x: (layoutX - root.originX) * root.dragScale
-                    y: (layoutY - root.originY) * root.dragScale
-                    width: Math.max(56, layoutW * root.dragScale)
-                    height: Math.max(40, layoutH * root.dragScale)
+                    x: (layoutX - layoutRoot.originX) * layoutRoot.dragScale
+                    y: (layoutY - layoutRoot.originY) * layoutRoot.dragScale
+                    width: Math.max(56, layoutW * layoutRoot.dragScale)
+                    height: Math.max(40, layoutH * layoutRoot.dragScale)
                     radius: 6
                     z: index
                     color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, moveArea.containsMouse || moveArea.pressed ? 0.32 : 0.16)
@@ -179,21 +179,21 @@ Item {
                             grabY = p.y
                             origX = tile.layoutX
                             origY = tile.layoutY
-                            root.dragging = true
+                            layoutRoot.dragging = true
                             tile.z = 80
                             mouse.accepted = true
                         }
                         onPositionChanged: function(mouse) {
                             if (!pressed) return
                             var p = mapToItem(stage, mouse.x, mouse.y)
-                            var s = Math.max(0.001, root.dragScale)
+                            var s = Math.max(0.001, layoutRoot.dragScale)
                             tile.layoutX = origX + (p.x - grabX) / s
                             tile.layoutY = origY + (p.y - grabY) / s
                         }
                         onReleased: {
-                            root.dragging = false
-                            root.commit(tile.tileId)
-                            Qt.callLater(root.rebuild)
+                            layoutRoot.dragging = false
+                            layoutRoot.commit(tile.tileId)
+                            Qt.callLater(layoutRoot.rebuild)
                         }
                     }
                 }

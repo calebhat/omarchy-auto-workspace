@@ -1,0 +1,180 @@
+{
+  "version": 2,
+  "_test": {
+    "id": "dummy-matrix",
+    "liveWorkspaceOffset": 10,
+    "appIdPrefix": "workscape-dummy",
+    "notes": "Synthetic profile for the test matrix. Never write this file into ~/.local/state/omarchy/workscape/config.json. Live runs map workspace N → N+10 (11–19) and spawn foot windows with app-id workscape-dummy-*."
+  },
+  "settings": {
+    "enabled": true,
+    "applyOnBoot": false,
+    "activeProfileId": "dummy-matrix",
+    "silent": true,
+    "onlyOnBoot": false
+  },
+  "monitors": [
+    {
+      "id": "dummy-mon",
+      "label": "Dummy monitor",
+      "serial": "",
+      "description": "WorkScape dummy",
+      "name": "DUMMY-1"
+    }
+  ],
+  "extraApps": [],
+  "profiles": [
+    {
+      "id": "dummy-matrix",
+      "name": "Dummy matrix",
+      "matchMode": "exact",
+      "monitors": ["dummy-mon"],
+      "workspaceMonitors": {},
+      "disabledMonitors": [],
+      "monitorLayout": {},
+      "overflow": {
+        "enabled": true,
+        "workspaces": [9],
+        "maxWindows": 1
+      },
+      "workspacePrefs": {
+        "1": {
+          "layout": "stage",
+          "visibleCount": 2,
+          "lockSizes": false,
+          "extras": "around"
+        },
+        "2": {
+          "layout": "scrolling",
+          "visibleCount": 3,
+          "lockSizes": false,
+          "extras": "around"
+        },
+        "3": {
+          "layout": "scrolling",
+          "visibleCount": 4,
+          "lockSizes": false,
+          "extras": "around"
+        },
+        "4": {
+          "layout": "stage",
+          "visibleCount": 2,
+          "lockSizes": false,
+          "extras": "around"
+        },
+        "5": {
+          "layout": "set-width",
+          "visibleCount": 3,
+          "lockSizes": false,
+          "extras": "around"
+        },
+        "6": {
+          "layout": "set-width",
+          "visibleCount": 4,
+          "lockSizes": false,
+          "extras": "block"
+        },
+        "7": {
+          "layout": "master",
+          "visibleCount": 2,
+          "lockSizes": false,
+          "extras": "around"
+        },
+        "8": {
+          "layout": "dwindle",
+          "visibleCount": 2,
+          "lockSizes": true,
+          "extras": "around"
+        },
+        "9": {
+          "layout": "stage",
+          "visibleCount": 1,
+          "lockSizes": false,
+          "extras": "around"
+        }
+      },
+      "assignments": [
+        {
+          "workspace": 1,
+          "name": "dummy-stage",
+          "exec": "foot --app-id=workscape-dummy-stage -T dummy-stage",
+          "enabled": true,
+          "lockPlace": true,
+          "geom": {"x": 0, "y": 0, "w": 1, "h": 1}
+        },
+        {
+          "workspace": 2,
+          "name": "dummy-left",
+          "exec": "foot --app-id=workscape-dummy-left -T dummy-left",
+          "enabled": true,
+          "lockPlace": true,
+          "geom": {"x": 0, "y": 0, "w": 0.6456, "h": 1}
+        },
+        {
+          "workspace": 2,
+          "name": "dummy-right",
+          "exec": "foot --app-id=workscape-dummy-right -T dummy-right",
+          "enabled": true,
+          "lockPlace": true,
+          "geom": {"x": 0.6456, "y": 0, "w": 0.3544, "h": 1}
+        },
+        {
+          "workspace": 3,
+          "name": "dummy-scroll",
+          "exec": "foot --app-id=workscape-dummy-scroll -T dummy-scroll",
+          "enabled": true,
+          "lockPlace": true,
+          "geom": {"x": 0, "y": 0, "w": 1, "h": 1}
+        },
+        {
+          "workspace": 4,
+          "name": "dummy-mail",
+          "exec": "foot --app-id=workscape-dummy-mail -T dummy-mail",
+          "enabled": true,
+          "lockPlace": true,
+          "geom": {"x": 0, "y": 0, "w": 1, "h": 1}
+        },
+        {
+          "workspace": 5,
+          "name": "dummy-setwidth",
+          "exec": "foot --app-id=workscape-dummy-setwidth -T dummy-setwidth",
+          "enabled": true,
+          "lockPlace": false,
+          "geom": {"x": 0, "y": 0, "w": 0.3333, "h": 1}
+        },
+        {
+          "workspace": 6,
+          "name": "dummy-block",
+          "exec": "foot --app-id=workscape-dummy-block -T dummy-block",
+          "enabled": true,
+          "lockPlace": false,
+          "geom": {"x": 0, "y": 0, "w": 0.25, "h": 1}
+        },
+        {
+          "workspace": 7,
+          "name": "dummy-master",
+          "exec": "foot --app-id=workscape-dummy-master -T dummy-master",
+          "enabled": true,
+          "lockPlace": false,
+          "geom": {"x": 0, "y": 0, "w": 0.55, "h": 1}
+        },
+        {
+          "workspace": 8,
+          "name": "dummy-dwindle-a",
+          "exec": "foot --app-id=workscape-dummy-dwindle-a -T dummy-dwindle-a",
+          "enabled": true,
+          "lockPlace": true,
+          "geom": {"x": 0, "y": 0, "w": 0.5, "h": 1}
+        },
+        {
+          "workspace": 8,
+          "name": "dummy-dwindle-b",
+          "exec": "foot --app-id=workscape-dummy-dwindle-b -T dummy-dwindle-b",
+          "enabled": true,
+          "lockPlace": true,
+          "geom": {"x": 0.5, "y": 0, "w": 0.5, "h": 1}
+        }
+      ]
+    }
+  ]
+}

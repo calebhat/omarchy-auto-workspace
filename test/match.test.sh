@@ -9,8 +9,8 @@ cat >"$TMP/config.json" <<'JSON'
 {
   "monitors": [
     { "id": "laptop", "label": "Laptop", "serial": "", "description": "BOE NE135A1M-NY1", "name": "eDP-1" },
-    { "id": "desk-left", "label": "Desk left", "serial": "", "description": "HP Inc. HP E24 G5 CNK436071M", "name": "DVI-I-1" },
-    { "id": "desk-right", "label": "Desk right", "serial": "", "description": "HP Inc. HP E24 G5 CNK436070F", "name": "DVI-I-2" }
+    { "id": "desk-left", "label": "Desk left", "serial": "", "description": "HP Inc. HP E24 G5 SN-LEFT", "name": "DVI-I-1" },
+    { "id": "desk-right", "label": "Desk right", "serial": "", "description": "HP Inc. HP E24 G5 SN-RIGHT", "name": "DVI-I-2" }
   ],
   "profiles": [
     {
@@ -39,8 +39,8 @@ JSON
 cat >"$TMP/live-desk.json" <<'JSON'
 [
   { "name": "eDP-1", "description": "BOE NE135A1M-NY1", "serial": "", "disabled": false },
-  { "name": "DVI-I-1", "description": "HP Inc. HP E24 G5 CNK436070F", "serial": "", "disabled": false },
-  { "name": "DVI-I-2", "description": "HP Inc. HP E24 G5 CNK436071M", "serial": "", "disabled": false }
+  { "name": "DVI-I-1", "description": "HP Inc. HP E24 G5 SN-RIGHT", "serial": "", "disabled": false },
+  { "name": "DVI-I-2", "description": "HP Inc. HP E24 G5 SN-LEFT", "serial": "", "disabled": false }
 ]
 JSON
 
@@ -48,6 +48,27 @@ laptop_id=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-
 desk_id=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-desk.json" --print-id)
 [[ $laptop_id == "laptop" ]]
 [[ $desk_id == "desk-dock" ]]
+desk_bind=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-desk.json" --profile-id desk-dock --bindings)
+echo "$desk_bind" | jq -e '.["1"] and .["2"] and .["9"]' >/dev/null
+laptop_bind=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-laptop.json" --profile-id laptop --bindings)
+echo "$laptop_bind" | jq -e 'type=="object"' >/dev/null
+echo "dock bindings ok"
+
+set +e
+mismatch_json=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-laptop.json" --profile-id desk-dock --require-match)
+mismatch_rc=$?
+set -e
+[[ $mismatch_rc -eq 3 ]]
+echo "$mismatch_json" | jq -e '.matches==false and .reason=="missing"' >/dev/null
+echo "$mismatch_json" | jq -r '.detail' | grep -q "aren't connected"
+python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-laptop.json" --profile-id laptop --require-match >/dev/null
+set +e
+docked_laptop=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-desk.json" --profile-id laptop --require-match)
+docked_rc=$?
+set -e
+[[ $docked_rc -eq 3 ]]
+echo "$docked_laptop" | jq -e '.matches==false and .reason=="extra"' >/dev/null
+echo "mismatch apply refused ok"
 
 bindings=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-desk.json" --profile-id desk-dock --bindings)
 left=$(printf '%s' "$bindings" | jq -r '.["1"]')
@@ -60,8 +81,8 @@ lap=$(printf '%s' "$bindings" | jq -r '.["9"]')
 cat >"$TMP/live-desk-lid.json" <<'JSON'
 [
   { "name": "eDP-1", "description": "BOE NE135A1M-NY1", "serial": "", "disabled": true },
-  { "name": "DVI-I-1", "description": "HP Inc. HP E24 G5 CNK436070F", "serial": "", "disabled": false },
-  { "name": "DVI-I-2", "description": "HP Inc. HP E24 G5 CNK436071M", "serial": "", "disabled": false }
+  { "name": "DVI-I-1", "description": "HP Inc. HP E24 G5 SN-RIGHT", "serial": "", "disabled": false },
+  { "name": "DVI-I-2", "description": "HP Inc. HP E24 G5 SN-LEFT", "serial": "", "disabled": false }
 ]
 JSON
 lid_id=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-desk-lid.json" --print-id)
@@ -73,14 +94,14 @@ cat >"$TMP/net-config.json" <<'JSON'
     { "id": "laptop", "label": "Laptop", "serial": "", "description": "BOE NE135A1M-NY1", "name": "eDP-1" }
   ],
   "profiles": [
-    { "id": "home", "name": "Home", "matchMode": "exact", "monitors": ["laptop"], "network": { "ssids": ["Hataj"], "subnets": ["192.168.1.0/24"], "connections": [] }, "claimedAt": 1 },
+    { "id": "home", "name": "Home", "matchMode": "exact", "monitors": ["laptop"], "network": { "ssids": ["HomeNet"], "subnets": ["192.168.1.0/24"], "connections": [] }, "claimedAt": 1 },
     { "id": "office", "name": "Office", "matchMode": "exact", "monitors": ["laptop"], "network": { "ssids": ["Office"], "subnets": ["192.168.2.0/24"], "connections": [] }, "claimedAt": 2 },
     { "id": "any", "name": "Any", "matchMode": "exact", "monitors": ["laptop"], "network": { "ssids": [], "subnets": [], "connections": [] }, "claimedAt": 0 }
   ]
 }
 JSON
 cat >"$TMP/net-home.json" <<'JSON'
-{ "ssid": "Hataj", "subnet": "192.168.1.0/24", "connection": "Hataj" }
+{ "ssid": "HomeNet", "subnet": "192.168.1.0/24", "connection": "HomeNet" }
 JSON
 cat >"$TMP/net-cafe.json" <<'JSON'
 { "ssid": "Cafe", "subnet": "10.1.1.0/24", "connection": "" }
@@ -98,7 +119,7 @@ cat >"$TMP/net-only.json" <<'JSON'
     { "id": "laptop", "label": "Laptop", "serial": "", "description": "BOE NE135A1M-NY1", "name": "eDP-1" }
   ],
   "profiles": [
-    { "id": "home", "name": "Home", "matchMode": "exact", "monitors": ["laptop"], "network": { "ssids": ["Hataj"], "subnets": [], "connections": [] } }
+    { "id": "home", "name": "Home", "matchMode": "exact", "monitors": ["laptop"], "network": { "ssids": ["HomeNet"], "subnets": [], "connections": [] } }
   ]
 }
 JSON
@@ -276,9 +297,9 @@ profile = {
 }
 m.apply_ws_prefs({"monitors": []}, profile, [])
 lua = " ".join(str(c) for c in calls)
-assert "fullscreen_on_one_column = false" in lua, lua
-assert "follow_focus = false" in lua, lua
-print("multi locked split keeps fill off ok")
+assert "layout = \"lua:workscape\"" in lua, lua
+assert "layout = \"dwindle\"" not in lua, lua
+print("multi locked split uses workscape tape ok")
 PY
 
 python3 - "$MATCH" <<'PY'
@@ -300,6 +321,119 @@ assert "fullscreen_on_one_column = false" in lua, lua
 assert "column_width = 0.25" in lua, lua
 assert "scrolling_width = 0.25" in lua, lua
 print("set-width spawn rule ok")
+PY
+
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+placed = [
+    ({"name": "eDP-1"}, 893, 781),
+    ({"name": "DVI-I-1"}, 2333, 722),
+    ({"name": "DVI-I-2"}, 4253, 722),
+]
+got = m.origin_shift_layout(placed)
+assert got[0][1:] == (0, 59), got
+assert got[1][1:] == (1440, 0), got
+assert got[2][1:] == (3360, 0), got
+print("origin shift layout ok")
+PY
+
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+a = {"name": "eDP-1", "width": 2880, "height": 1920, "scale": 2}
+b = {"name": "DVI-I-1", "width": 1920, "height": 1080, "scale": 1}
+c = {"name": "DVI-I-2", "width": 1920, "height": 1080, "scale": 1}
+# Saved desk layout after origin-shift: laptop above, desks below — no overlap.
+ok = m.pack_monitor_positions([(a, 1089, 0), (b, 0, 960), (c, 1920, 960)])
+assert ok[0][1:] == (1089, 0) and ok[1][1:] == (0, 960) and ok[2][1:] == (1920, 960), ok
+# Two screens stacked on 0,0 must pack left-to-right.
+packed = m.pack_monitor_positions([(a, 0, 0), (b, 0, 0)])
+assert packed[0][1] == 0 and packed[1][1] == 1440, packed
+lua = []
+m._hypr_eval = lambda s, timeout=8: lua.append(s)
+m.place_monitors_batch([(a, 1089, 0), (b, 0, 960)])
+assert len(lua) == 1 and lua[0].count("hl.monitor") == 2, lua
+print("monitor pack and batch place ok")
+PY
+
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import json, sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+placed_calls = []
+saved = []
+m.place_monitors_batch = lambda placed: placed_calls.append(list(placed))
+m.save_config = lambda cfg, path: saved.append(path)
+m.time.sleep = lambda s: None
+live = [
+    {"name": "eDP-1", "description": "BOE NE135A1M-NY1", "x": 1089, "y": 0,
+     "width": 2880, "height": 1920, "scale": 2, "refreshRate": 120},
+    {"name": "DVI-I-2", "description": "HP Inc. HP E24 G5 SN-LEFT", "x": 0, "y": 960,
+     "width": 1920, "height": 1080, "scale": 1, "refreshRate": 60},
+    {"name": "DVI-I-1", "description": "HP Inc. HP E24 G5 SN-RIGHT", "x": 1920, "y": 960,
+     "width": 1920, "height": 1080, "scale": 1, "refreshRate": 60},
+]
+m.subprocess.check_output = lambda *a, **k: json.dumps(live)
+cfg = {
+    "monitors": [
+        {"id": "laptop", "description": "BOE NE135A1M-NY1", "name": "eDP-1"},
+        {"id": "desk-left", "description": "HP Inc. HP E24 G5 SN-LEFT"},
+        {"id": "desk-right", "description": "HP Inc. HP E24 G5 SN-RIGHT"},
+    ],
+    "profiles": [{
+        "id": "desk-dock",
+        "monitors": ["laptop", "desk-left", "desk-right"],
+        "monitorLayout": {
+            "laptop": {"x": 1089, "y": 0},
+            "desk-left": {"x": 0, "y": 960},
+            "desk-right": {"x": 1920, "y": 960},
+        },
+    }],
+}
+profile = cfg["profiles"][0]
+out = m.apply_outputs(cfg, profile, live, config_path="/tmp/workscape-skip.json")
+assert placed_calls == [], placed_calls
+assert saved == [], saved
+assert "pos:" not in str(out.get("changed")), out
+live[0] = dict(live[0], x=0, y=0)
+m.subprocess.check_output = lambda *a, **k: json.dumps(live)
+out = m.apply_outputs(cfg, profile, live, config_path="/tmp/workscape-skip.json")
+assert len(placed_calls) == 1, placed_calls
+assert any(item[0].get("name") == "eDP-1" and item[1:] == (1089, 0) for item in placed_calls[0]), placed_calls[0]
+print("skip already-placed monitors ok")
+PY
+
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import os, sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+calls = []
+m.safe_connector = lambda n: n or ""
+m.workspace_bindings = lambda cfg, profile, live: {"2": "DVI-I-2"}
+m.subprocess.run = lambda *a, **k: calls.append(a)
+profile = {
+    "workspacePrefs": {"2": {"layout": "scrolling", "visibleCount": 2, "lockSizes": True, "extras": "around"}},
+    "assignments": [
+        {"workspace": 2, "exec": "herdr", "lockPlace": True},
+        {"workspace": 2, "exec": "panel", "lockPlace": True},
+    ],
+}
+os.environ["WORKSCAPE_OCCUPIED_WS"] = "2"
+os.environ.pop("WORKSCAPE_MIGRATE_OCCUPIED", None)
+m.apply_ws_prefs({"monitors": []}, profile, [])
+lua = " ".join(str(c) for c in calls)
+assert "layout = \"lua:workscape\"" not in lua, lua
+os.environ["WORKSCAPE_MIGRATE_OCCUPIED"] = "1"
+calls.clear()
+m.apply_ws_prefs({"monitors": []}, profile, [])
+lua = " ".join(str(c) for c in calls)
+assert "layout = \"lua:workscape\"" in lua, lua
+os.environ.pop("WORKSCAPE_OCCUPIED_WS", None)
+os.environ.pop("WORKSCAPE_MIGRATE_OCCUPIED", None)
+print("occupied prefs migrate on profile change ok")
 PY
 
 echo "match.test.sh ok"

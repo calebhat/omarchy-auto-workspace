@@ -15,7 +15,7 @@ Formerly **WorkBook**. Existing data under `~/.local/state/omarchy/workbook/` is
 |---|---|---|---|
 | [![Workspaces](docs/screenshots/workspaces.png)](docs/screenshots/workspaces.png) | [![Displays](docs/screenshots/displays.png)](docs/screenshots/displays.png) | [![Gestures](docs/screenshots/gestures.png)](docs/screenshots/gestures.png) | [![Profiles](docs/screenshots/profiles.png)](docs/screenshots/profiles.png) |
 
-`preview.png` is the omarchyplugins.com card and detail image (16:9). Extra shots live in `docs/screenshots/` and in this README.
+`preview.png` is the omarchyplugins.com card image. Extra shots live in `docs/screenshots/` and in this README.
 
 ---
 
@@ -29,7 +29,7 @@ Use this on [omarchyplugins.com](https://omarchyplugins.com) / the marketplace i
 
 **Longer (about / README excerpt)**
 
-> WorkScape is an Omarchy + Hyprland suite for people who live on more than one monitor layout. Save a **laptop** profile and a **desk** profile: connected displays (EDID, not `DP-1`) pick the match, optional Wi‑Fi SSID / LAN subnet splits two identical laptop-only setups. Each profile presets apps onto workspaces, pins those workspaces to named monitors, and chooses tiling (dwindle, scrolling, master, stage), locked pane sizes, and whether extras stay or move to the next workspace. The **organizer** edits up to 20 panes with horizontal and vertical splits, drag-to-swap, tile vs float, and per-window opacity/borders. **Fill next open workspace** chains unused workspaces as Stage with a global max windows per workspace. Trackpad workspace swipes can follow the profile or stay global. Apply from the bar, a middle-click, or optionally at login. Occupied workspaces are left alone unless you **Fresh set**.
+> WorkScape is an Omarchy + Hyprland suite for people who live on more than one monitor layout. Save a **laptop** profile and a **desk** profile: connected displays (EDID, not `DP-1`) pick the match, optional Wi‑Fi SSID / LAN subnet splits two identical laptop-only setups. Each profile presets apps onto workspaces, pins those workspaces to named monitors, and chooses tiling (dwindle, scrolling, master, stage, two-lock tape), locked pane sizes, and whether extras stay or move to the next workspace. The **organizer** edits up to 20 panes with horizontal and vertical splits, drag-to-swap, tile vs float, and per-window opacity/borders. **Fill next open workspace** chains unused workspaces as Stage with a global max windows per workspace. Trackpad workspace swipes can follow the profile or stay global. Apply from the bar, a middle-click, or optionally at login. Occupied workspaces are left alone unless you **Fresh Workscape**. A profile that does not match the connected displays cannot be applied.
 
 **Suggested listing metadata**
 
@@ -79,7 +79,7 @@ rm -rf ~/.local/state/omarchy/workscape ~/.local/state/omarchy/workbook
 rm -f ~/.config/hypr/workscape-gestures.lua ~/.config/hypr/workbook-gestures.lua
 ```
 
-If you added `pcall(require, "hypr.workscape-gestures")` to `hyprland.lua`, delete that line too.
+If you added `pcall(require, "hypr.workscape-gestures")` or `pcall(require, "hypr.workscape-layout")` to `hyprland.lua`, delete those lines too. Apply copies `workscape-layout.lua` into `~/.config/hypr/` when it changes; remove that file on uninstall.
 
 ---
 
@@ -112,11 +112,11 @@ SSID names can be spoofed. Treat network matching as home vs office convenience,
 
 **Apply matching profile at login** is **off** by default. When on, login waits for Hyprland; if this layout has no any-network fallback it also waits up to 45s for Wi‑Fi/LAN, then applies the unique match.
 
-**Apply matching** (or middle-click the bar chip) does the same match any time. **Apply** on a profile card runs that profile as saved, even if it is not the match. Workspaces that already have windows are left alone entirely (no launches, no scrolling/master/stage rules, no geometry). Empty assigned workspaces still get their apps and layouts. **Fresh set** closes windows on this profile’s preset workspaces, then applies from scratch; workspaces that are not part of the profile (for example a terminal on WS 8) stay put.
+**Apply matching** (or middle-click the bar chip) does the same match any time. Plugging in a dock (or unplugging) switches the selected profile to the matching layout so **Fresh Workscape** targets that profile. **Apply** on a profile card runs that profile as saved **only if it matches the connected displays** (and bound network). A desk-dock profile will not apply on a laptop-only setup. Empty assigned workspaces still get their apps and layouts. Occupied assigned workspaces are not relaunched. If the matching profile **changed** (undock → laptop, dock → desk), Apply matching still moves those workspaces onto the new pins and restamps their layouts; it does not close windows. Same-profile Apply matching leaves occupied geometry alone. **Fresh Workscape** closes windows on this profile’s preset workspaces, then applies from scratch and closes the panel; workspaces that are not part of the profile (for example a terminal on WS 8) stay put. **Escape** closes the panel (and any open overlay first).
 
 ### 2. Displays — monitors for this profile
 
-- Canvas of the profile’s monitors; drag to arrange; **Apply this profile** writes Hyprland output layout. **Fresh set** closes windows on this profile’s preset workspaces, then applies empty so apps and layouts load from scratch.
+- Canvas of the profile’s monitors; drag to arrange; **Apply this profile** writes Hyprland output layout when the profile matches live displays. **Fresh Workscape** closes windows on this profile’s preset workspaces, then applies empty so apps and layouts load from scratch.
 - Turn a display **off** for this profile (keep at least one on).
 - Match mode: **exact layout** vs **all required present**.
 - Capture live arrangement after you rearrange in the compositor.
@@ -141,10 +141,15 @@ Pick workspace **1–10** for app presets (overflow chain can use **1–20**).
 | Scrolling | Columns; **Visible columns** is how many extra columns fit before you scroll |
 | Master | Large pane + stack |
 | Stage | First window full width; extras are smaller columns to the right |
+| Two-lock tape | Automatic when two panes are locked and extras stay: compositor layout `lua:workscape` |
 
 **Visible columns** (1–20) is **per workspace**. It is *not* the global overflow max.
 
-**Lock every app / lock a pane** pins sizes so later windows tile around them. **Send extra windows to the next workspace** (on a workspace that has locks or extras=block) moves overflow off this workspace instead of stacking more columns.
+**Lock every app / lock a pane** pins sizes so later windows tile around them. Two locked panes with extras staying here use a compositor **tape** (`lua:workscape`): locked fractions hold, extras sit to the right, Super+Left/Right pans the camera. **Keep extra windows on this workspace** (on) leaves extras as more columns. Off: extras still open, then move to the next workspace.
+
+**Super+W** closes the focused column and focuses the **next** one in left-to-right order, including a strip you resized very small.
+
+**SUPER+J** (Omarchy toggle split) is dwindle-only. On scrolling or tape workspaces it does nothing, so Hyprland does not show a Lua error overlay.
 
 **Fill next open workspace** is the **global** chain for this profile:
 
@@ -177,6 +182,9 @@ Edits save and apply on change (no Apply button).
 - Profile gestures are a separate store; editing one does not overwrite the other.
 - **Swipe method** (Natural vs Swap left/right) is one row.
 - **Keep swipes after Hyprland reload** is **off** by default. On: writes `~/.config/hypr/workscape-gestures.lua` (explicit consent). Off: session + login apply only.
+- **SUPER+, / .** previous and next workspace (follows Skip empty).
+- On a two-lock tape, **SUPER+ALT+, / .** pans extra columns without changing workspace.
+- **SUPER+J** toggles dwindle split only; ignored on scrolling/tape so the compositor does not show a Lua error.
 
 ### 5. Typical day
 
@@ -205,11 +213,34 @@ workscape.sh --fresh-apply-profile laptop   # close that profile’s preset work
 workscape.sh --capture-workspace 2          # snapshot live windows on WS 2 as JSON
 omarchy-shell -q io.github.calebhat.workscape applyMatching
 omarchy-shell -q io.github.calebhat.workscape applyProfile laptop
+omarchy-shell -q io.github.calebhat.workscape applyFresh desk-dock
 omarchy-shell -q io.github.calebhat.workscape status
 omarchy-shell -q io.github.calebhat.workscape.panel toggle   # open/close the popout
 ```
 
 ---
+
+## Hyprland files
+
+Apply copies `hypr/workscape-layout.lua` to `~/.config/hypr/workscape-layout.lua` so two-lock workspaces can use the tape layout. It does **not** edit `hyprland.lua`. For the layout to exist at compositor start (before the first Apply), add:
+
+```lua
+pcall(require, "hypr.workscape-gestures")
+pcall(require, "hypr.workscape-layout")
+```
+
+Gesture persist to disk is a separate opt-in in the Gestures tab.
+
+## Marketplace readiness
+
+- `omarchy plugin validate .` must pass (no symlinks in the plugin folder).
+- Listing uses this README’s **Marketplace blurb**, category **Desktop**, tags **Hyprland, Workspaces, Bar**.
+- `preview.png` is 16:9 for the store card. Extra shots: `docs/screenshots/`.
+- Do not file the omarchyplugins.com issue until the GitHub `master` commit has been day-to-day tested. The site clones HEAD.
+
+## Security notes
+
+Plugins run unsandboxed. WorkScape only interpolates allowlisted values into `hyprctl eval` (workspace 1–20, `0x` addresses, connector names). User-authored launch commands in the profile are executed as that user. Config is `0600` under `~/.local/state`. Gesture persist and `hyprland.lua` edits are opt-in. Network matching is convenience, not a trust boundary (SSIDs can be spoofed). Apply/Fresh of a profile that does not match live displays is refused.
 
 ## License
 

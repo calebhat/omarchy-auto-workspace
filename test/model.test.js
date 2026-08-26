@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -27,8 +27,8 @@ const gsrcKeep = m.sanitizeConfig({ version: 2, settings: { gestureSource: "prof
 if (gsrcKeep.settings.gestureSource !== "profile") throw new Error("sanitize keeps explicit profile gestures")
 
 const laptop = { id: "laptop", label: "Laptop", serial: "", description: "BOE NE135A1M-NY1", name: "eDP-1" }
-const left = { id: "desk-left", label: "Desk left", serial: "", description: "HP Inc. HP E24 G5 CNK436071M", name: "DVI-I-1" }
-const right = { id: "desk-right", label: "Desk right", serial: "", description: "HP Inc. HP E24 G5 CNK436070F", name: "DVI-I-2" }
+const left = { id: "desk-left", label: "Desk left", serial: "", description: "HP Inc. HP E24 G5 SN-LEFT", name: "DVI-I-1" }
+const right = { id: "desk-right", label: "Desk right", serial: "", description: "HP Inc. HP E24 G5 SN-RIGHT", name: "DVI-I-2" }
 const cfg = m.sanitizeConfig({
   version: 2,
   settings: { applyOnBoot: false, activeProfileId: "desk-dock" },
@@ -42,16 +42,27 @@ const cfg = m.sanitizeConfig({
 const liveLaptop = [{ name: "eDP-1", description: "BOE NE135A1M-NY1", serial: "", disabled: false }]
 const liveDesk = [
   { name: "eDP-1", description: "BOE NE135A1M-NY1", serial: "", disabled: false },
-  { name: "DVI-I-2", description: "HP Inc. HP E24 G5 CNK436071M", serial: "", disabled: false },
-  { name: "DVI-I-1", description: "HP Inc. HP E24 G5 CNK436070F", serial: "", disabled: false }
+  { name: "DVI-I-2", description: "HP Inc. HP E24 G5 SN-LEFT", serial: "", disabled: false },
+  { name: "DVI-I-1", description: "HP Inc. HP E24 G5 SN-RIGHT", serial: "", disabled: false }
 ]
 
 if (m.bestProfile(cfg, liveLaptop).id !== "laptop") throw new Error("laptop layout should pick laptop profile")
 if (m.bestProfile(cfg, liveDesk).id !== "desk-dock") throw new Error("dock layout should pick desk-dock")
+if (m.nextFollowedMatch("desk-dock", "") !== "desk-dock") throw new Error("dock should follow first match")
+if (m.nextFollowedMatch("desk-dock", "desk-dock") !== "") throw new Error("same match must not refollow")
+if (m.nextFollowedMatch("laptop", "desk-dock") !== "laptop") throw new Error("undock should follow laptop")
+if (m.nextFollowedMatch("", "desk-dock") !== "") throw new Error("empty match must not follow")
 if (m.profileMatch(cfg, cfg.profiles[1], liveDesk).matches) throw new Error("laptop profile must not match while docked")
-if (!m.sameMonitor(left, { description: "HP Inc. HP E24 G5 CNK436071M", name: "HDMI-A-1", serial: "" }))
+const dockOnLaptop = m.applyHint(cfg, cfg.profiles[0], liveLaptop, {})
+if (dockOnLaptop.canApply) throw new Error("desk-dock must not apply on laptop-only")
+if ((dockOnLaptop.refuseText || "").indexOf("aren't connected") < 0) throw new Error("desk-dock refuse text: " + dockOnLaptop.refuseText)
+const lapOnLaptop = m.applyHint(cfg, cfg.profiles[1], liveLaptop, {})
+if (!lapOnLaptop.canApply) throw new Error("laptop must apply on laptop-only")
+const lapOnDesk = m.applyHint(cfg, cfg.profiles[1], liveDesk, {})
+if (lapOnDesk.canApply) throw new Error("laptop must not apply while docked")
+if (!m.sameMonitor(left, { description: "HP Inc. HP E24 G5 SN-LEFT", name: "HDMI-A-1", serial: "" }))
   throw new Error("match by description across connector rename")
-if (m.sameMonitor(left, { description: "HP Inc. HP E24 G5 CNK436070F", name: "DVI-I-1", serial: "" }))
+if (m.sameMonitor(left, { description: "HP Inc. HP E24 G5 SN-RIGHT", name: "DVI-I-1", serial: "" }))
   throw new Error("do not match the other HP by connector name")
 if (m.displayNameForExec("omarchy-launch-or-focus-tui --app-id=org.omarchy.herdr herdr --session shophawk") !== "ShopHawk Herdr")
   throw new Error("herdr display name")
@@ -197,7 +208,7 @@ if (m.layoutDescription("master").indexOf("stack") < 0) throw new Error("master 
 if (m.layoutDescription("stage").indexOf("full width") < 0) throw new Error("stage layout copy")
 if (m.normalizeWorkspacePref({ layout: "stage" }).layout !== "stage") throw new Error("persist stage")
 if (m.normalizeWorkspacePref({ layout: "set-width" }).layout !== "set-width") throw new Error("persist set-width")
-if (m.layoutDescription("set-width").indexOf("Scroll extras") < 0) throw new Error("set-width layout copy")
+if (m.layoutDescription("set-width").indexOf("1/Visible") < 0) throw new Error("set-width layout copy")
 const setWidthRects = m.autoLayoutRects(1, "set-width", 0.25)
 if (setWidthRects.length !== 1 || Math.abs(setWidthRects[0].w - 0.25) > 0.02) throw new Error("set-width first is not full")
 if (m.visibleCountHelp(4, false, "set-width").indexOf("1/4") < 0) throw new Error("set-width visible help")
@@ -232,21 +243,21 @@ const wrap = 'sh -c if echo "%u" | grep -q "^mailto:"; then exec omarchy-launch-
 if (!m.sameAppExec(wrap, "omarchy-launch-webapp 'https://outlook.office.com/mail/'")) throw new Error("outlook exec match")
 if (m.canonicalExec(wrap).indexOf("outlook.office.com/mail") < 0) throw new Error("canonical outlook exec")
 if (m.sameAppExec(wrap, "omarchy-launch-webapp 'https://calendar.google.com/'")) throw new Error("webapps must not share launcher name")
-if (m.sameAppExec(wrap, "/home/caleb/.local/bin/brave")) throw new Error("outlook is not brave")
-if (!m.sameAppExec("/home/caleb/.local/bin/brave", "/home/caleb/.local/bin/brave")) throw new Error("brave match")
+if (m.sameAppExec(wrap, "/home/user/.local/bin/brave")) throw new Error("outlook is not brave")
+if (!m.sameAppExec("/home/user/.local/bin/brave", "/home/user/.local/bin/brave")) throw new Error("brave match")
 const teamsPwa = "/opt/brave-bin/brave --profile-directory=Default --app-id=ompifgpmddkgmclendfeacglnodjjndh %U"
-if (m.sameAppExec("/home/caleb/.local/bin/brave", teamsPwa)) throw new Error("brave must not match Teams PWA")
-if (m.sameAppExec(teamsPwa, "/home/caleb/.local/bin/brave %U")) throw new Error("Teams PWA must not match brave")
+if (m.sameAppExec("/home/user/.local/bin/brave", teamsPwa)) throw new Error("brave must not match Teams PWA")
+if (m.sameAppExec(teamsPwa, "/home/user/.local/bin/brave %U")) throw new Error("Teams PWA must not match brave")
 if (!m.sameAppExec(teamsPwa, "/opt/brave-bin/brave --app-id=ompifgpmddkgmclendfeacglnodjjndh")) throw new Error("same PWA app-id")
 if (m.sameAppExec(teamsPwa, "/opt/brave-bin/brave --app-id=otherid")) throw new Error("different PWA app-id")
 
 if (m.suggestedProfileName([{ name: "eDP-1" }]) !== "Laptop") throw new Error("suggest laptop name")
-if (!m.networkConfigured(m.captureNetwork({ ssid: "Hataj", subnet: "192.168.1.0/24" }))) throw new Error("capture wifi")
-const netHome = { ssids: ["Hataj"], subnets: ["192.168.1.0/24"], connections: ["Hataj"] }
+if (!m.networkConfigured(m.captureNetwork({ ssid: "HomeNet", subnet: "192.168.1.0/24" }))) throw new Error("capture wifi")
+const netHome = { ssids: ["HomeNet"], subnets: ["192.168.1.0/24"], connections: ["HomeNet"] }
 const netOffice = { ssids: ["Office"], subnets: ["192.168.2.0/24"], connections: [] }
-if (!m.networkMatches(netHome, { ssid: "Hataj", subnet: "192.168.1.0/24" }).matches) throw new Error("ssid match")
+if (!m.networkMatches(netHome, { ssid: "HomeNet", subnet: "192.168.1.0/24" }).matches) throw new Error("ssid match")
 if (m.networkMatches(netHome, { ssid: "Office", subnet: "192.168.2.0/24" }).matches) throw new Error("ssid mismatch")
-if (!m.networksOverlap(netHome, { ssids: ["hataj"], subnets: [], connections: [] })) throw new Error("ssid overlap case")
+if (!m.networksOverlap(netHome, { ssids: ["homenet"], subnets: [], connections: [] })) throw new Error("ssid overlap case")
 if (m.networksOverlap(netHome, netOffice)) throw new Error("home/office must not overlap")
 if (!m.networksOverlap(m.emptyNetwork(), m.emptyNetwork())) throw new Error("two fallbacks overlap")
 if (m.networksOverlap(netHome, m.emptyNetwork())) throw new Error("bound vs fallback do not overlap")
@@ -261,7 +272,7 @@ const netCfg = m.sanitizeConfig({
     { id: "any", name: "Any", monitors: ["laptop"], network: {}, claimedAt: 0 }
   ]
 })
-if (m.bestProfile(netCfg, liveLaptop, { ssid: "Hataj", subnet: "192.168.1.0/24" }).id !== "home") throw new Error("home wifi wins")
+if (m.bestProfile(netCfg, liveLaptop, { ssid: "HomeNet", subnet: "192.168.1.0/24" }).id !== "home") throw new Error("home wifi wins")
 if (m.bestProfile(netCfg, liveLaptop, { ssid: "Office", subnet: "192.168.2.0/24" }).id !== "office") throw new Error("office wifi wins")
 if (m.bestProfile(netCfg, liveLaptop, { ssid: "Cafe", subnet: "10.0.0.0/24" }).id !== "any") throw new Error("unbound fallback on unknown net")
 const office = netCfg.profiles.find(function(p) { return p.id === "office" })
@@ -273,7 +284,7 @@ if (cafeHint.willId !== "any") throw new Error("will apply Any")
 if (cafeHint.text.indexOf("currently applied") >= 0) throw new Error("unmatched profile must not look applied")
 const anyHint = m.applyHint(netCfg, netCfg.profiles.find(function(p) { return p.id === "any" }), liveLaptop, { ssid: "Cafe", subnet: "10.0.0.0/24" })
 if (!anyHint.matches || anyHint.text.indexOf("fallback") < 0) throw new Error("unbound profile is the fallback")
-const homeHint = m.applyHint(netCfg, netCfg.profiles.find(function(p) { return p.id === "home" }), liveLaptop, { ssid: "Hataj", subnet: "192.168.1.0/24" })
+const homeHint = m.applyHint(netCfg, netCfg.profiles.find(function(p) { return p.id === "home" }), liveLaptop, { ssid: "HomeNet", subnet: "192.168.1.0/24" })
 if (!homeHint.matches || homeHint.text.indexOf("this applies") < 0) throw new Error("home wifi this applies")
 const noFallbackCfg = m.sanitizeConfig({
   version: 2,
@@ -287,21 +298,21 @@ const status = {
   needsNetworkWait: true,
   profiles: [{ id: "laptop", name: "Laptop", matches: false, reason: "network", networkConstrained: true, networkMatches: false }]
 }
-const workHint = m.applyHint(noFallbackCfg, noFallbackCfg.profiles[0], liveLaptop, { ssid: "EdgertonGearNetwork", subnet: "192.168.2.0/24" }, status)
+const workHint = m.applyHint(noFallbackCfg, noFallbackCfg.profiles[0], liveLaptop, { ssid: "CafeWifi", subnet: "192.168.2.0/24" }, status)
 if (workHint.matches) throw new Error("laptop must not match work wifi")
 if (workHint.text.indexOf("wrong network") < 0) throw new Error("work wifi is wrong network")
 if (workHint.text.indexOf("no matching profile") < 0) throw new Error("no fallback means nothing applies")
 if (workHint.text.indexOf("matches now") >= 0) throw new Error("must not say matches now")
 const owner = m.environmentOwner(netCfg, "laptop", netHome, "home")
-if (owner) throw new Error("home should uniquely own Hataj")
+if (owner) throw new Error("home should uniquely own HomeNet")
 const claimed = m.claimEnvironment(netCfg, "office", netHome)
-if (!claimed.stolen.some(function(s) { return s.id === "home" })) throw new Error("steal Hataj from home")
+if (!claimed.stolen.some(function(s) { return s.id === "home" })) throw new Error("steal HomeNet from home")
 const homeAfter = claimed.config.profiles.find(function(p) { return p.id === "home" })
-if (m.networkConfigured(homeAfter.network) && homeAfter.network.ssids.indexOf("Hataj") >= 0) throw new Error("stolen ssid remains")
-const parsed = m.parseNetworkText("Hataj, Guest", "192.168.2.0/24", "")
+if (m.networkConfigured(homeAfter.network) && homeAfter.network.ssids.indexOf("HomeNet") >= 0) throw new Error("stolen ssid remains")
+const parsed = m.parseNetworkText("HomeNet, Guest", "192.168.2.0/24", "")
 if (parsed.ssids[1] !== "Guest" || parsed.subnets[0] !== "192.168.2.0/24") throw new Error("parse network text")
-const boundLine = m.boundNetworkLine({ network: netHome }, { ssid: "Hataj", subnet: "192.168.1.0/24" })
-if (boundLine.indexOf("Hataj") < 0 || boundLine.indexOf("connected now") < 0) throw new Error("bound line live")
+const boundLine = m.boundNetworkLine({ network: netHome }, { ssid: "HomeNet", subnet: "192.168.1.0/24" })
+if (boundLine.indexOf("HomeNet") < 0 || boundLine.indexOf("connected now") < 0) throw new Error("bound line live")
 if (m.matchReasonLabel("network") !== "wrong network") throw new Error("reason label")
 if (m.maxWorkspace() !== 20) throw new Error("max ws 20")
 const ovProf = { assignments: [{ workspace: 1 }, { workspace: 2 }], overflow: { enabled: true, workspaces: [5, 5, 0, 21, 6] } }
@@ -327,7 +338,7 @@ const mixedPack = m.packedGeomsForApps([
 if (Math.abs(mixedPack[0].w - 1) > 0.02) throw new Error("lone tiled pane fills under a float")
 if (Math.abs(mixedPack[1].w - 0.3) > 0.02) throw new Error("keep float geom")
 if (m.safeCwd("/tmp/foo; rm") !== "") throw new Error("cwd inject")
-if (m.safeCwd("/home/caleb/.dotfiles") !== "/home/caleb/.dotfiles") throw new Error("cwd ok")
+if (m.safeCwd("/home/user/project") !== "/home/user/project") throw new Error("cwd ok")
 if (m.safeUrl("https://x.com' ; rm") !== "") throw new Error("url inject")
 if (m.safeUrl("https://outlook.office.com/mail") !== "https://outlook.office.com/mail") throw new Error("url ok")
 if (m.normalizeAssignment({ workspace: 1, exec: "foot", cwd: "/tmp/x;y" }).cwd) throw new Error("cwd stripped")
@@ -494,5 +505,11 @@ if (m.maxOrganizerPanes() !== 20) throw new Error("cap 20")
 const twenty = m.autoLayoutRects(20, "dwindle", 0.49)
 if (twenty.length !== 20) throw new Error("20 panes")
 noOverlap(twenty)
+
+const named = m.upsertLiveMonitor({
+  monitors: [{ id: "desk-left", label: "Desk left (HP E24)", serial: "", description: "HP Inc. HP E24 G5 SN-LEFT", name: "" }]
+}, { name: "DVI-I-1", description: "HP Inc. HP E24 G5 SN-LEFT", serial: "", make: "HP Inc.", model: "HP E24 G5" })
+const filled = named.config.monitors.find(function(x) { return x.id === "desk-left" })
+if (!filled || filled.name !== "DVI-I-1") throw new Error("upsert fills empty connector name")
 
 console.log("model.test.js ok")

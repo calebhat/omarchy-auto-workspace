@@ -3,3 +3,6 @@
 .DS_Store
 __pycache__/
 *.pyc
+test/records/
+test/HANDOFF.md
+test/ISSUES.md

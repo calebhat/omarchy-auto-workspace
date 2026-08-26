@@ -15,8 +15,15 @@ PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MATCH="$PLUGIN_DIR/scripts/match"
 GEOM="$PLUGIN_DIR/scripts/geom"
 GESTURES="$PLUGIN_DIR/scripts/gestures"
+WORKSCAPE_APPLY_ARGV=("$@")
 
 mkdir -p -m 700 "$STATE_DIR"
+
+# Detached apply child: keep a log the parent can tail after the panel Process
+# dies (bar recreate on hl.monitor).
+if [[ ${WORKSCAPE_APPLY_DETACHED:-} == "1" ]]; then
+  exec >>"$STATE_DIR/apply.log" 2>&1
+fi
 
 migrate_config() {
   if [[ -f $CONFIG_FILE ]]; then
@@ -92,17 +99,116 @@ cmd_ensure_config() {
 }
 
 live_monitors_json() {
-  hyprctl -j monitors all 2>/dev/null || hyprctl -j monitors 2>/dev/null || echo "[]"
+  timeout 3 hyprctl -j monitors all </dev/null 2>/dev/null \
+    || timeout 3 hyprctl -j monitors </dev/null 2>/dev/null \
+    || echo "[]"
+}
+
+hypr_clients_json() {
+  timeout 2 hyprctl clients -j </dev/null 2>/dev/null || echo "[]"
+}
+
+acquire_apply_lock() {
+  mkdir -p -m 700 "$STATE_DIR"
+  if [[ ${WORKSCAPE_APPLY_LOCKED:-} == "1" ]]; then
+    return 0
+  fi
+  exec 9>"$STATE_DIR/apply.lock"
+  if ! flock -n 9; then
+    echo "apply already in progress"
+    notify "WorkScape" "Apply already in progress"
+    return 1
+  fi
+  WORKSCAPE_APPLY_LOCKED=1
+  echo $$ > "$STATE_DIR/apply.pid"
+  trap 'rm -f "$STATE_DIR/apply.pid"' EXIT
+  return 0
+}
+
+# Panel/Service Process dies when hl.monitor() recreates bars. Fork into a new
+# session before close/launch so Fresh can finish; parent tails the log so the
+# UI stays on "Applying…" until the lock drops.
+reexec_apply_detached() {
+  if [[ ${WORKSCAPE_APPLY_DETACHED:-} == "1" ]]; then
+    return 0
+  fi
+  mkdir -p -m 700 "$STATE_DIR"
+  local log="$STATE_DIR/apply.log"
+  : > "$log"
+  export WORKSCAPE_APPLY_DETACHED=1
+  if command -v setsid >/dev/null 2>&1; then
+    setsid -f /bin/bash "$PLUGIN_DIR/workscape.sh" "${WORKSCAPE_APPLY_ARGV[@]}"
+  else
+    nohup /bin/bash "$PLUGIN_DIR/workscape.sh" "${WORKSCAPE_APPLY_ARGV[@]}" </dev/null >/dev/null 2>&1 &
+    disown
+  fi
+  echo "apply started"
+  trap '' TERM HUP
+  tail -n +1 -f "$log" &
+  local tail_pid=$!
+  local n=0 pid=""
+  while (( n < 40 )); do
+    if [[ -f $STATE_DIR/apply.pid ]]; then
+      pid=$(cat "$STATE_DIR/apply.pid" 2>/dev/null || true)
+      break
+    fi
+    sleep 0.05
+    n=$((n + 1))
+  done
+  while [[ -f $STATE_DIR/apply.pid ]]; do
+    pid=$(cat "$STATE_DIR/apply.pid" 2>/dev/null || true)
+    if [[ -z $pid ]] || ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.2
+  done
+  sleep 0.05
+  kill "$tail_pid" 2>/dev/null || true
+  wait "$tail_pid" 2>/dev/null || true
+  exit 0
 }
 
 apply_profile_outputs() {
   local profile_id=$1
-  live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --apply-outputs
+  if ! live_monitors_json | timeout --kill-after=2 12 python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --apply-outputs; then
+    echo "monitor layout timed out or failed — continuing with launch"
+  fi
 }
 
 cmd_live_status() {
   ensure_config
   live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --status
+}
+
+cmd_sync_active_profile() {
+  ensure_config || exit 1
+  local id cur
+  id=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --print-id 2>/dev/null || true)
+  id=${id//$'\n'/}
+  if [[ ! $id =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo '{"synced":false}'
+    return 0
+  fi
+  if ! jq -e --arg id "$id" '.profiles[] | select(.id==$id)' "$CONFIG_FILE" >/dev/null 2>&1; then
+    echo '{"synced":false}'
+    return 0
+  fi
+  cur=$(jq -r '.settings.activeProfileId // empty' "$CONFIG_FILE")
+  if [[ $id == "$cur" ]]; then
+    printf '{"synced":false,"id":"%s"}\n' "$id"
+    return 0
+  fi
+  local tmp
+  tmp=$(mktemp)
+  if jq --arg id "$id" '.settings.activeProfileId = $id' "$CONFIG_FILE" >"$tmp" && jq empty "$tmp" >/dev/null 2>&1; then
+    mv -f "$tmp" "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+    printf '{"synced":true,"id":"%s","from":"%s"}\n' "$id" "$cur"
+  else
+    rm -f "$tmp"
+    echo '{"synced":false,"error":"write"}'
+    return 1
+  fi
 }
 
 cmd_match_id() {
@@ -115,6 +221,22 @@ notify() {
   if command -v notify-send >/dev/null 2>&1; then
     notify-send -a "WorkScape" -- "$title" "$body" >/dev/null 2>&1 || true
   fi
+}
+
+profile_must_match() {
+  # Refuse desk-dock (etc.) on laptop-only hardware. Silent spawn then lands
+  # windows on the focused workspace instead of the missing monitors.
+  local id=$1
+  local out rc=0
+  out=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$id" --require-match 2>/dev/null) || rc=$?
+  if (( rc == 0 )); then
+    return 0
+  fi
+  local msg
+  msg=$(printf '%s' "$out" | jq -r '.detail // .reason // "does not match connected displays"' 2>/dev/null || echo "does not match connected displays")
+  echo "refusing profile $id — $msg" >&2
+  notify "WorkScape" "$msg"
+  return 1
 }
 
 move_workspace_to_monitor() {
@@ -196,12 +318,7 @@ for ws, name in b.items():
     if ws and name:
         print(f"{ws}\t{name}")
 ' "$bindings_json" | while IFS=$'\t' read -r ws name; do
-    if [[ " ${WORKSCAPE_OCCUPIED_WS:-} " == *" $ws "* ]]; then
-      echo "leave workspace $ws — already has windows"
-      continue
-    fi
     bind_workspace_to_monitor "$ws" "$name"
-    echo "bound workspace $ws → $name"
   done
 }
 
@@ -364,6 +481,7 @@ cmd_launch() {
   local cwd="${5:-}"
   local url="${6:-}"
   local app_name="${7:-}"
+  local target_mon="${8:-}"
   if [[ -z $workspace || -z $exec_cmd ]]; then
     echo "usage: $0 --launch <workspace> <exec> [silent] [geom-json]" >&2
     exit 1
@@ -456,15 +574,45 @@ cmd_launch() {
   esac
 
   local before prev_ws
-  before=$(hyprctl clients -j </dev/null 2>/dev/null | jq -r '.[].address' 2>/dev/null | sort -u | tr '\n' ' ')
+  before=$(hypr_clients_json | jq -r '.[].address' 2>/dev/null | sort -u | tr '\n' ' ')
   prev_ws=$(hyprctl -j activeworkspace </dev/null 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)
-  hyprctl eval "$(printf 'hl.dispatch(hl.dsp.focus({ workspace = "%s" }))' "$workspace")" </dev/null >/dev/null 2>&1 || true
+  # Pin the workspace to its monitor without focusing it. Empty workspaces
+  # follow the focused monitor (I-012); a workspace_rule + move is enough.
+  if [[ -n $target_mon && $target_mon =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ && $target_mon != *HEADLESS* ]]; then
+    timeout 2 hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s" })' "$workspace" "$target_mon")" </dev/null >/dev/null 2>&1 || true
+    timeout 2 hyprctl eval "$(printf 'hl.dispatch(hl.dsp.workspace.move({ workspace = "%s", monitor = "%s" }))' "$workspace" "$target_mon")" </dev/null >/dev/null 2>&1 || true
+  fi
 
-  if ! hyprctl eval "hl.exec_cmd(\"$lua_escaped\")" </dev/null >/dev/null 2>&1 \
-    && ! hyprctl eval "hl.dsp.exec_cmd(\"$lua_escaped\")" </dev/null >/dev/null 2>&1 \
-    && ! hyprctl dispatch exec "$dispatch_cmd" </dev/null >/dev/null 2>&1; then
+  local launched=0
+  local silent_on=0
+  [[ $silent == "true" || $silent == "1" ]] && silent_on=1
+  # After a dock layout change, hl.exec_cmd can block on DRM/page-flip.
+  # Cap each attempt so Fresh Workscape still launches the rest of the profile.
+  if ((silent_on)); then
+    local rules
+    printf -v rules '{ workspace = "%s silent", no_initial_focus = true, tile = true }' "$workspace"
+    if timeout 3 hyprctl eval "hl.dispatch(hl.dsp.exec_cmd(\"$lua_escaped\", $rules))" </dev/null >/dev/null 2>&1; then
+      launched=1
+    fi
+  fi
+  if ((launched == 0)); then
+    if timeout 3 hyprctl eval "hl.dispatch(hl.dsp.exec_cmd(\"$lua_escaped\"))" </dev/null >/dev/null 2>&1 \
+      || timeout 3 hyprctl eval "hl.exec_cmd(\"$lua_escaped\")" </dev/null >/dev/null 2>&1 \
+      || timeout 3 hyprctl dispatch exec "$dispatch_cmd" </dev/null >/dev/null 2>&1; then
+      launched=1
+    fi
+  fi
+  if ((launched == 0)); then
     echo "failed to execute launch command on workspace $workspace: $final_cmd" >&2
     return 1
+  fi
+  # If a fallback exec stole focus, put the user back.
+  if [[ -n $prev_ws ]]; then
+    local now_ws
+    now_ws=$(hyprctl -j activeworkspace </dev/null 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)
+    if [[ -n $now_ws && $now_ws != "$prev_ws" ]]; then
+      timeout 2 hyprctl eval "$(printf 'hl.dispatch(hl.dsp.focus({ workspace = "%s" }))' "$prev_ws")" </dev/null >/dev/null 2>&1 || true
+    fi
   fi
 
   local target_ws="$workspace"
@@ -482,7 +630,7 @@ cmd_launch() {
   local clients_json
   for _try in $(seq 1 $tries); do
     local new_addrs moved=0
-    clients_json=$(hyprctl clients -j </dev/null 2>/dev/null || echo "[]")
+    clients_json=$(hypr_clients_json)
     new_addrs=$(printf '%s' "$clients_json" | jq -r --arg before "$before" '
       ($before | split(" ") | map(select(length>0))) as $old |
       [.[].address] | map(select(. as $a | ($old | index($a) | not))) | .[]
@@ -512,6 +660,9 @@ cmd_launch() {
         ' 2>/dev/null)
         if [[ $on_ws != "true" ]]; then
           move_window_to_ws "$addr" "$target_ws"
+        fi
+        if [[ -n $target_mon ]]; then
+          move_workspace_to_monitor "$target_ws" "$target_mon"
         fi
         moved=$((moved + 1))
         placed_addrs+=("$addr")
@@ -655,7 +806,7 @@ ensure_profile_windows() {
   for attempt in 1 2 3 4; do
     missing=0
     used=""
-    clients_json=$(hyprctl clients -j </dev/null 2>/dev/null || echo "[]")
+    clients_json=$(hypr_clients_json)
     while IFS= read -r item; do
       [[ -n $item ]] || continue
       ws=$(echo "$item" | jq -r '.workspace')
@@ -696,7 +847,7 @@ launch_profile_assignments() {
   if ((stagger > 2000)); then stagger=2000; fi
   silent=$(jq -r '.settings.silent // true' "$CONFIG_FILE")
   local clients_json used_addrs=""
-  clients_json=$(hyprctl clients -j 2>/dev/null || echo "[]")
+  clients_json=$(hypr_clients_json)
   local occupied_ws="${WORKSCAPE_OCCUPIED_WS:-}"
   if [[ -z $occupied_ws ]]; then
     occupied_ws=$(printf '%s' "$clients_json" | jq -r '[.[] | (.workspace.id|tostring)] | unique | join(" ")' 2>/dev/null || echo "")
@@ -711,6 +862,8 @@ launch_profile_assignments() {
   local apply_prev_ws
   apply_prev_ws=$(hyprctl -j activeworkspace </dev/null 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)
   export WORKSCAPE_RESTORE_FOCUS=0
+  local launch_mons="{}"
+  launch_mons=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --bindings 2>/dev/null || echo "{}")
 
   local idx=0 item
   while IFS= read -r item; do
@@ -767,7 +920,7 @@ launch_profile_assignments() {
       echo "reuse $name ($existing) on ws $ws"
       echo "$(date -u) REUSE ws=$ws name=$name addr=$existing" >> "$boot_log" 2>/dev/null || true
       used_addrs+="$existing "
-      clients_json=$(hyprctl clients -j </dev/null 2>/dev/null || echo "[]")
+      clients_json=$(hypr_clients_json)
       continue
     fi
 
@@ -776,37 +929,44 @@ launch_profile_assignments() {
     if ((idx > 0)) && [[ $stagger -gt 0 ]]; then
       sleep "$(awk "BEGIN {print $stagger/1000}")"
     fi
+    local ws_mon=""
+    ws_mon=$(printf '%s' "$launch_mons" | jq -r --arg ws "$ws" '.[$ws] // empty' 2>/dev/null || true)
     local geom_json
     geom_json=$(echo "$item" | jq -c '.geom // empty')
     local cwd url
     cwd=$(echo "$item" | jq -r '.cwd // empty')
     url=$(echo "$item" | jq -r '.url // empty')
     # hyprctl reads stdin — must not steal the assignment stream
-    if cmd_launch "$ws" "$exec_cmd" "$silent" "$geom_json" "$cwd" "$url" "$name" </dev/null; then
+    if cmd_launch "$ws" "$exec_cmd" "$silent" "$geom_json" "$cwd" "$url" "$name" "$ws_mon" </dev/null; then
       echo "$(date -u) OK ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true
     else
       echo "$(date -u) FAIL ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true
       echo "failed to launch $name" >&2
     fi
-    clients_json=$(hyprctl clients -j </dev/null 2>/dev/null || echo "[]")
+    clients_json=$(hypr_clients_json)
     existing=$(place_existing_on_ws "$exec_cmd" "$name" "$clients_json" "$ws" "$used_addrs")
     if [[ -n $existing ]]; then
       used_addrs+="$existing "
       echo "$(date -u) PLACE ws=$ws name=$name addr=$existing" >> "$boot_log" 2>/dev/null || true
+      if [[ -n $ws_mon ]]; then
+        move_workspace_to_monitor "$ws" "$ws_mon"
+      fi
     fi
     idx=$((idx + 1))
   done < <(profile_assignments "$profile_id")
 
   echo "ensuring assigned windows are on their workspaces"
   ensure_profile_windows "$profile_id"
+  apply_bindings "$launch_mons"
 
   echo "sweeping extras off blocked workspaces"
   python3 "$PLUGIN_DIR/scripts/watch" --sweep || true
 
   echo "applying window geometry for $profile_id"
+  sleep 0.2
   apply_profile_geoms "$profile_id"
 
-  if [[ -n $apply_prev_ws ]]; then
+  if [[ $apply_prev_ws =~ ^[1-9][0-9]?$ ]] && (( apply_prev_ws <= 20 )); then
     hyprctl eval "$(printf 'hl.dispatch(hl.dsp.focus({ workspace = "%s" }))' "$apply_prev_ws")" </dev/null >/dev/null 2>&1 || true
   fi
   unset WORKSCAPE_RESTORE_FOCUS
@@ -815,18 +975,28 @@ launch_profile_assignments() {
   echo "done"
 }
 
+install_hypr_lua() {
+  # Copy compositor layout into ~/.config/hypr so `require("hypr.workscape-layout")`
+  # works. Does not edit hyprland.lua (user consent).
+  local src="$PLUGIN_DIR/hypr/workscape-layout.lua"
+  local dest="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/workscape-layout.lua"
+  [[ -f $src ]] || return 0
+  mkdir -p "$(dirname "$dest")"
+  if [[ -f $dest ]] && cmp -s "$src" "$dest"; then
+    return 0
+  fi
+  cp -f "$src" "$dest"
+}
+
 cmd_apply() {
   local mode=$1
   local requested_id=${2:-}
   local force=${3:-false}
-  mkdir -p -m 700 "$STATE_DIR"
-  exec 9>"$STATE_DIR/apply.lock"
-  if ! flock -n 9; then
-    echo "apply already in progress"
-    exit 0
-  fi
+  reexec_apply_detached
+  acquire_apply_lock || exit 0
   ensure_config || exit 1
   wait_for_hyprland || exit 1
+  install_hypr_lua || true
 
   local enabled
   enabled=$(jq -r '.settings.enabled // true' "$CONFIG_FILE")
@@ -865,6 +1035,7 @@ cmd_apply() {
   local status_json profile_id profile_name bindings attempt
   status_json=$(cmd_live_status)
   if [[ -n $requested_id ]]; then
+    profile_must_match "$requested_id" || exit 1
     profile_id=$requested_id
     profile_name=$(jq -r --arg id "$profile_id" '([.profiles[]? | select(.id==$id) | .name][0] // $id)' "$CONFIG_FILE")
     bindings=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --bindings)
@@ -894,13 +1065,22 @@ cmd_apply() {
   fi
 
   echo "applying profile $profile_name ($profile_id)"
-  local clients_now occupied_ws
-  clients_now=$(hyprctl clients -j 2>/dev/null || echo "[]")
+  local clients_now occupied_ws last_applied_file last_applied
+  clients_now=$(hypr_clients_json)
   occupied_ws=$(printf '%s' "$clients_now" | jq -r '[.[] | (.workspace.id|tostring)] | unique | join(" ")' 2>/dev/null || echo "")
   export WORKSCAPE_OCCUPIED_WS="$occupied_ws"
+  unset WORKSCAPE_MIGRATE_OCCUPIED
+  last_applied_file="$STATE_DIR/last_applied_profile"
+  last_applied=""
+  [[ -f $last_applied_file ]] && last_applied=$(tr -d '\n' < "$last_applied_file" 2>/dev/null || true)
+  if [[ -n $profile_id && $last_applied != "$profile_id" ]]; then
+    export WORKSCAPE_MIGRATE_OCCUPIED=1
+    echo "profile changed (${last_applied:-none} → $profile_id) — moving occupied workspaces onto this layout"
+  fi
   local ws_snap
   ws_snap=$(snapshot_workspaces)
   apply_profile_outputs "$profile_id"
+  sleep 0.35
   status_json=$(cmd_live_status)
   if [[ -n $requested_id ]]; then
     bindings=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --bindings)
@@ -919,6 +1099,7 @@ cmd_apply() {
     launch_force=true
   fi
   launch_profile_assignments "$profile_id" "$launch_force"
+  printf '%s\n' "$profile_id" > "$last_applied_file"
   notify "WorkScape" "Applied $profile_name"
 }
 
@@ -931,7 +1112,7 @@ close_preset_workspaces() {
       [[ $addr =~ ^0x[0-9a-fA-F]+$ ]] || continue
       hyprctl eval "$(printf 'hl.dispatch(hl.dsp.window.close({ window = "address:%s" }))' "$addr")" >/dev/null 2>&1 || true
       echo "close $addr on ws $ws"
-    done < <(hyprctl clients -j 2>/dev/null | jq -r --arg ws "$ws" '.[] | select((.workspace.id|tostring) == $ws) | .address // empty' 2>/dev/null)
+    done < <(hypr_clients_json | jq -r --arg ws "$ws" '.[] | select((.workspace.id|tostring) == $ws) | .address // empty' 2>/dev/null)
   done < <(jq -r --arg id "$profile_id" '
     [.profiles[]? | select(.id==$id) | .assignments[]? | .workspace | tostring]
     | unique | .[]
@@ -949,14 +1130,16 @@ cmd_reset_empty() {
     echo "no profile"
     exit 1
   fi
+  profile_must_match "$profile_id" || exit 1
   local occupied
-  occupied=$(hyprctl -j clients 2>/dev/null | jq -r '[.[] | (.workspace.id|tostring)] | unique | join(" ")' 2>/dev/null || true)
+  occupied=$(hypr_clients_json | jq -r '[.[] | (.workspace.id|tostring)] | unique | join(" ")' 2>/dev/null || true)
   export WORKSCAPE_OCCUPIED_WS="$occupied"
   live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --reset-empty
 }
 
 cmd_fresh_apply() {
   local profile_id=${1:-}
+  reexec_apply_detached
   ensure_config || exit 1
   wait_for_hyprland || exit 1
   if [[ -z $profile_id ]]; then
@@ -966,9 +1149,22 @@ cmd_fresh_apply() {
     echo "no profile to refresh"
     exit 1
   fi
+  profile_must_match "$profile_id" || exit 1
+  acquire_apply_lock || exit 0
   echo "closing windows on $profile_id preset workspaces…"
   close_preset_workspaces "$profile_id"
-  sleep 0.12
+  local assigned leftover n
+  assigned=$(jq -r --arg id "$profile_id" '[.profiles[] | select(.id==$id) | .assignments[].workspace | tostring] | unique | join(" ")' "$CONFIG_FILE")
+  for n in 1 2 3 4 5 6 7 8 9 10; do
+    leftover=$(hypr_clients_json | jq -r --arg ws "$assigned" '
+      ($ws | split(" ")) as $a
+      | [.[] | select((.workspace.id|tostring) as $id | $a | index($id))] | length
+    ' 2>/dev/null || echo 1)
+    if [[ $leftover == "0" ]]; then
+      break
+    fi
+    sleep 0.12
+  done
   unset WORKSCAPE_OCCUPIED_WS
   cmd_apply hotkey "$profile_id" true
 }
@@ -983,6 +1179,7 @@ case "${1:-}" in
   --list-apps) cmd_list_apps ;;
   --status) cmd_status ;;
   --live-status) cmd_live_status ;;
+  --sync-active-profile) cmd_sync_active_profile ;;
   --match-id) cmd_match_id ;;
   --launch) shift; cmd_launch "$@" ;;
   --launch-all) shift; cmd_launch_all "${1:-false}" ;;
@@ -1002,13 +1199,14 @@ workscape.sh — helper for io.github.calebhat.workscape
   --list-apps                  list .desktop + extra apps as TSV
   --status                     json status
   --live-status                current monitors + matching profile
+  --sync-active-profile        set settings.activeProfileId to the matching layout
   --match-id                   print matching profile id
   --launch <ws> <exec> [silent]  launch single app on workspace
   --launch-all                 boot path (no-op unless applyOnBoot)
   --force-launch-all           launch matching profile regardless of boot flag
   --apply-matching             detect layout, bind workspaces, launch apps
-  --apply-profile <id>         bind + launch a specific profile
-  --fresh-apply-profile [id]   close workspaces that have apps in that profile, then apply empty
+  --apply-profile <id>         bind + launch a specific profile (refused if displays/network don't match)
+  --fresh-apply-profile [id]   close that profile's app workspaces, then apply empty (refused if it doesn't match now)
   --reset-empty-workspaces [id] restore Omarchy dwindle on workspaces with no assigned apps (keeps Fill-next Stage chain)
   --watch-extras               keep locked panes pinned; send extras away when extras=block
   --apply-gestures             write trackpad / swipe prefs and hyprctl eval them

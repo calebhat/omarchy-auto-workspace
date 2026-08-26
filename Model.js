@@ -316,6 +316,28 @@ function matchReasonLabel(reason) {
     return String(reason || "")
 }
 
+function applyRefuseText(cfg, profile, match) {
+    if (!match || match.matches) return ""
+    if (match.detail) return String(match.detail)
+    var name = String((profile && (profile.name || profile.id)) || "This profile")
+    if (match.reason === "missing") {
+        var ids = match.missing || []
+        var labels = []
+        for (var i = 0; i < ids.length; i++) {
+            var mon = monitorById(cfg, ids[i])
+            labels.push((mon && mon.label) ? mon.label : String(ids[i]))
+        }
+        return name + " needs " + (labels.length ? labels.join(", ") : "its saved displays") + " — those displays aren't connected"
+    }
+    if (match.reason === "extra") {
+        var extra = match.extra || []
+        if (extra.length) return name + " is an exact layout and extra displays are connected (" + extra.join(", ") + ")"
+        return name + " is an exact layout and extra displays are connected"
+    }
+    if (match.reason === "network") return name + " is bound to a different network than this machine"
+    return name + " does not match the current displays"
+}
+
 function profileById(cfg, id) {
     var list = (cfg && cfg.profiles) || []
     var want = String(id || "")
@@ -331,6 +353,9 @@ function applyHint(cfg, profile, liveList, liveNet, liveStatus) {
             if (String(liveStatus.profiles[i].id) === String(profile.id)) {
                 match.matches = !!liveStatus.profiles[i].matches
                 match.reason = liveStatus.profiles[i].reason || match.reason
+                match.missing = liveStatus.profiles[i].missing || match.missing
+                match.extra = liveStatus.profiles[i].extra || match.extra
+                match.detail = liveStatus.profiles[i].detail || match.detail
                 match.networkConstrained = liveStatus.profiles[i].networkConstrained
                 match.networkMatches = liveStatus.profiles[i].networkMatches
                 break
@@ -350,6 +375,8 @@ function applyHint(cfg, profile, liveList, liveNet, liveStatus) {
     var willName = will ? String(will.name || willId) : String((liveStatus && liveStatus.matchedProfileName) || willId || "")
     var viewingId = profile && profile.id ? String(profile.id) : ""
     var applies = !!(match.matches && willId && willId === viewingId)
+    var canApply = !!match.matches
+    var refuseText = canApply ? "" : applyRefuseText(cfg, profile, match)
     var text
     if (applies) {
         text = networkConfigured(profile && profile.network)
@@ -367,6 +394,8 @@ function applyHint(cfg, profile, liveList, liveNet, liveStatus) {
     return {
         text: text,
         matches: applies,
+        canApply: canApply,
+        refuseText: refuseText,
         reason: match.reason || "",
         willId: willId,
         willName: willName,
@@ -421,7 +450,7 @@ function normalizeWorkspaceNames(raw) {
 
 function layoutDescription(layout, hasLock) {
     if (layout === "set-width")
-        return "Every new window is a fixed fraction of the monitor (Visible). Scroll extras at this width keeps more columns on a tape; off sends the next window to another workspace after Visible are filled."
+        return "Every window is 1/Visible of the monitor, including the first (Hyprland will not stretch a lone column). Pane locks are hidden here and come back if you switch to Stage or Scrolling."
     if (layout === "stage")
         return "The first window stays full width. Extra windows are smaller columns to the right; scroll to see them. Visible sets extra-column width, not the first window."
     if (layout === "master" && !hasLock)
@@ -1838,6 +1867,13 @@ function profileMatch(cfg, profile, liveList, liveNet) {
     }
 }
 
+function nextFollowedMatch(matchedId, lastFollowed) {
+    var id = String(matchedId || "")
+    if (!id) return ""
+    if (id === String(lastFollowed || "")) return ""
+    return id
+}
+
 function bestProfile(cfg, liveList, liveNet) {
     var list = (cfg && cfg.profiles) || []
     var scored = []
@@ -1968,7 +2004,12 @@ function upsertLiveMonitor(cfg, live) {
     var out = clone(cfg)
     for (var i = 0; i < out.monitors.length; i++) {
         if (out.monitors[i].id === mon.id || sameMonitor(out.monitors[i], mon)) {
-            return { config: out, id: out.monitors[i].id }
+            var cur = clone(out.monitors[i])
+            if (mon.name && !cur.name) cur.name = mon.name
+            if (mon.description && !cur.description) cur.description = mon.description
+            if (mon.serial && !cur.serial) cur.serial = mon.serial
+            out.monitors[i] = cur
+            return { config: out, id: cur.id }
         }
     }
     out.monitors = out.monitors.concat([mon])

@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,29 @@ def profile_match(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[
     }
 
 
+def mismatch_detail(cfg: dict[str, Any], profile: dict[str, Any], info: dict[str, Any]) -> str:
+    """Human reason a profile must not apply on this hardware/network."""
+    name = str(profile.get("name") or profile.get("id") or "This profile")
+    if info.get("matches"):
+        return ""
+    reason = str(info.get("reason") or "")
+    if reason == "missing":
+        labels: list[str] = []
+        for mid in info.get("missing") or []:
+            saved = monitor_by_id(cfg, str(mid))
+            labels.append(str((saved or {}).get("label") or mid))
+        need = ", ".join(labels) if labels else "its saved displays"
+        return f"{name} needs {need} — those displays aren't connected"
+    if reason == "extra":
+        extras = ", ".join(str(x) for x in (info.get("extra") or []) if x)
+        if extras:
+            return f"{name} is an exact layout and extra displays are connected ({extras})"
+        return f"{name} is an exact layout and extra displays are connected"
+    if reason == "network":
+        return f"{name} is bound to a different network than this machine"
+    return f"{name} does not match the current displays"
+
+
 def _match_rank(profile: dict[str, Any], info: dict[str, Any]) -> tuple:
     net_boost = 2 if info.get("networkConstrained") and info.get("networkMatches") else 1
     exact_boost = 2 if info.get("exact") else 1
@@ -212,9 +236,26 @@ def disable_monitor(m: dict[str, Any]) -> None:
         _keyword_monitor(f"{name},disable")
 
 
+def _hypr_eval(lua: str, timeout: float = 3) -> None:
+    try:
+        subprocess.run(
+            ["hyprctl", "eval", lua],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def place_monitor(m: dict[str, Any], x: int, y: int) -> None:
     name = safe_connector(str(m.get("name") or ""))
     if not name:
+        return
+    cur_x = int(m.get("x") or 0)
+    cur_y = int(m.get("y") or 0)
+    if abs(cur_x - int(x)) <= 64 and abs(cur_y - int(y)) <= 64:
         return
     w = int(m.get("width") or 0)
     h = int(m.get("height") or 0)
@@ -228,8 +269,7 @@ def place_monitor(m: dict[str, Any], x: int, y: int) -> None:
         f'hl.monitor({{ output = "{SAFE.lua_str(name)}", mode = "{w}x{h}@{hz}", '
         f'position = "{pos}", scale = {scale} }})'
     )
-    subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    _keyword_monitor(f"{name},{w}x{h}@{hz},{pos},{scale}")
+    _hypr_eval(lua, timeout=3)
 
 
 def disable_plan(enabled_names: list[str], disable_names: list[str]) -> list[str]:
@@ -246,7 +286,96 @@ def disable_plan(enabled_names: list[str], disable_names: list[str]) -> list[str
     return plan
 
 
-def apply_outputs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
+def logical_size(m: dict[str, Any]) -> tuple[int, int]:
+    scale = float(m.get("scale") or 1) or 1.0
+    w = int(m.get("width") or 1920)
+    h = int(m.get("height") or 1080)
+    return max(200, int(round(w / scale))), max(200, int(round(h / scale)))
+
+
+def _rects_overlap(ax: int, ay: int, aw: int, ah: int, bx: int, by: int, bw: int, bh: int) -> bool:
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def pack_monitor_positions(
+    placed: list[tuple[dict[str, Any], int, int]],
+) -> list[tuple[dict[str, Any], int, int]]:
+    """Keep saved relative layout when it does not overlap. Else sit left-to-right.
+
+    Sequential hl.monitor() can overlap mid-apply (KVM auto-place + saved coords)
+    and Hyprland warns 'No monitors can overlap.'
+    """
+    items: list[dict[str, Any]] = []
+    for hit, x, y in placed:
+        w, h = logical_size(hit)
+        items.append({"hit": hit, "x": int(x), "y": int(y), "w": w, "h": h})
+    overlap = False
+    for i, a in enumerate(items):
+        for b in items[i + 1 :]:
+            if _rects_overlap(a["x"], a["y"], a["w"], a["h"], b["x"], b["y"], b["w"], b["h"]):
+                overlap = True
+                break
+        if overlap:
+            break
+    if not overlap:
+        return [(it["hit"], it["x"], it["y"]) for it in items]
+    items.sort(key=lambda it: (it["x"], it["y"]))
+    cursor = 0
+    out: list[tuple[dict[str, Any], int, int]] = []
+    for it in items:
+        out.append((it["hit"], cursor, 0))
+        cursor += it["w"]
+    return out
+
+
+def place_monitors_batch(placed: list[tuple[dict[str, Any], int, int]]) -> None:
+    """One eval so Hyprland sees a complete non-overlapping layout."""
+    stmts: list[str] = []
+    for hit, x, y in placed:
+        name = safe_connector(str(hit.get("name") or ""))
+        if not name:
+            continue
+        w = int(hit.get("width") or 0)
+        h = int(hit.get("height") or 0)
+        refresh = float(hit.get("refreshRate") or 60)
+        scale = SAFE.clamp_scale(hit.get("scale") or 1)
+        if w <= 0 or h <= 0:
+            continue
+        hz = f"{refresh:.2f}".rstrip("0").rstrip(".")
+        pos = f"{int(x)}x{int(y)}"
+        stmts.append(
+            f'hl.monitor({{ output = "{SAFE.lua_str(name)}", mode = "{w}x{h}@{hz}", '
+            f'position = "{pos}", scale = {scale} }})'
+        )
+    if stmts:
+        _hypr_eval("\n".join(stmts), timeout=8)
+
+
+def origin_shift_layout(placed: list[tuple[dict[str, Any], int, int]]) -> list[tuple[dict[str, Any], int, int]]:
+    """Hyprland positions are absolute. Saved canvas coords may be offset; keep relative gaps."""
+    if not placed:
+        return []
+    ox = min(x for _hit, x, _y in placed)
+    oy = min(y for _hit, _x, y in placed)
+    return [(hit, int(x) - ox, int(y) - oy) for hit, x, y in placed]
+
+
+def save_config(cfg: dict[str, Any], path: str) -> None:
+    p = Path(path)
+    if not p.parent.exists():
+        return
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(p)
+
+
+def apply_outputs(
+    cfg: dict[str, Any],
+    profile: dict[str, Any],
+    live_list: list[dict[str, Any]],
+    config_path: str = "",
+) -> dict[str, Any]:
     mons = list(profile.get("monitors") or [])
     disabled_ids = {str(x) for x in (profile.get("disabledMonitors") or [])}
     if len(mons) < 2:
@@ -295,6 +424,7 @@ def apply_outputs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[
             live_now = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors", "all"], text=True))
         except Exception:
             live_now = live_list
+        placed: list[tuple[dict[str, Any], int, int]] = []
         for mid, pos in layout.items():
             if str(mid) in disabled_ids:
                 continue
@@ -306,8 +436,44 @@ def apply_outputs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[
                 continue
             x = int((pos or {}).get("x") or 0)
             y = int((pos or {}).get("y") or 0)
-            place_monitor(hit, x, y)
+            placed.append((hit, x, y))
+        final = pack_monitor_positions(origin_shift_layout(placed))
+        needs_move = False
+        for hit, x, y in final:
+            if abs(int(hit.get("x") or 0) - int(x)) > 64 or abs(int(hit.get("y") or 0) - int(y)) > 64:
+                needs_move = True
+                break
+        if not needs_move:
+            return {"changed": changed}
+        place_monitors_batch(final)
+        for hit, x, y in final:
             changed.append(f"pos:{hit.get('name')}@{x}x{y}")
+        if final:
+            time.sleep(0.35)
+            try:
+                live_after = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
+            except Exception:
+                live_after = []
+            persist: dict[str, dict[str, int]] = {}
+            for mid in mons:
+                if str(mid) in disabled_ids:
+                    continue
+                saved = monitor_by_id(cfg, str(mid))
+                hit = find_live(saved, live_after, enabled_only=True) if saved else None
+                if not hit:
+                    continue
+                persist[str(mid)] = {"x": int(hit.get("x") or 0), "y": int(hit.get("y") or 0)}
+            if persist:
+                profile["monitorLayout"] = persist
+                changed.append("persisted")
+                if config_path:
+                    for p in cfg.get("profiles") or []:
+                        if p.get("id") == profile.get("id"):
+                            p["monitorLayout"] = persist
+                    try:
+                        save_config(cfg, config_path)
+                    except Exception:
+                        pass
     return {"changed": changed}
 
 
@@ -326,6 +492,7 @@ def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]], live_net: 
             "reason": info["reason"],
             "missing": info["missing"],
             "extra": info["extra"],
+            "detail": mismatch_detail(cfg, profile, info),
             "networkConstrained": info.get("networkConstrained"),
             "networkMatches": info.get("networkMatches"),
         })
@@ -413,9 +580,9 @@ def reset_empty_workspaces(cfg: dict[str, Any], profile: dict[str, Any]) -> dict
             col = round(1.0 / vis, 4)
             lua = (
                 f'hl.workspace_rule({{ workspace = "{SAFE.lua_str(ws)}", persistent = false, '
-                f'layout = "scrolling", layout_opts = {{ column_width = {col}, fullscreen_on_one_column = true, follow_focus = false }} }})'
+                f'layout = "scrolling", layout_opts = {{ column_width = {col}, fullscreen_on_one_column = true, follow_focus = false, follow_min_visible = 1.0, focus_fit_method = 1 }} }})'
             )
-            subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _hypr_eval(lua)
             prefs[ws] = {"layout": "stage", "visibleCount": vis, "lockSizes": False, "extras": "around"}
             kept_overflow.append(ws)
             continue
@@ -423,12 +590,7 @@ def reset_empty_workspaces(cfg: dict[str, Any], profile: dict[str, Any]) -> dict
             continue
         prefs.pop(ws, None)
         prefs.pop(n, None)
-        subprocess.run(
-            ["hyprctl", "eval", omarchy_default_workspace_lua(ws)],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        _hypr_eval(omarchy_default_workspace_lua(ws))
         cleared.append(ws)
     return {"ok": True, "cleared": cleared, "overflowKept": kept_overflow, "assigned": sorted(assigned, key=int)}
 
@@ -441,12 +603,16 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
     ws_ids.discard("")
     ws_ids.discard("None")
     occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
+    _hypr_eval(
+        "hl.config({ scrolling = { follow_focus = false, fullscreen_on_one_column = false, "
+        "follow_min_visible = 1.0 } })"
+    )
     applied = []
     for ws in sorted(ws_ids, key=lambda s: int(s) if s.isdigit() else 99):
         ws = SAFE.safe_ws(ws)
         if not ws:
             continue
-        if ws in occupied:
+        if ws in occupied and os.environ.get("WORKSCAPE_MIGRATE_OCCUPIED") != "1":
             pref = prefs.get(ws) or prefs.get(int(ws)) or {}
             requested = pref.get("layout") if isinstance(pref, dict) else ""
             if requested in ("scrolling", "stage", "set-width"):
@@ -456,16 +622,9 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
                     vis_occ = 2
                 vis_occ = max(1, min(20, vis_occ))
                 col = round(1.0 / vis_occ, 4)
-                subprocess.run(
-                    [
-                        "hyprctl",
-                        "eval",
-                        f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, '
-                        f"scrolling_width = {col} }})",
-                    ],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                _hypr_eval(
+                    f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, '
+                    f"scrolling_width = {col} }})"
                 )
             continue
         pref = prefs.get(ws) or prefs.get(int(ws)) or {}
@@ -488,8 +647,11 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
         )
         stage = requested == "stage" and not any_app_lock
         set_width = requested == "set-width"
-        if any_app_lock or stage or set_width:
+        n_on_ws = sum(1 for a in (profile.get("assignments") or []) if str(a.get("workspace")) == str(ws))
+        if set_width or stage or (any_app_lock and n_on_ws <= 1):
             layout = "scrolling"
+        elif any_app_lock and n_on_ws > 1:
+            layout = "lua:workscape" if extras == "around" else "dwindle"
         mon = pins.get(ws) or ""
         mon = safe_connector(mon) or ""
         persist = profile.get("persistentWorkspaces") is True
@@ -498,55 +660,45 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
             parts.append(f'monitor = "{mon}"')
         if layout:
             parts.append(f'layout = "{layout}"')
-        if layout == "scrolling":
-            n_on_ws = sum(1 for a in (profile.get("assignments") or []) if str(a.get("workspace")) == str(ws))
+        if layout == "lua:workscape":
+            _hypr_eval('pcall(function() require("hypr.workscape-layout") end)')
+            _hypr_eval(
+                f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, enabled = false }})'
+            )
+        elif layout == "scrolling":
             col = round(1.0 / vis, 4)
             if set_width:
                 parts.append(
-                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false, follow_focus = false }}"
+                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false, follow_focus = false, follow_min_visible = 1.0, focus_fit_method = 1 }}"
                 )
             elif any_app_lock and n_on_ws > 1:
                 parts.append(
-                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false, follow_focus = false }}"
+                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false, follow_focus = false, follow_min_visible = 1.0, focus_fit_method = 1 }}"
                 )
             elif stage or n_on_ws <= 1:
                 parts.append(
-                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = true, follow_focus = false }}"
+                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = true, follow_focus = false, follow_min_visible = 1.0, focus_fit_method = 1 }}"
                 )
             else:
                 parts.append(
-                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false, follow_focus = false }}"
+                    f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false, follow_focus = false, follow_min_visible = 1.0, focus_fit_method = 1 }}"
                 )
             spawn = (
                 f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, '
                 f"scrolling_width = {col} }})"
             )
-            subprocess.run(["hyprctl", "eval", spawn], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _hypr_eval(spawn)
         elif layout == "master":
             parts.append("layout_opts = { orientation = \"left\" }")
         else:
-            subprocess.run(
-                [
-                    "hyprctl",
-                    "eval",
-                    f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, enabled = false }})',
-                ],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+            _hypr_eval(
+                f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, enabled = false }})'
             )
         lua = "hl.workspace_rule({ " + ", ".join(parts) + " })"
-        subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _hypr_eval(lua)
         if mon:
-            subprocess.run(
-                [
-                    "hyprctl",
-                    "eval",
-                    f'hl.dispatch(hl.dsp.workspace.move({{workspace="{SAFE.lua_str(ws)}", monitor="{SAFE.lua_str(mon)}"}}))',
-                ],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+            _hypr_eval(
+                f'hl.dispatch(hl.dsp.workspace.move({{workspace="{SAFE.lua_str(ws)}", monitor="{SAFE.lua_str(mon)}"}}))'
             )
         applied.append({"workspace": ws, "layout": requested or layout or "dwindle", "monitor": mon, "visibleCount": vis, "lockSizes": lock, "extras": extras})
     return {"ok": True, "workspaces": applied}
@@ -565,6 +717,8 @@ def main() -> int:
     parser.add_argument("--reset-empty", action="store_true")
     parser.add_argument("--network-json", default="")
     parser.add_argument("--needs-identity", action="store_true")
+    parser.add_argument("--require-match", action="store_true",
+                        help="exit 3 unless --profile-id matches live displays/network")
     args = parser.parse_args()
     with open(args.config, encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -584,6 +738,21 @@ def main() -> int:
     if args.needs_identity:
         print("yes" if has_unconstrained_match(cfg, live) is False else "no")
         return 0
+    if args.require_match:
+        pid = str(args.profile_id or "")
+        prof = next((p for p in (cfg.get("profiles") or []) if p.get("id") == pid), None)
+        if not prof:
+            json.dump({"matches": False, "reason": "unknown", "detail": f"no profile {pid}"}, sys.stdout)
+            sys.stdout.write("\n")
+            return 3
+        info = profile_match(cfg, prof, live, live_net if live_net is not None else NET.detect_network())
+        out = dict(info)
+        out["id"] = prof.get("id")
+        out["name"] = prof.get("name")
+        out["detail"] = mismatch_detail(cfg, prof, info)
+        json.dump(out, sys.stdout)
+        sys.stdout.write("\n")
+        return 0 if info.get("matches") else 3
     if args.status:
         json.dump(live_status(cfg, live, live_net if live_net is not None else None), sys.stdout)
         sys.stdout.write("\n")
@@ -597,7 +766,7 @@ def main() -> int:
             json.dump({"changed": []}, sys.stdout)
             sys.stdout.write("\n")
             return 2
-        json.dump(apply_outputs(cfg, prof, live), sys.stdout)
+        json.dump(apply_outputs(cfg, prof, live, config_path=str(args.config or "")), sys.stdout)
         sys.stdout.write("\n")
         return 0
     if args.apply_ws_prefs:

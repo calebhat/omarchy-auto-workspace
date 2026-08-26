@@ -37,7 +37,13 @@ def safe_connector(name: str) -> str | None:
 
 
 def lua_str(s: str) -> str:
-    return str(s or "").replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        str(s or "")
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", " ")
+        .replace("\r", " ")
+    )
 
 
 def clamp_scale(raw) -> float:

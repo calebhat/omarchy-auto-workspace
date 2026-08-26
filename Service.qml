@@ -84,8 +84,21 @@ Item {
         id: extrasWatch
         command: ["python3", root.home + "/.config/omarchy/plugins/" + root.pluginId + "/scripts/watch"]
         running: false
-        stdout: SplitParser { onRead: function(d){ root.log("extras " + d) } }
+        stdout: SplitParser {
+            onRead: function(d) {
+                root.log("extras " + d)
+                if (d.indexOf('"monitorChange"') >= 0 && !syncMatchProc.running)
+                    syncMatchProc.running = true
+            }
+        }
         stderr: SplitParser { onRead: function(d){ console.warn("[workscape] extras] " + d) } }
+    }
+
+    Process {
+        id: syncMatchProc
+        command: ["bash", root.script, "--sync-active-profile"]
+        stdout: SplitParser { onRead: function(d){ root.log("sync " + d) } }
+        stderr: SplitParser { onRead: function(d){ console.warn("[workscape] sync] " + d) } }
     }
 
     Timer {
@@ -142,6 +155,15 @@ Item {
         launchProc.running = true
     }
 
+    function applyFresh(profileId) {
+        if (launchProc.running) {
+            root.log("apply already in progress")
+            return
+        }
+        launchProc.command = ["bash", root.script, "--fresh-apply-profile", String(profileId || "")]
+        launchProc.running = true
+    }
+
     function launchOnWorkspace(workspace, execCmd) {
         var silent = "true"
         manualLaunchProc.command = ["bash", root.script, "--launch", String(workspace), execCmd, silent]
@@ -168,6 +190,7 @@ Item {
         function forceLaunchAll(): void { root.launchAll(true) }
         function applyMatching(): void { root.applyMatching() }
         function applyProfile(profileId: string): void { root.applyProfile(profileId) }
+        function applyFresh(profileId: string): void { root.applyFresh(profileId) }
         function refreshConfig(): void { root.refreshConfig() }
         function status(): string { return root.status() }
     }

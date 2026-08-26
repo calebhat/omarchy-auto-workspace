@@ -1,0 +1,23 @@
+#!/bin/bash
+# WorkScape unit suite + dummy isolation self-check. Does not spawn windows
+# or write ~/.local/state/omarchy/workscape/config.json.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+python3 test/dummy.test.py
+python3 test/geom.test.py
+python3 test/watch.test.py
+python3 test/gestures.test.py
+python3 test/workscape_layout.test.py
+python3 test/hyprsafe.test.py
+python3 test/network.test.py
+bash test/match.test.sh
+bash test/reuse.test.sh
+bash test/occupied.test.sh
+bash test/apply-lock.test.sh
+node test/model.test.js
+python3 test/dummy_live.py
+
+echo
+echo "test/run ok (dummy live not spawned; use: python3 test/dummy_live.py --live)"
