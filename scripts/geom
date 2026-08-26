@@ -413,14 +413,17 @@ PEEK_FRAC = 0.02
 
 
 def peeked_column_frac(visible_count: int) -> float:
-    """Extra/scroll column width.
+    """Extra/scroll width so vis columns plus left and right peeks fit.
 
-    Used to subtract PEEK_FRAC, but Hyprland centers a short column and
-    that made huge left+right gutters (I-049). Extras stay exact 1/Visible
-    so two vis=2 columns fill the monitor. Lone Stage still uses
-    stage_fill_frac() for a small right peek.
+    vis=2 and PEEK 0.02 → 0.48. Exact 1/N left no room for a left peek
+    without cutting off the right column.
     """
-    return extra_column_frac(visible_count)
+    vis = clamp_visible_count(visible_count)
+    exact = extra_column_frac(vis)
+    peeked = round((1.0 - 2 * PEEK_FRAC) / vis, 4)
+    if peeked < 0.1:
+        return exact
+    return min(exact, peeked)
 
 
 def stage_fill_frac() -> float:
@@ -566,14 +569,26 @@ def pack_peek_camera(ws: str, addr: str = "") -> None:
     n = len(tiled)
     has_left = idx > 0
     has_right = idx < n - 1
+    mon_right = mx + int(round(lw))
+    over = (x + w) - mon_right
+    if over > 8:
+        layout_msg(f"move {-over}")
+        return
     if has_left and has_right:
         target_x = mx + peek_px
     elif has_left:
-        target_x = mx + int(round(lw)) - w
+        target_x = mon_right - w
     else:
         target_x = mx
     slack = x - int(target_x)
     if abs(slack) <= 8:
+        return
+    # Tiny alignment only. A whole-column pan yanks the tape onto the next
+    # monitor and cuts the rightmost pane (I-050).
+    if abs(slack) > int(lw * 0.2):
+        return
+    new_right = x - slack + w
+    if new_right > mon_right + 8:
         return
     layout_msg(f"move {-slack}")
 

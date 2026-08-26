@@ -651,6 +651,10 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
             )
         elif layout == "scrolling":
             col = round(1.0 / vis, 4)
+            if not set_width:
+                peeked = round((1.0 - 2 * 0.02) / vis, 4)
+                if peeked >= 0.1:
+                    col = peeked
             if set_width:
                 parts.append(
                     f"layout_opts = {{ column_width = {col}, fullscreen_on_one_column = false, follow_focus = false, follow_min_visible = 1.0, focus_fit_method = 1 }}"

@@ -256,7 +256,7 @@ assert out["workspaces"][0]["layout"] == "stage", out
 assert "layout = \"scrolling\"" in lua, lua
 assert "fullscreen_on_one_column = true" in lua, lua
 assert "follow_focus = false" in lua, lua
-assert "column_width = 0.3333" in lua, lua
+assert "column_width = 0.32" in lua, lua
 assert "orientation" not in lua, lua
 print("stage layout rule ok")
 PY
