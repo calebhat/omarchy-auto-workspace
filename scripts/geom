@@ -1699,7 +1699,9 @@ def restamp_layout_sizes(ws: str, profile: dict[str, Any] | None = None) -> dict
             apply_spawn_width_rule(ws, extra)
         return {"ok": True, "mode": "stage", "workspace": ws, "filled": len(tiled) == 1}
     if plan.get("locked"):
-        return {"ok": True, "skipped": True, "reason": "locked", "workspace": ws}
+        # Occupied Apply still has to place the tape. Skipping here left WS2
+        # at 50/50 scrolling after apply_ws_prefs restamped lua:workscape.
+        return _settle_workspace_once(ws, plan)
     force_scrolling(ws, vis, lock=False, fill_one=False)
     apply_spawn_width_rule(ws, extra)
     if len(tiled) == 1 and addr:

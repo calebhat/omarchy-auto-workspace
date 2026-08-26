@@ -864,6 +864,34 @@ def test_apply_config_migrates_occupied_on_profile_change():
             geom.os.environ["WORKSCAPE_MIGRATE_OCCUPIED"] = orig_mig
 
 
+def test_restamp_layout_sizes_locked_settles_tape():
+    orig_settle = geom._settle_workspace_once
+    orig_clients = geom.clients_on_workspace
+    settled = []
+    geom.clients_on_workspace = lambda ws: [
+        {"address": "0xa", "floating": False},
+        {"address": "0xb", "floating": False},
+    ]
+    geom._settle_workspace_once = lambda ws, plan, prefer_addr="": settled.append((ws, len(plan.get("locked") or []))) or {
+        "ok": True, "workspace": ws, "mode": "lua:workscape", "closeEnough": True
+    }
+    profile = {
+        "assignments": [
+            {"workspace": 2, "exec": "herdr", "lockPlace": True, "geom": {"x": 0, "y": 0, "w": 0.65, "h": 1}},
+            {"workspace": 2, "exec": "panel", "lockPlace": True, "geom": {"x": 0.65, "y": 0, "w": 0.35, "h": 1}},
+        ],
+        "workspacePrefs": {"2": {"layout": "scrolling", "visibleCount": 2, "lockSizes": False, "extras": "around"}},
+    }
+    try:
+        out = geom.restamp_layout_sizes("2", profile)
+        assert out.get("mode") == "lua:workscape", out
+        assert settled == [("2", 2)], settled
+        assert out.get("reason") != "locked"
+    finally:
+        geom._settle_workspace_once = orig_settle
+        geom.clients_on_workspace = orig_clients
+
+
 def test_restamp_layout_sizes_stage_fills_lone():
     msgs = []
     orig = (
@@ -1488,6 +1516,7 @@ if __name__ == "__main__":
     test_two_locked_around_stays_scrolling()
     test_apply_config_skips_occupied()
     test_apply_config_migrates_occupied_on_profile_change()
+    test_restamp_layout_sizes_locked_settles_tape()
     test_restamp_layout_sizes_stage_fills_lone()
     test_apply_config_occupied_stage_still_fills()
     test_restore_locks_occupied_skips_unless_migrate()
