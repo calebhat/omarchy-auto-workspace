@@ -38,8 +38,8 @@ def test_arrow_focus_pans_and_hover_does_not():
     assert bind.find('layout == "scrolling"') < bind.find('layout("fit_into_view")')
     scrolling = bind[bind.find('layout == "scrolling"') : bind.find("lua:workscape")]
     assert 'layout("follow")' not in scrolling
-    assert 'layout("move -col")' in scrolling
-    assert 'layout("move +col")' in scrolling
+    assert 'layout("move -col")' not in scrolling
+    assert 'layout("move +col")' not in scrolling
 
 
 if __name__ == "__main__":

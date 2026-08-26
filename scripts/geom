@@ -1758,7 +1758,6 @@ def restamp_layout_sizes(ws: str, profile: dict[str, Any] | None = None) -> dict
         if len(tiled) == 1 and addr:
             if ensure_layout_workspace(ws):
                 layout_msg(f"colresize {stage_fill_frac()}")
-                pack_column_flush_left(ws, addr)
             apply_spawn_width_rule(ws, peek)
         return {"ok": True, "mode": "stage", "workspace": ws, "filled": len(tiled) == 1}
     if plan.get("locked"):

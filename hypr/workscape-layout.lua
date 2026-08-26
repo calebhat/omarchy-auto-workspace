@@ -408,13 +408,8 @@ pcall(function()
     -- Scrolling has fit_into_view, not follow. Sending follow paints Hyprland's
     -- on-screen Lua error overlay even inside pcall (I-047).
     if layout == "scrolling" then
-      -- fit_into_view alone keeps a leftover sliver "in view" and does not
-      -- pan (I-048). Step the camera with the focus, then snug.
-      if dir == "l" then
-        hl.dispatch(hl.dsp.layout("move -col"))
-      elseif dir == "r" then
-        hl.dispatch(hl.dsp.layout("move +col"))
-      end
+      -- vis>1 should keep two columns on screen. move ±col jumps a full
+      -- column and leaves only one pane (I-048).
       hl.dispatch(hl.dsp.layout("fit_into_view"))
     elseif layout == "lua:workscape" then
       hl.dispatch(hl.dsp.layout("follow"))

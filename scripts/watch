@@ -398,9 +398,6 @@ def apply_first_column(ws: str, addr: str) -> None:
         if active:
             g.layout_msg(f"colresize {fill}")
         g.apply_spawn_width_rule(str(ws), peek)
-        pack = getattr(g, "pack_column_flush_left", None)
-        if callable(pack) and active:
-            pack(str(ws), addr)
         print(json.dumps({"firstColumn": str(ws), "addr": addr, "stage": True, "frac": fill, "extraFrac": peek}), flush=True)
         return
     if info.get("setWidth"):
@@ -655,15 +652,12 @@ def schedule_stage_fill(ws: str) -> None:
         ]
         if len(tiled) != 1:
             return
-        g = geom_mod()
         if column_already_filled(tiled[0]):
-            pack = getattr(g, "pack_column_flush_left", None)
-            if callable(pack):
-                pack(ws, str(tiled[0].get("address") or ""))
             print(json.dumps({"stageFill": ws, "skipped": "alreadyFull"}), flush=True)
             return
         info = extra_width_workspaces().get(ws) or {}
         vis = int(info.get("visibleCount") or 2)
+        g = geom_mod()
         addr = str(tiled[0].get("address") or "")
         if info.get("setWidth"):
             size = getattr(g, "size_new_scrolling_column", None)
@@ -678,9 +672,6 @@ def schedule_stage_fill(ws: str) -> None:
             g.focus_window(addr)
             g.layout_msg(f"colresize {fill}")
         g.apply_spawn_width_rule(ws, peek)
-        pack = getattr(g, "pack_column_flush_left", None)
-        if callable(pack) and addr:
-            pack(ws, addr)
         print(json.dumps({"stageFill": ws, "addr": addr, "frac": fill}), flush=True)
 
     delay = float(CLOSE_RESTORE_DELAY_SEC)
@@ -720,9 +711,6 @@ def schedule_stage_extra_width(ws: str, addr: str) -> None:
         g.apply_spawn_width_rule(ws, extra)
         g.focus_window(addr)
         g.layout_msg(f"colresize {extra}")
-        pack = getattr(g, "pack_column_flush_left", None)
-        if callable(pack):
-            pack(ws, addr)
         print(json.dumps({"extraWidth": ws, "addr": addr, "stage": True, "frac": extra}), flush=True)
         if window_count(ws) > 1:
             schedule_warp_cursor(addr)
