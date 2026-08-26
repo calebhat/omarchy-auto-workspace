@@ -14,6 +14,7 @@ _ORIG_SCHED_CLOSE = watch.schedule_close_restore
 _ORIG_STARTUP = watch.in_startup_grace
 _ORIG_SLEEP = watch.time.sleep
 _ORIG_STAGE_FILL = watch.schedule_stage_fill
+_ORIG_PEERS = watch.tiled_peers
 
 
 def _reset_watch_timers():
@@ -463,6 +464,7 @@ def test_handle_open_sizes_locked_scrolling_then_restores():
     watch.schedule_open_settle = lambda ws, addr="": scheduled.append((ws, addr))
     watch.schedule_stage_fill = lambda ws: fills.append(ws)
     watch.lock_count = lambda ws: 1
+    watch.tiled_peers = lambda ws, addr: 1
     try:
         watch.handle_open("0xabc", "3")
         assert scheduled == []
@@ -472,6 +474,8 @@ def test_handle_open_sizes_locked_scrolling_then_restores():
     finally:
         watch.geom_mod = _ORIG_GEOM
         watch.extra_width_workspaces = _ORIG_EXTRA
+        watch.lock_count = _ORIG_LOCK_COUNT
+        watch.tiled_peers = _ORIG_PEERS
         watch.restore_locks = _ORIG_RESTORE
         watch.schedule_stage_fill = _ORIG_STAGE_FILL
 
@@ -485,6 +489,7 @@ def test_handle_open_set_width_sizes_extra():
     watch.load_block_map = lambda: {}
     watch.extra_width_workspaces = lambda: {"15": {"visibleCount": 3, "stage": False, "setWidth": True}}
     watch.lock_count = lambda ws: 0
+    watch.tiled_peers = lambda ws, addr: 1
     watch.geom_mod = lambda: type(
         "G",
         (),
@@ -504,6 +509,7 @@ def test_handle_open_set_width_sizes_extra():
         watch.geom_mod = _ORIG_GEOM
         watch.extra_width_workspaces = _ORIG_EXTRA
         watch.lock_count = _ORIG_LOCK_COUNT
+        watch.tiled_peers = _ORIG_PEERS
         watch.schedule_stage_fill = _ORIG_STAGE_FILL
 
 
@@ -525,6 +531,7 @@ def test_handle_open_sizes_unlocked_scrolling():
     watch.schedule_open_settle = lambda ws, addr="": scheduled.append((ws, addr))
     watch.schedule_stage_fill = lambda ws: fills.append(ws)
     watch.lock_count = lambda ws: 0
+    watch.tiled_peers = lambda ws, addr: 1
     try:
         watch.handle_open("0xabc", "3")
         assert scheduled == []
@@ -533,6 +540,8 @@ def test_handle_open_sizes_unlocked_scrolling():
     finally:
         watch.geom_mod = _ORIG_GEOM
         watch.extra_width_workspaces = _ORIG_EXTRA
+        watch.lock_count = _ORIG_LOCK_COUNT
+        watch.tiled_peers = _ORIG_PEERS
         watch.schedule_stage_fill = _ORIG_STAGE_FILL
 
 
@@ -554,6 +563,7 @@ def test_handle_open_1lock_scroll_warps_not_fills():
     watch.extra_width_workspaces = lambda: {"3": {"visibleCount": 4, "stage": False}}
     watch.lock_count = lambda ws: 1
     watch.window_count = lambda ws: 2
+    watch.tiled_peers = lambda ws, addr: 1
     watch.load_active_profile = lambda: {"assignments": [{"workspace": 3, "name": "Grok Bot", "enabled": True}]}
     watch.window_is_assigned = lambda c, p, ws: True
     watch.schedule_warp_cursor = lambda addr: warps.append(addr)
@@ -569,6 +579,7 @@ def test_handle_open_1lock_scroll_warps_not_fills():
         watch.extra_width_workspaces = _ORIG_EXTRA
         watch.lock_count = _ORIG_LOCK_COUNT
         watch.window_count = _ORIG_WINDOW_COUNT
+        watch.tiled_peers = _ORIG_PEERS
         watch.load_active_profile = orig_prof
         watch.window_is_assigned = orig_assigned
         watch.subprocess.check_output = orig_check
@@ -828,6 +839,211 @@ def test_sweep_skips_occupied():
         watch.next_open_ws = orig_next
 
 
+def test_handle_open_first_stage_fills():
+    msgs = []
+    watch.STARTED_AT = 0
+    watch._burst_until = 0.0
+    watch.apply_in_progress = lambda: False
+    watch.locked_workspaces = lambda: []
+    watch.load_block_map = lambda: {}
+    watch.extra_width_workspaces = lambda: {"4": {"visibleCount": 2, "stage": True, "setWidth": False}}
+    watch.lock_count = lambda ws: 0
+    watch.tiled_peers = lambda ws, addr: 0
+    watch._ws_is_active = lambda ws: True
+    watch.geom_mod = lambda: type(
+        "G",
+        (),
+        {
+            "managed_workspaces": staticmethod(lambda: {"4"}),
+            "extra_column_frac": staticmethod(lambda vis: 0.5),
+            "force_scrolling": staticmethod(lambda *a, **k: msgs.append(("scroll", k))),
+            "apply_spawn_width_rule": staticmethod(lambda ws, frac: msgs.append(("spawn", ws, frac))),
+            "layout_msg": staticmethod(lambda msg: msgs.append(("msg", msg))),
+        },
+    )()
+    try:
+        watch.handle_open("0xnew", "4")
+        assert any(m[0] == "msg" and m[1] == "colresize 1.0" for m in msgs), msgs
+        assert any(m[0] == "spawn" and m[2] == 1.0 for m in msgs), msgs
+        assert any(m[0] == "scroll" and m[1].get("fill_one") is True for m in msgs), msgs
+    finally:
+        watch.geom_mod = _ORIG_GEOM
+        watch.extra_width_workspaces = _ORIG_EXTRA
+        watch.lock_count = _ORIG_LOCK_COUNT
+        watch.tiled_peers = _ORIG_PEERS
+
+
+def test_handle_open_stage_extra_does_not_fill():
+    msgs = []
+    watch.STARTED_AT = 0
+    watch._burst_until = 0.0
+    watch.apply_in_progress = lambda: False
+    watch.locked_workspaces = lambda: []
+    watch.load_block_map = lambda: {}
+    watch.extra_width_workspaces = lambda: {"4": {"visibleCount": 2, "stage": True, "setWidth": False}}
+    watch.lock_count = lambda ws: 0
+    watch.tiled_peers = lambda ws, addr: 1
+    watch.window_count = lambda ws: 2
+    watch.geom_mod = lambda: type(
+        "G",
+        (),
+        {
+            "managed_workspaces": staticmethod(lambda: {"4"}),
+            "layout_msg": staticmethod(lambda msg: msgs.append(msg)),
+            "force_scrolling": staticmethod(lambda *a, **k: msgs.append("scroll")),
+        },
+    )()
+    try:
+        watch.handle_open("0xextra", "4")
+        assert "colresize 1.0" not in msgs
+        assert "scroll" not in msgs
+    finally:
+        watch.geom_mod = _ORIG_GEOM
+        watch.extra_width_workspaces = _ORIG_EXTRA
+        watch.lock_count = _ORIG_LOCK_COUNT
+        watch.tiled_peers = _ORIG_PEERS
+        watch.window_count = _ORIG_WINDOW_COUNT
+
+
+def test_handle_open_first_set_width_not_full():
+    sized = []
+    watch.STARTED_AT = 0
+    watch._burst_until = 0.0
+    watch.apply_in_progress = lambda: False
+    watch.locked_workspaces = lambda: []
+    watch.load_block_map = lambda: {}
+    watch.extra_width_workspaces = lambda: {"3": {"visibleCount": 4, "stage": False, "setWidth": True}}
+    watch.lock_count = lambda ws: 0
+    watch.tiled_peers = lambda ws, addr: 0
+    watch.geom_mod = lambda: type(
+        "G",
+        (),
+        {
+            "managed_workspaces": staticmethod(lambda: {"3"}),
+            "extra_column_frac": staticmethod(lambda vis: 0.25),
+            "size_new_scrolling_column": staticmethod(lambda ws, addr, vis, set_width=False, **k: sized.append((ws, addr, vis, set_width))),
+            "layout_msg": staticmethod(lambda msg: sized.append(msg)),
+        },
+    )()
+    try:
+        watch.handle_open("0xnew", "3")
+        assert sized == [("3", "0xnew", 4, True)], sized
+        assert not any(isinstance(x, str) and "1.0" in x for x in sized)
+    finally:
+        watch.geom_mod = _ORIG_GEOM
+        watch.extra_width_workspaces = _ORIG_EXTRA
+        watch.lock_count = _ORIG_LOCK_COUNT
+        watch.tiled_peers = _ORIG_PEERS
+
+
+def test_handle_open_first_scrolling_uses_frac():
+    msgs = []
+    watch.STARTED_AT = 0
+    watch._burst_until = 0.0
+    watch.apply_in_progress = lambda: False
+    watch.locked_workspaces = lambda: []
+    watch.load_block_map = lambda: {}
+    watch.extra_width_workspaces = lambda: {"2": {"visibleCount": 3, "stage": False, "setWidth": False}}
+    watch.lock_count = lambda ws: 0
+    watch.tiled_peers = lambda ws, addr: 0
+    watch._ws_is_active = lambda ws: True
+    watch.geom_mod = lambda: type(
+        "G",
+        (),
+        {
+            "managed_workspaces": staticmethod(lambda: {"2"}),
+            "extra_column_frac": staticmethod(lambda vis: 0.3333),
+            "force_scrolling": staticmethod(lambda *a, **k: msgs.append(("scroll", k))),
+            "apply_spawn_width_rule": staticmethod(lambda ws, frac: msgs.append(("spawn", frac))),
+            "layout_msg": staticmethod(lambda msg: msgs.append(("msg", msg))),
+        },
+    )()
+    try:
+        watch.handle_open("0xnew", "2")
+        assert any(m == ("msg", "colresize 0.3333") for m in msgs), msgs
+        assert any(m == ("spawn", 0.3333) for m in msgs), msgs
+        assert not any(m[0] == "msg" and "1.0" in str(m[1]) for m in msgs)
+    finally:
+        watch.geom_mod = _ORIG_GEOM
+        watch.extra_width_workspaces = _ORIG_EXTRA
+        watch.lock_count = _ORIG_LOCK_COUNT
+        watch.tiled_peers = _ORIG_PEERS
+
+
+def test_handle_open_first_skips_tape_pack():
+    packed = []
+    msgs = []
+    watch.STARTED_AT = 0
+    watch._burst_until = 0.0
+    watch.apply_in_progress = lambda: False
+    watch.locked_workspaces = lambda: ["2"]
+    watch.load_block_map = lambda: {}
+    watch.extra_width_workspaces = lambda: {"2": {"visibleCount": 2, "stage": False, "setWidth": False}}
+    watch.lock_count = lambda ws: 2
+    watch.tiled_peers = lambda ws, addr: 0
+    watch._ws_is_active = lambda ws: True
+    orig_pack = watch.schedule_pack_extras
+    watch.schedule_pack_extras = lambda ws, addr="": packed.append((ws, addr))
+    watch.geom_mod = lambda: type(
+        "G",
+        (),
+        {
+            "managed_workspaces": staticmethod(lambda: {"2"}),
+            "workspace_tiled_layout": staticmethod(lambda ws: "lua:workscape"),
+            "extra_column_frac": staticmethod(lambda vis: 0.5),
+            "force_scrolling": staticmethod(lambda *a, **k: msgs.append("scroll")),
+            "apply_spawn_width_rule": staticmethod(lambda ws, frac: msgs.append(("spawn", frac))),
+            "layout_msg": staticmethod(lambda msg: msgs.append(("msg", msg))),
+        },
+    )()
+    try:
+        watch.handle_open("0xnew", "2")
+        assert packed == []
+        assert any(m == ("msg", "colresize 0.5") for m in msgs), msgs
+    finally:
+        watch.geom_mod = _ORIG_GEOM
+        watch.extra_width_workspaces = _ORIG_EXTRA
+        watch.lock_count = _ORIG_LOCK_COUNT
+        watch.tiled_peers = _ORIG_PEERS
+        watch.schedule_pack_extras = orig_pack
+
+
+def test_close_last_restamps_empty_layout():
+    scheduled = []
+    stamps = []
+    watch.STARTED_AT = 0
+    watch.apply_in_progress = lambda: False
+    watch.locked_workspaces = lambda: ["4"]
+    watch.extra_width_workspaces = lambda: {"4": {"visibleCount": 2, "stage": True, "setWidth": False}}
+    watch.lock_count = lambda ws: 1
+    watch.window_count = lambda ws: 0
+    watch.schedule_close_restore = lambda ws: scheduled.append(ws)
+    watch.schedule_stage_fill = lambda ws: scheduled.append(("fill", ws))
+    watch.geom_mod = lambda: type(
+        "G",
+        (),
+        {
+            "extra_column_frac": staticmethod(lambda vis: 0.5),
+            "force_scrolling": staticmethod(lambda *a, **k: stamps.append(("scroll", k))),
+            "apply_spawn_width_rule": staticmethod(lambda ws, frac: stamps.append(("spawn", frac))),
+        },
+    )()
+    watch._window_ws.clear()
+    watch.remember_window("0xlast", "4")
+    try:
+        watch.handle_close_or_move(None, "0xlast")
+        assert scheduled == []
+        assert any(s == ("spawn", 1.0) for s in stamps), stamps
+        assert any(s[0] == "scroll" and s[1].get("fill_one") is True for s in stamps), stamps
+    finally:
+        watch.window_count = _ORIG_WINDOW_COUNT
+        watch.lock_count = _ORIG_LOCK_COUNT
+        watch.extra_width_workspaces = _ORIG_EXTRA
+        watch.schedule_close_restore = _ORIG_SCHED_CLOSE
+        watch.schedule_stage_fill = _ORIG_STAGE_FILL
+        watch.geom_mod = _ORIG_GEOM
+
+
 if __name__ == "__main__":
     test_openwindow_addr_gets_0x_prefix()
     test_monitor_hotplug_line()
@@ -861,4 +1077,10 @@ if __name__ == "__main__":
     test_move_to_ws_follow_false()
     test_extras_remain_unknown_clients_do_not_restore()
     test_quiet_end_skips_restore_after_extra_append()
+    test_handle_open_first_stage_fills()
+    test_handle_open_stage_extra_does_not_fill()
+    test_handle_open_first_set_width_not_full()
+    test_handle_open_first_scrolling_uses_frac()
+    test_handle_open_first_skips_tape_pack()
+    test_close_last_restamps_empty_layout()
     print("watch.test.py ok")

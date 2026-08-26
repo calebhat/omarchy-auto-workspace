@@ -202,6 +202,26 @@ def extras_remain(ws: str) -> bool:
     return n > lock_count(ws)
 
 
+def tiled_peers(ws: str, addr: str) -> int:
+    """Tiled windows on `ws` other than `addr`. -1 if Hyprland cannot be queried."""
+    try:
+        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
+    except Exception:
+        return -1
+    n = 0
+    want = str(addr or "")
+    for c in clients or []:
+        if c.get("floating"):
+            continue
+        w = c.get("workspace") or {}
+        if str(w.get("id")) != str(ws) and str(w.get("name")) != str(ws):
+            continue
+        if want and str(c.get("address") or "") == want:
+            continue
+        n += 1
+    return n
+
+
 def hypr_eval(lua: str) -> None:
     try:
         subprocess.run(
@@ -293,6 +313,66 @@ def extra_width_workspaces() -> dict[str, dict]:
             vis = 20
         out[str(ws)] = {"visibleCount": vis, "stage": layout == "stage", "setWidth": layout == "set-width"}
     return out
+
+
+def _ws_is_active(ws: str) -> bool:
+    try:
+        aw = json.loads(subprocess.check_output(["hyprctl", "-j", "activeworkspace"], text=True))
+    except Exception:
+        return False
+    return str((aw or {}).get("id") or "") == str(ws)
+
+
+def restamp_empty_workspace(ws: str) -> None:
+    """Keep layout-type spawn width after the last window closes.
+
+    Apply/Fresh lock geometry is not restored onto a later first window.
+    """
+    info = extra_width_workspaces().get(str(ws)) or {}
+    if not info:
+        return
+    vis = int(info.get("visibleCount") or 2)
+    g = geom_mod()
+    extra = g.extra_column_frac(vis)
+    if info.get("stage"):
+        g.force_scrolling(str(ws), vis, lock=False, stage=True, fill_one=True)
+        g.apply_spawn_width_rule(str(ws), 1.0)
+    elif info.get("setWidth"):
+        g.force_scrolling(str(ws), vis, lock=False, fill_one=False)
+        g.apply_spawn_width_rule(str(ws), extra)
+    else:
+        g.force_scrolling(str(ws), vis, lock=False, fill_one=False)
+        g.apply_spawn_width_rule(str(ws), extra)
+    print(json.dumps({"emptyLayout": str(ws), "stage": bool(info.get("stage")), "setWidth": bool(info.get("setWidth")), "vis": vis}), flush=True)
+
+
+def apply_first_column(ws: str, addr: str) -> None:
+    """First window on an empty layout workspace inherits stage/set-width/scrolling size."""
+    info = extra_width_workspaces().get(str(ws)) or {}
+    if not info:
+        return
+    vis = int(info.get("visibleCount") or 2)
+    g = geom_mod()
+    extra = g.extra_column_frac(vis)
+    active = _ws_is_active(str(ws))
+    if info.get("stage"):
+        g.force_scrolling(str(ws), vis, lock=False, stage=True, fill_one=True)
+        g.apply_spawn_width_rule(str(ws), 1.0)
+        if active:
+            g.layout_msg("colresize 1.0")
+        print(json.dumps({"firstColumn": str(ws), "addr": addr, "stage": True, "frac": 1.0}), flush=True)
+        return
+    if info.get("setWidth"):
+        size = getattr(g, "size_new_scrolling_column", None)
+        if callable(size):
+            size(str(ws), addr, vis, set_width=True)
+        print(json.dumps({"firstColumn": str(ws), "addr": addr, "setWidth": True, "vis": vis}), flush=True)
+        return
+    g.force_scrolling(str(ws), vis, lock=False, fill_one=False)
+    g.apply_spawn_width_rule(str(ws), extra)
+    if active:
+        g.layout_msg(f"colresize {extra}")
+    print(json.dumps({"firstColumn": str(ws), "addr": addr, "scrolling": True, "frac": extra}), flush=True)
 
 
 def locked_workspaces() -> list[str]:
@@ -675,6 +755,13 @@ def handle_open(addr: str, ws: str) -> None:
                 return
     if in_startup_grace() and str(ws) not in locked and not extra_ws.get(str(ws)):
         return
+    # First window after the workspace was emptied inherits the layout type
+    # (stage fill / set-width 1/N / scrolling 1/N). Apply/Fresh lock sizes
+    # stay off this path. Peers>0 is an extra: do not stageFill (I-033).
+    peers = tiled_peers(str(ws), addr)
+    if peers == 0 and extra_ws.get(str(ws)):
+        apply_first_column(str(ws), addr)
+        return
     # Stage/set-width extras keep Hyprland spawn width. Full settle on every
     # map steals focus across monitors. Only multi-lock splits need a settle
     # so extras land after the locked panes.
@@ -1023,6 +1110,10 @@ def handle_close_or_move(ws: str | None, addr: str = "") -> None:
         return
     if closed_x is not None:
         focus_successor_after_close(str(ws), addr, closed_x)
+    remaining = window_count(str(ws))
+    if remaining == 0:
+        restamp_empty_workspace(str(ws))
+        return
     if in_layout_quiet(str(ws)):
         print(json.dumps({"skipRestore": str(ws), "reason": "layoutQuiet"}), flush=True)
         return
