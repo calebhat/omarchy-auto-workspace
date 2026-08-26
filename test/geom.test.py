@@ -355,6 +355,28 @@ def test_clamp_grows_last_instead_of_panning_gutter():
         geom.cache_clear, geom.clients_on_workspace, geom.sort_clients_axis, geom.focus_window, geom.layout_msg, geom.ensure_layout_workspace = orig
 
 
+def test_pack_column_flush_left_moves_slack():
+    calls = []
+    orig = (geom.hypr_j, geom.layout_msg, geom.cache_clear, geom.client_by_addr)
+    geom.cache_clear = lambda: None
+    geom.layout_msg = lambda msg: calls.append(msg)
+    geom.client_by_addr = lambda addr: {
+        "address": addr, "floating": False, "at": [1644, 36], "size": [845, 1034], "monitor": 2,
+        "workspace": {"id": 1},
+    }
+    geom.hypr_j = lambda cmd, cached=False: (
+        {"id": 1} if cmd == "activeworkspace" else (
+            [{"id": 2, "name": "DVI-I-2", "x": 1440, "y": 0, "width": 1920, "height": 1080, "scale": 1}]
+            if cmd == "monitors" else []
+        )
+    )
+    try:
+        geom.pack_column_flush_left("1", "0xextra")
+        assert "move -204" in calls, calls
+    finally:
+        geom.hypr_j, geom.layout_msg, geom.cache_clear, geom.client_by_addr = orig
+
+
 def test_clamp_single_column_fills():
     calls = []
     clients = [
@@ -1506,6 +1528,7 @@ if __name__ == "__main__":
     test_push_column_skips_when_extra_already_after_locked()
     test_clamp_pans_shifted_split_back()
     test_clamp_grows_last_instead_of_panning_gutter()
+    test_pack_column_flush_left_moves_slack()
     test_clamp_single_column_fills()
     test_clamp_pans_16px_fresh_offset()
     test_apply_scrolling_globals_sets_hypr_config()

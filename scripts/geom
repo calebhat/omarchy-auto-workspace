@@ -513,6 +513,42 @@ def clamp_scrolling_to_monitor(ws: str, metrics: dict[str, float], items: list[d
         time.sleep(0.02)
 
 
+def pack_column_flush_left(ws: str, addr: str = "") -> None:
+    """Pan so this column sits on the monitor left; leftover peek stays on the right.
+
+    Hyprland centers a short scrolling tape, which put empty gutters on both
+    sides after extras were 1/N minus peek.
+    """
+    ws = str(ws)
+    try:
+        aw = hypr_j("activeworkspace")
+        if str((aw or {}).get("id") or "") != ws:
+            return
+    except Exception:
+        return
+    cache_clear()
+    hit = client_by_addr(addr) if addr else None
+    if not hit or hit.get("floating"):
+        tiled = [c for c in sort_clients_axis(clients_on_workspace(ws), "x") if not c.get("floating")]
+        hit = tiled[0] if tiled else None
+    if not hit:
+        return
+    at = hit.get("at") or [0, 0]
+    x = int(at[0] or 0)
+    monitors = hypr_j("monitors", cached=True)
+    mon = next((m for m in (monitors or []) if m.get("id") == hit.get("monitor")), None)
+    if not mon:
+        workspaces = hypr_j("workspaces", cached=True)
+        mon = monitor_for_workspace(ws, monitors, workspaces)
+    if not mon:
+        return
+    mx = int(mon.get("x") or 0)
+    slack = x - mx
+    if abs(slack) <= 8:
+        return
+    layout_msg(f"move {-slack}")
+
+
 def scrolling_layout_opts(visible_count: int, lock: bool = False, stage: bool = False, fill_one: bool = False) -> str:
     col = max(0.1, extra_column_frac(visible_count))
     # Always set fullscreen_on_one_column. Hyprland’s default is true, which
@@ -1722,6 +1758,7 @@ def restamp_layout_sizes(ws: str, profile: dict[str, Any] | None = None) -> dict
         if len(tiled) == 1 and addr:
             if ensure_layout_workspace(ws):
                 layout_msg(f"colresize {stage_fill_frac()}")
+                pack_column_flush_left(ws, addr)
             apply_spawn_width_rule(ws, peek)
         return {"ok": True, "mode": "stage", "workspace": ws, "filled": len(tiled) == 1}
     if plan.get("locked"):
