@@ -1665,6 +1665,54 @@ def close_enough(box: dict[str, int] | None, want: dict[str, int] | None, tol: i
     ) <= tol
 
 
+def restamp_layout_sizes(ws: str, profile: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Apply layout-type column sizes without replaying Apply/Fresh lock splits.
+
+    Stage: lone tiled pane fills the monitor, extras spawn at 1/Visible.
+    Set-width: every column 1/Visible. Unlocked scrolling: same spawn 1/N.
+    """
+    ws = str(ws)
+    if profile is None:
+        try:
+            profile = active_profile(load_config(config_path()))
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+    if not profile:
+        return {"ok": False, "error": "no profile"}
+    plan = lock_plan_for_workspace(profile, ws)
+    vis = int(plan.get("visibleCount") or 2)
+    extra = extra_column_frac(vis)
+    tiled = [c for c in clients_on_workspace(ws) if not c.get("floating")]
+    addr = str((tiled[0].get("address") if tiled else "") or "")
+    if plan.get("setWidth") is True:
+        force_scrolling(ws, vis, lock=False, fill_one=False)
+        apply_spawn_width_rule(ws, extra)
+        if addr:
+            size_new_scrolling_column(ws, addr, vis, set_width=True)
+        return {"ok": True, "mode": "set-width", "workspace": ws, "n": len(tiled)}
+    if plan.get("stage") is True:
+        force_scrolling(ws, vis, lock=False, stage=True, fill_one=True)
+        apply_spawn_width_rule(ws, extra)
+        if len(tiled) == 1 and addr:
+            if ensure_layout_workspace(ws):
+                layout_msg("colresize 1.0")
+            apply_spawn_width_rule(ws, extra)
+        return {"ok": True, "mode": "stage", "workspace": ws, "filled": len(tiled) == 1}
+    if plan.get("locked"):
+        return {"ok": True, "skipped": True, "reason": "locked", "workspace": ws}
+    force_scrolling(ws, vis, lock=False, fill_one=False)
+    apply_spawn_width_rule(ws, extra)
+    if len(tiled) == 1 and addr:
+        try:
+            aw = hypr_j("activeworkspace")
+            already = str((aw or {}).get("id") or "") == ws
+        except Exception:
+            already = False
+        if already:
+            layout_msg(f"colresize {extra}")
+    return {"ok": True, "mode": "scrolling", "workspace": ws, "n": len(tiled)}
+
+
 def restore_locks_for_workspace(
     ws: str,
     cfg: dict[str, Any] | None = None,
@@ -1697,18 +1745,7 @@ def restore_locks_for_workspace(
     plan = lock_plan_for_workspace(profile, str(ws))
     locked = plan["locked"]
     if not locked:
-        vis = plan["visibleCount"]
-        if plan.get("setWidth") is True:
-            extra = extra_column_frac(vis)
-            force_scrolling(str(ws), vis, lock=False, fill_one=False)
-            apply_spawn_width_rule(str(ws), extra)
-            tiled = [c for c in clients_on_workspace(str(ws)) if not c.get("floating")]
-            addr = str((tiled[0].get("address") if tiled else "") or "")
-            size_new_scrolling_column(str(ws), addr, vis, set_width=True)
-        elif plan.get("stage") is True:
-            force_scrolling(str(ws), vis, lock=False, stage=True, fill_one=True)
-            apply_spawn_width_rule(str(ws), extra_column_frac(vis))
-        return {"ok": True, "skipped": True, "workspace": str(ws)}
+        return restamp_layout_sizes(str(ws), profile)
     result = _settle_workspace_once(str(ws), plan, prefer_addr)
     if result.get("closeEnough") is False:
         time.sleep(0.1)
@@ -1982,6 +2019,15 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
             if win.get("chrome"):
                 apply_chrome(win["addr"], win["chrome"], False)
         results.append(result)
+    seen = {str(ws) for ws, _ in by_ws.items()}
+    for a in profile.get("assignments") or []:
+        if a.get("enabled") is False:
+            continue
+        ws = str(a.get("workspace") or "")
+        if not ws or ws in seen:
+            continue
+        seen.add(ws)
+        results.append(restamp_layout_sizes(ws, profile))
     if prev_focus:
         focus_window(prev_focus)
     return {"ok": True, "workspaces": results}

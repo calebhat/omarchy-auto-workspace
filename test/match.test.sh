@@ -425,15 +425,9 @@ os.environ["WORKSCAPE_OCCUPIED_WS"] = "2"
 os.environ.pop("WORKSCAPE_MIGRATE_OCCUPIED", None)
 m.apply_ws_prefs({"monitors": []}, profile, [])
 lua = " ".join(str(c) for c in calls)
-assert "layout = \"lua:workscape\"" not in lua, lua
-os.environ["WORKSCAPE_MIGRATE_OCCUPIED"] = "1"
-calls.clear()
-m.apply_ws_prefs({"monitors": []}, profile, [])
-lua = " ".join(str(c) for c in calls)
 assert "layout = \"lua:workscape\"" in lua, lua
 os.environ.pop("WORKSCAPE_OCCUPIED_WS", None)
-os.environ.pop("WORKSCAPE_MIGRATE_OCCUPIED", None)
-print("occupied prefs migrate on profile change ok")
+print("occupied prefs still restamp layout ok")
 PY
 
 echo "match.test.sh ok"

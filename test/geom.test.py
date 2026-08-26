@@ -864,6 +864,98 @@ def test_apply_config_migrates_occupied_on_profile_change():
             geom.os.environ["WORKSCAPE_MIGRATE_OCCUPIED"] = orig_mig
 
 
+def test_restamp_layout_sizes_stage_fills_lone():
+    msgs = []
+    orig = (
+        geom.clients_on_workspace,
+        geom.force_scrolling,
+        geom.apply_spawn_width_rule,
+        geom.ensure_layout_workspace,
+        geom.layout_msg,
+        geom.size_new_scrolling_column,
+        geom.hypr_j,
+    )
+    geom.clients_on_workspace = lambda ws: [{"address": "0xbrave", "floating": False, "workspace": {"id": 1}}]
+    geom.force_scrolling = lambda *a, **k: msgs.append(("scroll", k))
+    geom.apply_spawn_width_rule = lambda ws, frac: msgs.append(("spawn", frac))
+    geom.ensure_layout_workspace = lambda ws, attempts=6: msgs.append(("activate", ws)) or True
+    geom.layout_msg = lambda msg: msgs.append(("msg", msg))
+    geom.size_new_scrolling_column = lambda *a, **k: msgs.append("setwidth")
+    profile = {
+        "assignments": [{"workspace": 1, "exec": "brave", "lockPlace": False}],
+        "workspacePrefs": {"1": {"layout": "stage", "visibleCount": 2, "lockSizes": False, "extras": "around"}},
+    }
+    try:
+        out = geom.restamp_layout_sizes("1", profile)
+        assert out.get("mode") == "stage" and out.get("filled") is True, out
+        assert any(m == ("msg", "colresize 1.0") for m in msgs), msgs
+        assert any(m[0] == "spawn" and m[1] == 0.5 for m in msgs), msgs
+    finally:
+        (
+            geom.clients_on_workspace,
+            geom.force_scrolling,
+            geom.apply_spawn_width_rule,
+            geom.ensure_layout_workspace,
+            geom.layout_msg,
+            geom.size_new_scrolling_column,
+            geom.hypr_j,
+        ) = orig
+
+
+def test_apply_config_occupied_stage_still_fills():
+    orig_env = geom.os.environ.get("WORKSCAPE_OCCUPIED_WS")
+    orig_mig = geom.os.environ.get("WORKSCAPE_MIGRATE_OCCUPIED")
+    orig_hypr = geom.hypr_j
+    orig_restamp = geom.restamp_layout_sizes
+    orig_focus = geom.active_window_addr
+    orig_fw = geom.focus_window
+    orig_restore = geom.restore_locks_for_workspace
+    calls = []
+    geom.os.environ["WORKSCAPE_OCCUPIED_WS"] = "1"
+    geom.os.environ.pop("WORKSCAPE_MIGRATE_OCCUPIED", None)
+    geom.hypr_j = lambda cmd, cached=False: (
+        [{"address": "0xbrave", "class": "brave-browser", "workspace": {"id": 1}}] if cmd == "clients" else []
+    )
+    geom.restamp_layout_sizes = lambda ws, profile=None: calls.append(ws) or {"ok": True, "mode": "stage", "workspace": ws, "filled": True}
+    geom.active_window_addr = lambda: ""
+    geom.focus_window = lambda addr: None
+    geom.restore_locks_for_workspace = lambda *a, **k: {"ok": True, "skipped": True, "reason": "occupied"}
+    try:
+        cfg = {
+            "settings": {"activeProfileId": "p"},
+            "profiles": [{
+                "id": "p",
+                "assignments": [{"workspace": 1, "name": "Brave", "exec": "brave", "lockPlace": False}],
+                "workspacePrefs": {"1": {"layout": "stage", "visibleCount": 2}},
+            }],
+        }
+        import tempfile, json, os
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+        try:
+            result = geom.apply_config(path, "p")
+        finally:
+            os.unlink(path)
+        assert result.get("ok") is True
+        assert "1" in calls, calls
+    finally:
+        geom.hypr_j = orig_hypr
+        geom.restamp_layout_sizes = orig_restamp
+        geom.active_window_addr = orig_focus
+        geom.focus_window = orig_fw
+        geom.restore_locks_for_workspace = orig_restore
+        if orig_env is None:
+            geom.os.environ.pop("WORKSCAPE_OCCUPIED_WS", None)
+        else:
+            geom.os.environ["WORKSCAPE_OCCUPIED_WS"] = orig_env
+        if orig_mig is None:
+            geom.os.environ.pop("WORKSCAPE_MIGRATE_OCCUPIED", None)
+        else:
+            geom.os.environ["WORKSCAPE_MIGRATE_OCCUPIED"] = orig_mig
+
+
 def test_restore_locks_occupied_skips_unless_migrate():
     orig_env = geom.os.environ.get("WORKSCAPE_OCCUPIED_WS")
     orig_mig = geom.os.environ.get("WORKSCAPE_MIGRATE_OCCUPIED")
@@ -1015,7 +1107,7 @@ def test_restore_set_width_applies_scrolling_without_locks():
             }],
         }
         result = geom.restore_locks_for_workspace("15", cfg)
-        assert result.get("skipped") is True
+        assert result.get("mode") == "set-width", result
         joined = "\n".join(calls)
         assert "layout = \"scrolling\"" in joined
         assert "scrolling_width = 0.3333" in joined
@@ -1063,7 +1155,7 @@ def test_restore_set_width_resizes_locked_assignment_to_frac():
             }],
         }
         result = geom.restore_locks_for_workspace("3", cfg)
-        assert result.get("skipped") is True
+        assert result.get("mode") == "set-width", result
         assert ("size", "3", "0xg", 4, True) in calls
         assert not any(isinstance(c, tuple) and c[0] == "force_scrolling" and c[1].get("fill_one") is True for c in calls if isinstance(c, tuple) and c[0] == "force_scrolling")
     finally:
@@ -1396,6 +1488,8 @@ if __name__ == "__main__":
     test_two_locked_around_stays_scrolling()
     test_apply_config_skips_occupied()
     test_apply_config_migrates_occupied_on_profile_change()
+    test_restamp_layout_sizes_stage_fills_lone()
+    test_apply_config_occupied_stage_still_fills()
     test_restore_locks_occupied_skips_unless_migrate()
     test_apply_items_scrolling_vs_stacked_rows()
     test_geom_pixels_master_stack()

@@ -602,7 +602,6 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
     ws_ids = assigned_workspaces(profile) | overflow_ws
     ws_ids.discard("")
     ws_ids.discard("None")
-    occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
     _hypr_eval(
         "hl.config({ scrolling = { follow_focus = false, fullscreen_on_one_column = false, "
         "follow_min_visible = 1.0 } })"
@@ -611,21 +610,6 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
     for ws in sorted(ws_ids, key=lambda s: int(s) if s.isdigit() else 99):
         ws = SAFE.safe_ws(ws)
         if not ws:
-            continue
-        if ws in occupied and os.environ.get("WORKSCAPE_MIGRATE_OCCUPIED") != "1":
-            pref = prefs.get(ws) or prefs.get(int(ws)) or {}
-            requested = pref.get("layout") if isinstance(pref, dict) else ""
-            if requested in ("scrolling", "stage", "set-width"):
-                try:
-                    vis_occ = int(pref.get("visibleCount") or 2)
-                except (TypeError, ValueError):
-                    vis_occ = 2
-                vis_occ = max(1, min(20, vis_occ))
-                col = round(1.0 / vis_occ, 4)
-                _hypr_eval(
-                    f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, '
-                    f"scrolling_width = {col} }})"
-                )
             continue
         pref = prefs.get(ws) or prefs.get(int(ws)) or {}
         if ws in overflow_ws and ws not in assigned_workspaces(profile):
