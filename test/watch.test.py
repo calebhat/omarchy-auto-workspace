@@ -42,6 +42,13 @@ def _reset_watch_timers():
             pass
     if hasattr(watch, "_stage_extra_timers"):
         watch._stage_extra_timers.clear()
+    t = getattr(watch, "_peek_camera_timer", None)
+    if t is not None:
+        try:
+            t.cancel()
+        except Exception:
+            pass
+        watch._peek_camera_timer = None
     watch._layout_quiet_until.clear()
     watch._appended_extra.clear()
 

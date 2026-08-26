@@ -398,6 +398,9 @@ def apply_first_column(ws: str, addr: str) -> None:
         if active:
             g.layout_msg(f"colresize {fill}")
         g.apply_spawn_width_rule(str(ws), peek)
+        pack = getattr(g, "pack_peek_camera", None)
+        if callable(pack) and active:
+            pack(str(ws), addr)
         print(json.dumps({"firstColumn": str(ws), "addr": addr, "stage": True, "frac": fill, "extraFrac": peek}), flush=True)
         return
     if info.get("setWidth"):
@@ -410,6 +413,9 @@ def apply_first_column(ws: str, addr: str) -> None:
     g.apply_spawn_width_rule(str(ws), peek)
     if active:
         g.layout_msg(f"colresize {peek}")
+    pack = getattr(g, "pack_peek_camera", None)
+    if callable(pack) and active:
+        pack(str(ws), addr)
     print(json.dumps({"firstColumn": str(ws), "addr": addr, "scrolling": True, "frac": peek}), flush=True)
 
 
@@ -455,6 +461,7 @@ _quiet_end_timers: dict[str, threading.Timer] = {}
 _appended_extra: dict[str, bool] = {}
 _pack_timers: dict[str, threading.Timer] = {}
 _stage_extra_timers: dict[str, threading.Timer] = {}
+_peek_camera_timer: threading.Timer | None = None
 CLOSE_RESTORE_DELAY_SEC = 0.4
 WARP_DELAY_SEC = 0.28
 STAGE_EXTRA_DELAY_SEC = 0.2
@@ -672,6 +679,9 @@ def schedule_stage_fill(ws: str) -> None:
             g.focus_window(addr)
             g.layout_msg(f"colresize {fill}")
         g.apply_spawn_width_rule(ws, peek)
+        pack = getattr(g, "pack_peek_camera", None)
+        if callable(pack) and addr:
+            pack(ws, addr)
         print(json.dumps({"stageFill": ws, "addr": addr, "frac": fill}), flush=True)
 
     delay = float(CLOSE_RESTORE_DELAY_SEC)
@@ -711,6 +721,9 @@ def schedule_stage_extra_width(ws: str, addr: str) -> None:
         g.apply_spawn_width_rule(ws, extra)
         g.focus_window(addr)
         g.layout_msg(f"colresize {extra}")
+        pack = getattr(g, "pack_peek_camera", None)
+        if callable(pack):
+            pack(ws, addr)
         print(json.dumps({"extraWidth": ws, "addr": addr, "stage": True, "frac": extra}), flush=True)
         if window_count(ws) > 1:
             schedule_warp_cursor(addr)
@@ -1140,6 +1153,43 @@ def bring_clipped_into_view() -> None:
     g.layout_msg("fit_into_view")
 
 
+def schedule_peek_camera(addr: str = "", ws: str = "") -> None:
+    """After Super+arrows / click, inset the camera for left/right peeks."""
+    global _peek_camera_timer
+    prev = _peek_camera_timer
+    if prev is not None:
+        prev.cancel()
+        _peek_camera_timer = None
+
+    def fire() -> None:
+        global _peek_camera_timer
+        _peek_camera_timer = None
+        if apply_in_progress():
+            return
+        a, w = str(addr or ""), str(ws or "")
+        if not a or not w:
+            try:
+                win = json.loads(subprocess.check_output(["hyprctl", "-j", "activewindow"], text=True))
+            except Exception:
+                return
+            a = str((win or {}).get("address") or "")
+            w = str(((win or {}).get("workspace") or {}).get("id") or "")
+        info = extra_width_workspaces().get(w) or {}
+        if not info or info.get("setWidth"):
+            return
+        if lock_count(w) >= 2:
+            return
+        g = geom_mod()
+        pack = getattr(g, "pack_peek_camera", None)
+        if callable(pack):
+            pack(w, a)
+
+    timer = threading.Timer(0.08, fire)
+    timer.daemon = True
+    _peek_camera_timer = timer
+    timer.start()
+
+
 def apply_focus_chrome() -> None:
     if note_event():
         return
@@ -1279,6 +1329,12 @@ def _consume_socket(proc: subprocess.Popen) -> None:
             continue
         if line.startswith("activewindow>>") or line.startswith("activewindowv2>>"):
             apply_focus_chrome()
+            payload = line.split(">>", 1)[1]
+            aw = payload.split(",", 1)[0].strip()
+            if aw and aw not in ("0", "0x0"):
+                if not aw.startswith("0x"):
+                    aw = "0x" + aw
+                schedule_peek_camera(aw)
 
 
 def main() -> int:

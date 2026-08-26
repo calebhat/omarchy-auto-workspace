@@ -100,7 +100,7 @@ def test_column_width_frac():
     assert geom.peeked_column_frac(3) == 0.3333
     assert geom.peeked_column_frac(4) == 0.25
     assert geom.peeked_column_frac(10) == 0.1
-    assert geom.stage_fill_frac() == 0.95
+    assert geom.stage_fill_frac() == 0.98
     assert geom.clamp_visible_count(21) == 20
     assert geom.clamp_visible_count(0) == 1
     locked = {"lock": True, "geom": {"x": 0, "y": 0, "w": 0.6279, "h": 1}}
@@ -355,15 +355,18 @@ def test_clamp_grows_last_instead_of_panning_gutter():
         geom.cache_clear, geom.clients_on_workspace, geom.sort_clients_axis, geom.focus_window, geom.layout_msg, geom.ensure_layout_workspace = orig
 
 
-def test_pack_column_flush_left_moves_slack():
+def test_pack_peek_camera_left_middle_right():
     calls = []
-    orig = (geom.hypr_j, geom.layout_msg, geom.cache_clear, geom.client_by_addr)
+    clients = [
+        {"address": "0xa", "floating": False, "at": [1440, 36], "size": [960, 1034], "monitor": 2, "workspace": {"id": 1}},
+        {"address": "0xb", "floating": False, "at": [2400, 36], "size": [960, 1034], "monitor": 2, "workspace": {"id": 1}},
+        {"address": "0xc", "floating": False, "at": [3360, 36], "size": [960, 1034], "monitor": 2, "workspace": {"id": 1}},
+    ]
+    orig = (geom.hypr_j, geom.layout_msg, geom.cache_clear, geom.clients_on_workspace, geom.sort_clients_axis)
     geom.cache_clear = lambda: None
     geom.layout_msg = lambda msg: calls.append(msg)
-    geom.client_by_addr = lambda addr: {
-        "address": addr, "floating": False, "at": [1644, 36], "size": [845, 1034], "monitor": 2,
-        "workspace": {"id": 1},
-    }
+    geom.clients_on_workspace = lambda ws: clients
+    geom.sort_clients_axis = lambda cs, axis: cs
     geom.hypr_j = lambda cmd, cached=False: (
         {"id": 1} if cmd == "activeworkspace" else (
             [{"id": 2, "name": "DVI-I-2", "x": 1440, "y": 0, "width": 1920, "height": 1080, "scale": 1}]
@@ -371,10 +374,17 @@ def test_pack_column_flush_left_moves_slack():
         )
     )
     try:
-        geom.pack_column_flush_left("1", "0xextra")
-        assert "move -204" in calls, calls
+        geom.pack_peek_camera("1", "0xa")
+        assert calls == [], calls
+        calls.clear()
+        geom.pack_peek_camera("1", "0xb")
+        peek = max(16, int(round(geom.PEEK_FRAC * 1920)))
+        assert f"move -{2400 - (1440 + peek)}" in calls, calls
+        calls.clear()
+        geom.pack_peek_camera("1", "0xc")
+        assert "move -960" in calls, calls
     finally:
-        geom.hypr_j, geom.layout_msg, geom.cache_clear, geom.client_by_addr = orig
+        geom.hypr_j, geom.layout_msg, geom.cache_clear, geom.clients_on_workspace, geom.sort_clients_axis = orig
 
 
 def test_clamp_single_column_fills():
@@ -943,7 +953,7 @@ def test_restamp_layout_sizes_stage_fills_lone():
     try:
         out = geom.restamp_layout_sizes("1", profile)
         assert out.get("mode") == "stage" and out.get("filled") is True, out
-        assert any(m == ("msg", "colresize 0.95") for m in msgs), msgs
+        assert any(m == ("msg", "colresize 0.98") for m in msgs), msgs
         assert any(m[0] == "spawn" and m[1] == 0.5 for m in msgs), msgs
     finally:
         (
@@ -1528,7 +1538,7 @@ if __name__ == "__main__":
     test_push_column_skips_when_extra_already_after_locked()
     test_clamp_pans_shifted_split_back()
     test_clamp_grows_last_instead_of_panning_gutter()
-    test_pack_column_flush_left_moves_slack()
+    test_pack_peek_camera_left_middle_right()
     test_clamp_single_column_fills()
     test_clamp_pans_16px_fresh_offset()
     test_apply_scrolling_globals_sets_hypr_config()

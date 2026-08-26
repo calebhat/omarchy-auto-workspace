@@ -407,9 +407,9 @@ def extra_column_frac(visible_count: int) -> float:
     return round(1.0 / vis, 4)
 
 
-# Strip of the next column on the right (Stage / unlocked scrolling). ~96px on
-# 1920, ~72px on 1440 logical. Set-width and lock splits stay exact 1/N.
-PEEK_FRAC = 0.05
+# Strip of a neighbor column (~38px on 1920, ~29px on 1440 logical).
+# Set-width and lock splits stay exact 1/N. Extras stay 1/Visible.
+PEEK_FRAC = 0.02
 
 
 def peeked_column_frac(visible_count: int) -> float:
@@ -515,11 +515,11 @@ def clamp_scrolling_to_monitor(ws: str, metrics: dict[str, float], items: list[d
         time.sleep(0.02)
 
 
-def pack_column_flush_left(ws: str, addr: str = "") -> None:
-    """Pan so this column sits on the monitor left; leftover peek stays on the right.
+def pack_peek_camera(ws: str, addr: str = "") -> None:
+    """Pan so peek strips show only where you can still scroll.
 
-    Hyprland centers a short scrolling tape, which put empty gutters on both
-    sides after extras were 1/N minus peek.
+    Leftmost: flush left, small right peek. Middle: peek both sides.
+    Rightmost: flush right, small left peek. Does not colresize.
     """
     ws = str(ws)
     try:
@@ -529,14 +529,21 @@ def pack_column_flush_left(ws: str, addr: str = "") -> None:
     except Exception:
         return
     cache_clear()
-    hit = client_by_addr(addr) if addr else None
-    if not hit or hit.get("floating"):
-        tiled = [c for c in sort_clients_axis(clients_on_workspace(ws), "x") if not c.get("floating")]
-        hit = tiled[0] if tiled else None
-    if not hit:
+    tiled = [c for c in sort_clients_axis(clients_on_workspace(ws), "x") if not c.get("floating")]
+    if not tiled:
         return
-    at = hit.get("at") or [0, 0]
-    x = int(at[0] or 0)
+    hit = None
+    idx = 0
+    want = str(addr or "")
+    if want:
+        for i, c in enumerate(tiled):
+            if str(c.get("address") or "") == want:
+                hit, idx = c, i
+                break
+    if hit is None:
+        hit, idx = tiled[0], 0
+    if hit.get("floating"):
+        return
     monitors = hypr_j("monitors", cached=True)
     mon = next((m for m in (monitors or []) if m.get("id") == hit.get("monitor")), None)
     if not mon:
@@ -544,8 +551,28 @@ def pack_column_flush_left(ws: str, addr: str = "") -> None:
         mon = monitor_for_workspace(ws, monitors, workspaces)
     if not mon:
         return
+    scale = float(mon.get("scale") or 1) or 1
+    lw = float(mon.get("width") or 0) / scale
+    if lw < 80:
+        return
     mx = int(mon.get("x") or 0)
-    slack = x - mx
+    peek_px = max(16, int(round(PEEK_FRAC * lw)))
+    at = hit.get("at") or [0, 0]
+    size = hit.get("size") or [0, 0]
+    x = int(at[0] or 0)
+    w = int(size[0] or 0)
+    if w < 40:
+        return
+    n = len(tiled)
+    has_left = idx > 0
+    has_right = idx < n - 1
+    if has_left and has_right:
+        target_x = mx + peek_px
+    elif has_left:
+        target_x = mx + int(round(lw)) - w
+    else:
+        target_x = mx
+    slack = x - int(target_x)
     if abs(slack) <= 8:
         return
     layout_msg(f"move {-slack}")
@@ -1760,6 +1787,7 @@ def restamp_layout_sizes(ws: str, profile: dict[str, Any] | None = None) -> dict
         if len(tiled) == 1 and addr:
             if ensure_layout_workspace(ws):
                 layout_msg(f"colresize {stage_fill_frac()}")
+                pack_peek_camera(ws, addr)
             apply_spawn_width_rule(ws, peek)
         return {"ok": True, "mode": "stage", "workspace": ws, "filled": len(tiled) == 1}
     if plan.get("locked"):
