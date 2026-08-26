@@ -405,13 +405,12 @@ pcall(function()
       return
     end
     local layout = tostring(field(ws, "tiled_layout") or "")
-    if layout == "scrolling" or layout == "lua:workscape" then
-      pcall(function()
-        hl.dispatch(hl.dsp.layout("fit_into_view"))
-      end)
-      pcall(function()
-        hl.dispatch(hl.dsp.layout("follow"))
-      end)
+    -- Scrolling has fit_into_view, not follow. Sending follow paints Hyprland's
+    -- on-screen Lua error overlay even inside pcall (I-047).
+    if layout == "scrolling" then
+      hl.dispatch(hl.dsp.layout("fit_into_view"))
+    elseif layout == "lua:workscape" then
+      hl.dispatch(hl.dsp.layout("follow"))
     end
   end
   hl.unbind("SUPER + LEFT")
