@@ -399,19 +399,20 @@ end)
 -- "Focus on left/right/above/below window".
 pcall(function()
   local function focus_and_pan(dir)
-    hl.dispatch(hl.dsp.focus({ direction = dir }))
     local ws = hl.get_active_workspace()
-    if ws == nil then
+    local layout = ""
+    if ws ~= nil then
+      layout = tostring(field(ws, "tiled_layout") or "")
+    end
+    -- dsp.focus({direction}) leaves the tape for a window on the next
+    -- monitor (I-049). Scrolling layoutmsg focus stays on this workspace
+    -- and pans, keeping Visible columns on screen.
+    if layout == "scrolling" then
+      hl.dispatch(hl.dsp.layout("focus " .. dir))
       return
     end
-    local layout = tostring(field(ws, "tiled_layout") or "")
-    -- Scrolling has fit_into_view, not follow. Sending follow paints Hyprland's
-    -- on-screen Lua error overlay even inside pcall (I-047).
-    if layout == "scrolling" then
-      -- vis>1 should keep two columns on screen. move ±col jumps a full
-      -- column and leaves only one pane (I-048).
-      hl.dispatch(hl.dsp.layout("fit_into_view"))
-    elseif layout == "lua:workscape" then
+    hl.dispatch(hl.dsp.focus({ direction = dir }))
+    if layout == "lua:workscape" then
       hl.dispatch(hl.dsp.layout("follow"))
     end
   end

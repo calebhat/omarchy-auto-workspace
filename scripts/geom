@@ -413,12 +413,14 @@ PEEK_FRAC = 0.05
 
 
 def peeked_column_frac(visible_count: int) -> float:
-    """1/Visible minus a right-edge peek. Never wider than exact 1/N."""
-    exact = extra_column_frac(visible_count)
-    peeked = round(exact - PEEK_FRAC, 4)
-    if peeked < 0.1:
-        return exact
-    return peeked
+    """Extra/scroll column width.
+
+    Used to subtract PEEK_FRAC, but Hyprland centers a short column and
+    that made huge left+right gutters (I-049). Extras stay exact 1/Visible
+    so two vis=2 columns fill the monitor. Lone Stage still uses
+    stage_fill_frac() for a small right peek.
+    """
+    return extra_column_frac(visible_count)
 
 
 def stage_fill_frac() -> float:

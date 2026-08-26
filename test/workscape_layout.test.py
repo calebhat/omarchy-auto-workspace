@@ -32,14 +32,13 @@ def test_arrow_focus_pans_and_hover_does_not():
     assert "fit_into_view" in text
     assert "I-040" in text
     assert 'layout == "scrolling"' in text
-    assert "I-047" in text
+    assert "I-049" in text
     bind = text[text.find("local function focus_and_pan") : text.find("hl.unbind(\"SUPER + LEFT\")")]
     assert 'layout("follow")' in bind
-    assert bind.find('layout == "scrolling"') < bind.find('layout("fit_into_view")')
-    scrolling = bind[bind.find('layout == "scrolling"') : bind.find("lua:workscape")]
-    assert 'layout("follow")' not in scrolling
-    assert 'layout("move -col")' not in scrolling
-    assert 'layout("move +col")' not in scrolling
+    assert 'layout("focus " .. dir)' in bind
+    assert "I-049" in bind
+    assert bind.find('layout == "scrolling"') < bind.find('layout("focus " .. dir)')
+    assert bind.find('layout("focus " .. dir)') < bind.find('hl.dsp.focus({ direction = dir })')
 
 
 if __name__ == "__main__":

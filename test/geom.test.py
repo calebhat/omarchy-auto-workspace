@@ -96,9 +96,9 @@ def test_column_width_frac():
     assert geom.extra_column_frac(4) == 0.25
     assert geom.extra_column_frac(10) == 0.1
     assert geom.extra_column_frac(20) == 0.05
-    assert geom.peeked_column_frac(2) == 0.45
-    assert geom.peeked_column_frac(3) == 0.2833
-    assert geom.peeked_column_frac(4) == 0.2
+    assert geom.peeked_column_frac(2) == 0.5
+    assert geom.peeked_column_frac(3) == 0.3333
+    assert geom.peeked_column_frac(4) == 0.25
     assert geom.peeked_column_frac(10) == 0.1
     assert geom.stage_fill_frac() == 0.95
     assert geom.clamp_visible_count(21) == 20
@@ -580,7 +580,7 @@ def test_restore_resizes_locked_pane():
     assert "fullscreen_on_one_column = false" in joined
     assert "hl.dsp.focus" in joined
     assert "colresize 0.6" in joined
-    assert "colresize 0.45" in joined
+    assert "colresize 0.5" in joined
     assert "window.resize" not in joined
     assert "fit all" not in joined
     inhibit_at = next(i for i, c in enumerate(calls) if "inhibit_scroll true" in c)
@@ -944,7 +944,7 @@ def test_restamp_layout_sizes_stage_fills_lone():
         out = geom.restamp_layout_sizes("1", profile)
         assert out.get("mode") == "stage" and out.get("filled") is True, out
         assert any(m == ("msg", "colresize 0.95") for m in msgs), msgs
-        assert any(m[0] == "spawn" and m[1] == 0.45 for m in msgs), msgs
+        assert any(m[0] == "spawn" and m[1] == 0.5 for m in msgs), msgs
     finally:
         (
             geom.clients_on_workspace,
