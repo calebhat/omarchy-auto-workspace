@@ -15,6 +15,7 @@ _ORIG_STARTUP = watch.in_startup_grace
 _ORIG_SLEEP = watch.time.sleep
 _ORIG_STAGE_FILL = watch.schedule_stage_fill
 _ORIG_PEERS = watch.tiled_peers
+_ORIG_CLIENT = watch.client_by_addr
 
 
 def _reset_watch_timers():
@@ -34,6 +35,13 @@ def _reset_watch_timers():
             pass
     if hasattr(watch, "_warp_timers"):
         watch._warp_timers.clear()
+    for t in list(getattr(watch, "_stage_extra_timers", {}) or {}):
+        try:
+            watch._stage_extra_timers[t].cancel()
+        except Exception:
+            pass
+    if hasattr(watch, "_stage_extra_timers"):
+        watch._stage_extra_timers.clear()
     watch._layout_quiet_until.clear()
     watch._appended_extra.clear()
 
@@ -886,6 +894,10 @@ def test_handle_open_stage_extra_does_not_fill():
     watch.tiled_peers = lambda ws, addr: 1
     watch.window_count = lambda ws: 2
     watch._ws_is_active = lambda ws: True
+    watch.STAGE_EXTRA_DELAY_SEC = 0
+    watch.client_by_addr = lambda addr: {
+        "address": addr, "floating": False, "workspace": {"id": 4}, "at": [960, 36], "size": [940, 1034]
+    }
     watch.geom_mod = lambda: type(
         "G",
         (),
@@ -910,6 +922,8 @@ def test_handle_open_stage_extra_does_not_fill():
         watch.lock_count = _ORIG_LOCK_COUNT
         watch.tiled_peers = _ORIG_PEERS
         watch.window_count = _ORIG_WINDOW_COUNT
+        watch.STAGE_EXTRA_DELAY_SEC = 0.2
+        watch.client_by_addr = _ORIG_CLIENT
 
 
 def test_handle_open_first_set_width_not_full():
@@ -1015,6 +1029,72 @@ def test_handle_open_first_skips_tape_pack():
         watch.schedule_pack_extras = orig_pack
 
 
+def test_stage_fill_skips_already_full():
+    focused = []
+    orig_delay = watch.CLOSE_RESTORE_DELAY_SEC
+    orig_check = watch.subprocess.check_output
+    orig_extra = watch.extra_width_workspaces
+    orig_geom = watch.geom_mod
+    orig_filled = watch.column_already_filled
+    watch.CLOSE_RESTORE_DELAY_SEC = 0
+    watch.extra_width_workspaces = lambda: {"3": {"visibleCount": 2, "stage": True}}
+    watch.column_already_filled = lambda c: True
+    watch.geom_mod = lambda: type(
+        "G",
+        (),
+        {
+            "focus_window": staticmethod(lambda addr: focused.append(("focus", addr))),
+            "layout_msg": staticmethod(lambda msg: focused.append(("msg", msg))),
+            "force_scrolling": staticmethod(lambda *a, **k: focused.append("scroll")),
+        },
+    )()
+    watch.subprocess.check_output = lambda *a, **k: (
+        '[{"address":"0xg","floating":false,"workspace":{"id":3},"at":[10,36],"size":[1900,1034]}]'
+        if "clients" in " ".join(str(x) for x in a)
+        else '{"id": 3}'
+    )
+    _reset_watch_timers()
+    try:
+        watch.schedule_stage_fill("3")
+        assert focused == []
+    finally:
+        _reset_watch_timers()
+        watch.CLOSE_RESTORE_DELAY_SEC = orig_delay
+        watch.subprocess.check_output = orig_check
+        watch.extra_width_workspaces = orig_extra
+        watch.geom_mod = orig_geom
+        watch.column_already_filled = orig_filled
+
+
+def test_stage_extra_skips_if_gone():
+    msgs = []
+    orig_delay = watch.STAGE_EXTRA_DELAY_SEC
+    watch.STAGE_EXTRA_DELAY_SEC = 0
+    watch.client_by_addr = lambda addr: None
+    watch.tiled_peers = lambda ws, addr: 1
+    watch._ws_is_active = lambda ws: True
+    watch.geom_mod = lambda: type(
+        "G",
+        (),
+        {
+            "extra_column_frac": staticmethod(lambda vis: 0.5),
+            "apply_spawn_width_rule": staticmethod(lambda *a, **k: msgs.append("spawn")),
+            "focus_window": staticmethod(lambda addr: msgs.append("focus")),
+            "layout_msg": staticmethod(lambda msg: msgs.append(msg)),
+        },
+    )()
+    _reset_watch_timers()
+    try:
+        watch.schedule_stage_extra_width("3", "0xpopup")
+        assert msgs == []
+    finally:
+        _reset_watch_timers()
+        watch.STAGE_EXTRA_DELAY_SEC = orig_delay
+        watch.client_by_addr = _ORIG_CLIENT
+        watch.tiled_peers = _ORIG_PEERS
+        watch.geom_mod = _ORIG_GEOM
+
+
 def test_close_last_restamps_empty_layout():
     scheduled = []
     stamps = []
@@ -1090,4 +1170,6 @@ if __name__ == "__main__":
     test_handle_open_first_scrolling_uses_frac()
     test_handle_open_first_skips_tape_pack()
     test_close_last_restamps_empty_layout()
+    test_stage_fill_skips_already_full()
+    test_stage_extra_skips_if_gone()
     print("watch.test.py ok")

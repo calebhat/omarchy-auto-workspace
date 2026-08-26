@@ -202,6 +202,40 @@ def extras_remain(ws: str) -> bool:
     return n > lock_count(ws)
 
 
+def client_by_addr(addr: str) -> dict | None:
+    want = str(addr or "")
+    if not want:
+        return None
+    try:
+        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
+    except Exception:
+        return None
+    return next((c for c in (clients or []) if str(c.get("address") or "") == want), None)
+
+
+def column_already_filled(client: dict | None) -> bool:
+    """True if this tiled pane already covers the monitor (skip restamp bounce)."""
+    if not client or client.get("floating"):
+        return False
+    at = client.get("at") or [0, 0]
+    size = client.get("size") or [0, 0]
+    w = int(size[0] or 0)
+    if w < 80:
+        return False
+    try:
+        mons = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
+    except Exception:
+        return False
+    mon = next((m for m in (mons or []) if m.get("id") == client.get("monitor")), None)
+    if not mon:
+        return False
+    scale = float(mon.get("scale") or 1) or 1
+    lw = float(mon.get("width") or 0) / scale
+    if lw < 80:
+        return False
+    return w >= lw * 0.9
+
+
 def tiled_peers(ws: str, addr: str) -> int:
     """Tiled windows on `ws` other than `addr`. -1 if Hyprland cannot be queried."""
     try:
@@ -417,8 +451,10 @@ _layout_quiet_until: dict[str, float] = {}
 _quiet_end_timers: dict[str, threading.Timer] = {}
 _appended_extra: dict[str, bool] = {}
 _pack_timers: dict[str, threading.Timer] = {}
+_stage_extra_timers: dict[str, threading.Timer] = {}
 CLOSE_RESTORE_DELAY_SEC = 0.4
 WARP_DELAY_SEC = 0.28
+STAGE_EXTRA_DELAY_SEC = 0.2
 LAYOUT_QUIET_SEC = 1.5
 PACK_DEBOUNCE_SEC = 0.15
 STARTED_AT = time.monotonic()
@@ -613,6 +649,9 @@ def schedule_stage_fill(ws: str) -> None:
         ]
         if len(tiled) != 1:
             return
+        if column_already_filled(tiled[0]):
+            print(json.dumps({"stageFill": ws, "skipped": "alreadyFull"}), flush=True)
+            return
         info = extra_width_workspaces().get(ws) or {}
         vis = int(info.get("visibleCount") or 2)
         g = geom_mod()
@@ -636,6 +675,47 @@ def schedule_stage_fill(ws: str) -> None:
     timer = threading.Timer(delay, fire)
     timer.daemon = True
     _close_restore_timers[ws] = timer
+    timer.start()
+
+
+def schedule_stage_extra_width(ws: str, addr: str) -> None:
+    """Wait out grok/electron click popups before shrinking the stage pane."""
+    ws = str(ws)
+    addr = str(addr or "")
+    if not ws or not addr:
+        return
+    prev = _stage_extra_timers.pop(addr, None)
+    if prev is not None:
+        prev.cancel()
+
+    def fire() -> None:
+        _stage_extra_timers.pop(addr, None)
+        hit = client_by_addr(addr)
+        if not hit or hit.get("floating"):
+            print(json.dumps({"extraWidth": ws, "addr": addr, "skipped": "gone"}), flush=True)
+            return
+        if tiled_peers(ws, addr) < 1:
+            return
+        if not _ws_is_active(ws):
+            return
+        info = extra_width_workspaces().get(ws) or {}
+        vis = int(info.get("visibleCount") or 2)
+        g = geom_mod()
+        extra = g.extra_column_frac(vis)
+        g.apply_spawn_width_rule(ws, extra)
+        g.focus_window(addr)
+        g.layout_msg(f"colresize {extra}")
+        print(json.dumps({"extraWidth": ws, "addr": addr, "stage": True, "frac": extra}), flush=True)
+        if window_count(ws) > 1:
+            schedule_warp_cursor(addr)
+
+    delay = float(STAGE_EXTRA_DELAY_SEC)
+    if delay <= 0:
+        fire()
+        return
+    timer = threading.Timer(delay, fire)
+    timer.daemon = True
+    _stage_extra_timers[addr] = timer
     timer.start()
 
 
@@ -719,6 +799,9 @@ def restore_locks(ws: str, addr: str = "", keep_focus: bool = False, ignore_burs
 
 def handle_open(addr: str, ws: str) -> None:
     if apply_in_progress():
+        return
+    hit = client_by_addr(addr)
+    if hit and hit.get("floating"):
         return
     try:
         if str(ws) not in geom_mod().managed_workspaces() and str(ws) not in load_block_map():
@@ -805,16 +888,11 @@ def handle_open(addr: str, ws: str) -> None:
             if hit:
                 snapshot_client_pos(hit)
             info = extra_ws.get(str(ws)) or {}
-            # Stage extras are 1/Visible. Do not leave spawn-width 1.0 from the
-            # first-column fill, and do not stageFill the leftover pane (I-033).
-            if info.get("stage") and _ws_is_active(str(ws)):
-                vis = int(info.get("visibleCount") or 2)
-                g = geom_mod()
-                extra = g.extra_column_frac(vis)
-                g.apply_spawn_width_rule(str(ws), extra)
-                g.focus_window(addr)
-                g.layout_msg(f"colresize {extra}")
-                print(json.dumps({"extraWidth": str(ws), "addr": addr, "stage": True, "frac": extra}), flush=True)
+            # Stage extras are 1/Visible. Debounce so click popups do not
+            # shrink the stage pane then stageFill it back (I-046).
+            if info.get("stage"):
+                schedule_stage_extra_width(str(ws), addr)
+                return
             # Same-class extras (Outlook mail) still need the warp. Assigned
             # match would skip them and leave the pointer on the inbox (I-040).
             if window_count(str(ws)) > 1:
@@ -1173,9 +1251,6 @@ def _consume_socket(proc: subprocess.Popen) -> None:
                                 tile(ws)
                     else:
                         g.sync_column_width_for_workspace(ws)
-                        extra = extra_width_workspaces()
-                        if extra.get(ws) and lock_count(ws) < 2:
-                            schedule_stage_fill(ws)
                 except Exception:
                     pass
             continue
