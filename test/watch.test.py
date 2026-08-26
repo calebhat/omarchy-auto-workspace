@@ -864,7 +864,8 @@ def test_handle_open_first_stage_fills():
     try:
         watch.handle_open("0xnew", "4")
         assert any(m[0] == "msg" and m[1] == "colresize 1.0" for m in msgs), msgs
-        assert any(m[0] == "spawn" and m[2] == 1.0 for m in msgs), msgs
+        assert any(m[0] == "spawn" and m[2] == 0.5 for m in msgs), msgs
+        assert not any(m[0] == "spawn" and m[2] == 1.0 for m in msgs), msgs
         assert any(m[0] == "scroll" and m[1].get("fill_one") is True for m in msgs), msgs
     finally:
         watch.geom_mod = _ORIG_GEOM
@@ -884,11 +885,15 @@ def test_handle_open_stage_extra_does_not_fill():
     watch.lock_count = lambda ws: 0
     watch.tiled_peers = lambda ws, addr: 1
     watch.window_count = lambda ws: 2
+    watch._ws_is_active = lambda ws: True
     watch.geom_mod = lambda: type(
         "G",
         (),
         {
             "managed_workspaces": staticmethod(lambda: {"4"}),
+            "extra_column_frac": staticmethod(lambda vis: 0.5),
+            "apply_spawn_width_rule": staticmethod(lambda ws, frac: msgs.append(("spawn", frac))),
+            "focus_window": staticmethod(lambda addr: msgs.append(("focus", addr))),
             "layout_msg": staticmethod(lambda msg: msgs.append(msg)),
             "force_scrolling": staticmethod(lambda *a, **k: msgs.append("scroll")),
         },
@@ -897,6 +902,8 @@ def test_handle_open_stage_extra_does_not_fill():
         watch.handle_open("0xextra", "4")
         assert "colresize 1.0" not in msgs
         assert "scroll" not in msgs
+        assert "colresize 0.5" in msgs, msgs
+        assert ("spawn", 0.5) in msgs
     finally:
         watch.geom_mod = _ORIG_GEOM
         watch.extra_width_workspaces = _ORIG_EXTRA

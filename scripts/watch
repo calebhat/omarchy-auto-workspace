@@ -357,10 +357,11 @@ def apply_first_column(ws: str, addr: str) -> None:
     active = _ws_is_active(str(ws))
     if info.get("stage"):
         g.force_scrolling(str(ws), vis, lock=False, stage=True, fill_one=True)
-        g.apply_spawn_width_rule(str(ws), 1.0)
         if active:
             g.layout_msg("colresize 1.0")
-        print(json.dumps({"firstColumn": str(ws), "addr": addr, "stage": True, "frac": 1.0}), flush=True)
+        # Later extras must spawn at 1/Visible, not another full pane.
+        g.apply_spawn_width_rule(str(ws), extra)
+        print(json.dumps({"firstColumn": str(ws), "addr": addr, "stage": True, "frac": 1.0, "extraFrac": extra}), flush=True)
         return
     if info.get("setWidth"):
         size = getattr(g, "size_new_scrolling_column", None)
@@ -803,6 +804,17 @@ def handle_open(addr: str, ws: str) -> None:
                 hit = None
             if hit:
                 snapshot_client_pos(hit)
+            info = extra_ws.get(str(ws)) or {}
+            # Stage extras are 1/Visible. Do not leave spawn-width 1.0 from the
+            # first-column fill, and do not stageFill the leftover pane (I-033).
+            if info.get("stage") and _ws_is_active(str(ws)):
+                vis = int(info.get("visibleCount") or 2)
+                g = geom_mod()
+                extra = g.extra_column_frac(vis)
+                g.apply_spawn_width_rule(str(ws), extra)
+                g.focus_window(addr)
+                g.layout_msg(f"colresize {extra}")
+                print(json.dumps({"extraWidth": str(ws), "addr": addr, "stage": True, "frac": extra}), flush=True)
             # Same-class extras (Outlook mail) still need the warp. Assigned
             # match would skip them and leave the pointer on the inbox (I-040).
             if window_count(str(ws)) > 1:
