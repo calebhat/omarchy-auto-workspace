@@ -407,6 +407,25 @@ def extra_column_frac(visible_count: int) -> float:
     return round(1.0 / vis, 4)
 
 
+# Strip of the next column on the right (Stage / unlocked scrolling). ~96px on
+# 1920, ~72px on 1440 logical. Set-width and lock splits stay exact 1/N.
+PEEK_FRAC = 0.05
+
+
+def peeked_column_frac(visible_count: int) -> float:
+    """1/Visible minus a right-edge peek. Never wider than exact 1/N."""
+    exact = extra_column_frac(visible_count)
+    peeked = round(exact - PEEK_FRAC, 4)
+    if peeked < 0.1:
+        return exact
+    return peeked
+
+
+def stage_fill_frac() -> float:
+    """Lone Stage pane: almost full, with a peek of the next extra."""
+    return round(1.0 - PEEK_FRAC, 4)
+
+
 def column_width_frac(it: dict[str, Any], extra_frac: float) -> float:
     """Locked / assigned geoms keep their width; extras use Visible 1/N."""
     g = it.get("geom") or {}
@@ -481,13 +500,14 @@ def clamp_scrolling_to_monitor(ws: str, metrics: dict[str, float], items: list[d
         first_x = int(((tiled[0].get("at") or [0, 0]) + [0, 0])[0])
         left_slack = first_x - left
         right_slack = right_edge - last_end
+    peek_px = max(24, int(round(PEEK_FRAC * lw)))
     if len(tiled) == 1:
-        if (left_slack > 8 or right_slack > 8) and first_addr:
+        if (left_slack > 8 or right_slack > peek_px + 8) and first_addr:
             focus_window(str(tiled[0].get("address") or first_addr))
-            layout_msg("colresize 1.0")
+            layout_msg(f"colresize {stage_fill_frac()}")
             time.sleep(0.02)
         return
-    if right_slack > 6 and last_addr:
+    if right_slack > peek_px * 2 + 8 and last_addr:
         focus_window(str(last_addr))
         layout_msg("fit expand")
         time.sleep(0.02)
@@ -540,6 +560,8 @@ def sync_column_width_for_workspace(ws: str, visible_count: int | None = None) -
             force_dwindle(ws)
         return
     extra = extra_column_frac(int(visible_count))
+    if layout in ("scrolling", "stage"):
+        extra = peeked_column_frac(int(visible_count))
     apply_spawn_width_rule(ws, extra)
     # Workspace scrolling_width is enough. Global column_width restamps
     # unassigned scrolling sessions (WS5 Grok CLI) to 1/N.
@@ -603,7 +625,7 @@ def restamp_scrolling_default(
     scrolling yet; otherwise just the spawn-width window rule.
     """
     vis = clamp_visible_count(visible_count)
-    extra = extra_column_frac(vis)
+    extra = extra_column_frac(vis) if set_width else peeked_column_frac(vis)
     already = workspace_is_scrolling(ws)
     # Set-width must restamp layout_opts even when already scrolling so a
     # leftover fullscreen_on_one_column=true does not eat the lone pane (I-039).
@@ -835,7 +857,7 @@ def size_new_scrolling_column(
     stage: bool = False,
     set_width: bool = False,
 ) -> None:
-    extra = extra_column_frac(visible_count)
+    extra = extra_column_frac(visible_count) if set_width else peeked_column_frac(visible_count)
     cache_clear()
     tiled = [c for c in clients_on_workspace(ws) if not c.get("floating")]
     n = len(tiled)
@@ -880,7 +902,10 @@ def size_new_scrolling_column(
     if n > 1:
         layout_msg_on(str(ws), f"colresize {extra}")
         return
-    layout_msg_on(str(ws), "colresize 1.0")
+    if stage:
+        layout_msg_on(str(ws), f"colresize {stage_fill_frac()}")
+        return
+    layout_msg_on(str(ws), f"colresize {extra}")
 
 
 def force_scrolling(
@@ -1682,6 +1707,7 @@ def restamp_layout_sizes(ws: str, profile: dict[str, Any] | None = None) -> dict
     plan = lock_plan_for_workspace(profile, ws)
     vis = int(plan.get("visibleCount") or 2)
     extra = extra_column_frac(vis)
+    peek = peeked_column_frac(vis)
     tiled = [c for c in clients_on_workspace(ws) if not c.get("floating")]
     addr = str((tiled[0].get("address") if tiled else "") or "")
     if plan.get("setWidth") is True:
@@ -1692,18 +1718,18 @@ def restamp_layout_sizes(ws: str, profile: dict[str, Any] | None = None) -> dict
         return {"ok": True, "mode": "set-width", "workspace": ws, "n": len(tiled)}
     if plan.get("stage") is True:
         force_scrolling(ws, vis, lock=False, stage=True, fill_one=True)
-        apply_spawn_width_rule(ws, extra)
+        apply_spawn_width_rule(ws, peek)
         if len(tiled) == 1 and addr:
             if ensure_layout_workspace(ws):
-                layout_msg("colresize 1.0")
-            apply_spawn_width_rule(ws, extra)
+                layout_msg(f"colresize {stage_fill_frac()}")
+            apply_spawn_width_rule(ws, peek)
         return {"ok": True, "mode": "stage", "workspace": ws, "filled": len(tiled) == 1}
     if plan.get("locked"):
         # Occupied Apply still has to place the tape. Skipping here left WS2
         # at 50/50 scrolling after apply_ws_prefs restamped lua:workscape.
         return _settle_workspace_once(ws, plan)
     force_scrolling(ws, vis, lock=False, fill_one=False)
-    apply_spawn_width_rule(ws, extra)
+    apply_spawn_width_rule(ws, peek)
     if len(tiled) == 1 and addr:
         try:
             aw = hypr_j("activeworkspace")
@@ -1711,7 +1737,7 @@ def restamp_layout_sizes(ws: str, profile: dict[str, Any] | None = None) -> dict
         except Exception:
             already = False
         if already:
-            layout_msg(f"colresize {extra}")
+            layout_msg(f"colresize {peek}")
     return {"ok": True, "mode": "scrolling", "workspace": ws, "n": len(tiled)}
 
 
@@ -1831,7 +1857,7 @@ def _settle_workspace_once(ws: str, plan: dict[str, Any], prefer_addr: str = "")
             items,
             metrics,
             ws,
-            extra_column_frac(plan["visibleCount"]),
+            extra_column_frac(plan["visibleCount"]) if set_width else peeked_column_frac(plan["visibleCount"]),
             prefer_addr=prefer_addr,
             visible_count=plan["visibleCount"],
             stage=stage,

@@ -368,15 +368,17 @@ def restamp_empty_workspace(ws: str) -> None:
     vis = int(info.get("visibleCount") or 2)
     g = geom_mod()
     extra = g.extra_column_frac(vis)
+    peek = g.peeked_column_frac(vis) if hasattr(g, "peeked_column_frac") else extra
+    fill = g.stage_fill_frac() if hasattr(g, "stage_fill_frac") else 0.95
     if info.get("stage"):
         g.force_scrolling(str(ws), vis, lock=False, stage=True, fill_one=True)
-        g.apply_spawn_width_rule(str(ws), 1.0)
+        g.apply_spawn_width_rule(str(ws), fill)
     elif info.get("setWidth"):
         g.force_scrolling(str(ws), vis, lock=False, fill_one=False)
         g.apply_spawn_width_rule(str(ws), extra)
     else:
         g.force_scrolling(str(ws), vis, lock=False, fill_one=False)
-        g.apply_spawn_width_rule(str(ws), extra)
+        g.apply_spawn_width_rule(str(ws), peek)
     print(json.dumps({"emptyLayout": str(ws), "stage": bool(info.get("stage")), "setWidth": bool(info.get("setWidth")), "vis": vis}), flush=True)
 
 
@@ -388,14 +390,15 @@ def apply_first_column(ws: str, addr: str) -> None:
     vis = int(info.get("visibleCount") or 2)
     g = geom_mod()
     extra = g.extra_column_frac(vis)
+    peek = g.peeked_column_frac(vis) if hasattr(g, "peeked_column_frac") else extra
+    fill = g.stage_fill_frac() if hasattr(g, "stage_fill_frac") else 0.95
     active = _ws_is_active(str(ws))
     if info.get("stage"):
         g.force_scrolling(str(ws), vis, lock=False, stage=True, fill_one=True)
         if active:
-            g.layout_msg("colresize 1.0")
-        # Later extras must spawn at 1/Visible, not another full pane.
-        g.apply_spawn_width_rule(str(ws), extra)
-        print(json.dumps({"firstColumn": str(ws), "addr": addr, "stage": True, "frac": 1.0, "extraFrac": extra}), flush=True)
+            g.layout_msg(f"colresize {fill}")
+        g.apply_spawn_width_rule(str(ws), peek)
+        print(json.dumps({"firstColumn": str(ws), "addr": addr, "stage": True, "frac": fill, "extraFrac": peek}), flush=True)
         return
     if info.get("setWidth"):
         size = getattr(g, "size_new_scrolling_column", None)
@@ -404,10 +407,10 @@ def apply_first_column(ws: str, addr: str) -> None:
         print(json.dumps({"firstColumn": str(ws), "addr": addr, "setWidth": True, "vis": vis}), flush=True)
         return
     g.force_scrolling(str(ws), vis, lock=False, fill_one=False)
-    g.apply_spawn_width_rule(str(ws), extra)
+    g.apply_spawn_width_rule(str(ws), peek)
     if active:
-        g.layout_msg(f"colresize {extra}")
-    print(json.dumps({"firstColumn": str(ws), "addr": addr, "scrolling": True, "frac": extra}), flush=True)
+        g.layout_msg(f"colresize {peek}")
+    print(json.dumps({"firstColumn": str(ws), "addr": addr, "scrolling": True, "frac": peek}), flush=True)
 
 
 def locked_workspaces() -> list[str]:
@@ -663,10 +666,13 @@ def schedule_stage_fill(ws: str) -> None:
             print(json.dumps({"setWidthFill": ws, "addr": addr, "vis": vis}), flush=True)
             return
         g.force_scrolling(ws, vis, lock=False, stage=True, fill_one=True)
+        fill = g.stage_fill_frac() if hasattr(g, "stage_fill_frac") else 0.95
+        peek = g.peeked_column_frac(vis) if hasattr(g, "peeked_column_frac") else g.extra_column_frac(vis)
         if addr:
             g.focus_window(addr)
-            g.layout_msg("colresize 1.0")
-        print(json.dumps({"stageFill": ws, "addr": addr}), flush=True)
+            g.layout_msg(f"colresize {fill}")
+        g.apply_spawn_width_rule(ws, peek)
+        print(json.dumps({"stageFill": ws, "addr": addr, "frac": fill}), flush=True)
 
     delay = float(CLOSE_RESTORE_DELAY_SEC)
     if delay <= 0:
@@ -701,7 +707,7 @@ def schedule_stage_extra_width(ws: str, addr: str) -> None:
         info = extra_width_workspaces().get(ws) or {}
         vis = int(info.get("visibleCount") or 2)
         g = geom_mod()
-        extra = g.extra_column_frac(vis)
+        extra = g.peeked_column_frac(vis) if hasattr(g, "peeked_column_frac") else g.extra_column_frac(vis)
         g.apply_spawn_width_rule(ws, extra)
         g.focus_window(addr)
         g.layout_msg(f"colresize {extra}")

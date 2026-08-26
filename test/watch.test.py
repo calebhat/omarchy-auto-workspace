@@ -864,6 +864,8 @@ def test_handle_open_first_stage_fills():
         {
             "managed_workspaces": staticmethod(lambda: {"4"}),
             "extra_column_frac": staticmethod(lambda vis: 0.5),
+            "peeked_column_frac": staticmethod(lambda vis: 0.45),
+            "stage_fill_frac": staticmethod(lambda: 0.95),
             "force_scrolling": staticmethod(lambda *a, **k: msgs.append(("scroll", k))),
             "apply_spawn_width_rule": staticmethod(lambda ws, frac: msgs.append(("spawn", ws, frac))),
             "layout_msg": staticmethod(lambda msg: msgs.append(("msg", msg))),
@@ -871,8 +873,8 @@ def test_handle_open_first_stage_fills():
     )()
     try:
         watch.handle_open("0xnew", "4")
-        assert any(m[0] == "msg" and m[1] == "colresize 1.0" for m in msgs), msgs
-        assert any(m[0] == "spawn" and m[2] == 0.5 for m in msgs), msgs
+        assert any(m[0] == "msg" and m[1] == "colresize 0.95" for m in msgs), msgs
+        assert any(m[0] == "spawn" and m[2] == 0.45 for m in msgs), msgs
         assert not any(m[0] == "spawn" and m[2] == 1.0 for m in msgs), msgs
         assert any(m[0] == "scroll" and m[1].get("fill_one") is True for m in msgs), msgs
     finally:
@@ -904,6 +906,8 @@ def test_handle_open_stage_extra_does_not_fill():
         {
             "managed_workspaces": staticmethod(lambda: {"4"}),
             "extra_column_frac": staticmethod(lambda vis: 0.5),
+            "peeked_column_frac": staticmethod(lambda vis: 0.45),
+            "stage_fill_frac": staticmethod(lambda: 0.95),
             "apply_spawn_width_rule": staticmethod(lambda ws, frac: msgs.append(("spawn", frac))),
             "focus_window": staticmethod(lambda addr: msgs.append(("focus", addr))),
             "layout_msg": staticmethod(lambda msg: msgs.append(msg)),
@@ -914,8 +918,8 @@ def test_handle_open_stage_extra_does_not_fill():
         watch.handle_open("0xextra", "4")
         assert "colresize 1.0" not in msgs
         assert "scroll" not in msgs
-        assert "colresize 0.5" in msgs, msgs
-        assert ("spawn", 0.5) in msgs
+        assert "colresize 0.45" in msgs, msgs
+        assert ("spawn", 0.45) in msgs
     finally:
         watch.geom_mod = _ORIG_GEOM
         watch.extra_width_workspaces = _ORIG_EXTRA
@@ -1111,6 +1115,8 @@ def test_close_last_restamps_empty_layout():
         (),
         {
             "extra_column_frac": staticmethod(lambda vis: 0.5),
+            "peeked_column_frac": staticmethod(lambda vis: 0.45),
+            "stage_fill_frac": staticmethod(lambda: 0.95),
             "force_scrolling": staticmethod(lambda *a, **k: stamps.append(("scroll", k))),
             "apply_spawn_width_rule": staticmethod(lambda ws, frac: stamps.append(("spawn", frac))),
         },
@@ -1120,7 +1126,7 @@ def test_close_last_restamps_empty_layout():
     try:
         watch.handle_close_or_move(None, "0xlast")
         assert scheduled == []
-        assert any(s == ("spawn", 1.0) for s in stamps), stamps
+        assert any(s == ("spawn", 0.95) for s in stamps), stamps
         assert any(s[0] == "scroll" and s[1].get("fill_one") is True for s in stamps), stamps
     finally:
         watch.window_count = _ORIG_WINDOW_COUNT

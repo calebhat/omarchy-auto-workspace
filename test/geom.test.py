@@ -96,6 +96,11 @@ def test_column_width_frac():
     assert geom.extra_column_frac(4) == 0.25
     assert geom.extra_column_frac(10) == 0.1
     assert geom.extra_column_frac(20) == 0.05
+    assert geom.peeked_column_frac(2) == 0.45
+    assert geom.peeked_column_frac(3) == 0.2833
+    assert geom.peeked_column_frac(4) == 0.2
+    assert geom.peeked_column_frac(10) == 0.1
+    assert geom.stage_fill_frac() == 0.95
     assert geom.clamp_visible_count(21) == 20
     assert geom.clamp_visible_count(0) == 1
     locked = {"lock": True, "geom": {"x": 0, "y": 0, "w": 0.6279, "h": 1}}
@@ -345,7 +350,7 @@ def test_clamp_grows_last_instead_of_panning_gutter():
         geom.clamp_scrolling_to_monitor("2", {"x": 3368.0, "w": 1904.0, "lw": 1920.0}, [])
         moves = [c for c in calls if str(c).startswith("move ")]
         assert "move -14" in moves, calls
-        assert "fit expand" in calls, calls
+        assert "fit expand" not in calls, calls
     finally:
         geom.cache_clear, geom.clients_on_workspace, geom.sort_clients_axis, geom.focus_window, geom.layout_msg, geom.ensure_layout_workspace = orig
 
@@ -364,7 +369,7 @@ def test_clamp_single_column_fills():
     geom.ensure_layout_workspace = lambda ws, attempts=6: True
     try:
         geom.clamp_scrolling_to_monitor("1", {"x": 1448.0, "w": 1904.0, "lw": 1920.0}, [])
-        assert "colresize 1.0" in calls, calls
+        assert f"colresize {geom.stage_fill_frac()}" in calls, calls
     finally:
         geom.cache_clear, geom.clients_on_workspace, geom.sort_clients_axis, geom.focus_window, geom.layout_msg, geom.ensure_layout_workspace = orig
 
@@ -553,7 +558,7 @@ def test_restore_resizes_locked_pane():
     assert "fullscreen_on_one_column = false" in joined
     assert "hl.dsp.focus" in joined
     assert "colresize 0.6" in joined
-    assert "colresize 0.5" in joined
+    assert "colresize 0.45" in joined
     assert "window.resize" not in joined
     assert "fit all" not in joined
     inhibit_at = next(i for i, c in enumerate(calls) if "inhibit_scroll true" in c)
@@ -916,8 +921,8 @@ def test_restamp_layout_sizes_stage_fills_lone():
     try:
         out = geom.restamp_layout_sizes("1", profile)
         assert out.get("mode") == "stage" and out.get("filled") is True, out
-        assert any(m == ("msg", "colresize 1.0") for m in msgs), msgs
-        assert any(m[0] == "spawn" and m[1] == 0.5 for m in msgs), msgs
+        assert any(m == ("msg", "colresize 0.95") for m in msgs), msgs
+        assert any(m[0] == "spawn" and m[1] == 0.45 for m in msgs), msgs
     finally:
         (
             geom.clients_on_workspace,
