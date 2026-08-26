@@ -719,12 +719,15 @@ def schedule_stage_extra_width(ws: str, addr: str) -> None:
         g = geom_mod()
         extra = g.peeked_column_frac(vis) if hasattr(g, "peeked_column_frac") else g.extra_column_frac(vis)
         g.apply_spawn_width_rule(ws, extra)
+        # Stage pane stays ~full until this. Resize every column to vis-width
+        # so the extra stays on this monitor instead of painting on the next.
+        g.layout_msg(f"colresize all {extra}")
+        time.sleep(0.08)
         g.focus_window(addr)
-        g.layout_msg(f"colresize {extra}")
         pack = getattr(g, "pack_peek_camera", None)
         if callable(pack):
             pack(ws, addr)
-        print(json.dumps({"extraWidth": ws, "addr": addr, "stage": True, "frac": extra}), flush=True)
+        print(json.dumps({"extraWidth": ws, "addr": addr, "stage": True, "frac": extra, "all": True}), flush=True)
         if window_count(ws) > 1:
             schedule_warp_cursor(addr)
 

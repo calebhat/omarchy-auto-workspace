@@ -925,7 +925,7 @@ def test_handle_open_stage_extra_does_not_fill():
         watch.handle_open("0xextra", "4")
         assert "colresize 1.0" not in msgs
         assert "scroll" not in msgs
-        assert "colresize 0.45" in msgs, msgs
+        assert "colresize all 0.45" in msgs, msgs
         assert ("spawn", 0.45) in msgs
     finally:
         watch.geom_mod = _ORIG_GEOM

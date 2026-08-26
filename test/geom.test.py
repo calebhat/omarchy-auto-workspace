@@ -130,6 +130,7 @@ def test_apply_scrolling_globals_sets_hypr_config():
         assert "follow_focus = false" in joined
         assert "fullscreen_on_one_column = false" in joined
         assert "follow_min_visible = 1.0" in joined
+        assert "wrap_focus = false" in joined
     finally:
         geom.hypr_eval = orig
 

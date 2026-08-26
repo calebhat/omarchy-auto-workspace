@@ -408,7 +408,21 @@ pcall(function()
     -- monitor (I-049). Scrolling layoutmsg focus stays on this workspace
     -- and pans, keeping Visible columns on screen.
     if layout == "scrolling" then
+      local before = ""
+      if ws ~= nil then
+        before = tostring(field(ws, "id") or "")
+      end
       hl.dispatch(hl.dsp.layout("focus " .. dir))
+      local after = hl.get_active_workspace()
+      local after_id = ""
+      if after ~= nil then
+        after_id = tostring(field(after, "id") or "")
+      end
+      -- wrap_focus=false still sometimes leaves the tape for another
+      -- workspace on this monitor (I-050). Stay put.
+      if before ~= "" and after_id ~= "" and after_id ~= before then
+        hl.dispatch(hl.dsp.focus({ workspace = before }))
+      end
       return
     end
     hl.dispatch(hl.dsp.focus({ direction = dir }))

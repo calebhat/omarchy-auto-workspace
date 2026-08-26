@@ -548,10 +548,8 @@ def pack_peek_camera(ws: str, addr: str = "") -> None:
     if hit.get("floating"):
         return
     monitors = hypr_j("monitors", cached=True)
-    mon = next((m for m in (monitors or []) if m.get("id") == hit.get("monitor")), None)
-    if not mon:
-        workspaces = hypr_j("workspaces", cached=True)
-        mon = monitor_for_workspace(ws, monitors, workspaces)
+    workspaces = hypr_j("workspaces", cached=True)
+    mon = monitor_for_workspace(ws, monitors, workspaces)
     if not mon:
         return
     scale = float(mon.get("scale") or 1) or 1
@@ -617,7 +615,7 @@ def apply_scrolling_globals() -> None:
     """
     hypr_eval(
         "hl.config({ scrolling = { follow_focus = false, fullscreen_on_one_column = false, "
-        "follow_min_visible = 1.0 } })"
+        "follow_min_visible = 1.0, wrap_focus = false } })"
     )
 
 

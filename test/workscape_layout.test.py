@@ -39,6 +39,7 @@ def test_arrow_focus_pans_and_hover_does_not():
     assert "I-049" in bind
     assert bind.find('layout == "scrolling"') < bind.find('layout("focus " .. dir)')
     assert bind.find('layout("focus " .. dir)') < bind.find('hl.dsp.focus({ direction = dir })')
+    assert 'after_id ~= before' in bind
 
 
 if __name__ == "__main__":

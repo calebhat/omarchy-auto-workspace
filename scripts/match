@@ -604,7 +604,7 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
     ws_ids.discard("None")
     _hypr_eval(
         "hl.config({ scrolling = { follow_focus = false, fullscreen_on_one_column = false, "
-        "follow_min_visible = 1.0 } })"
+        "follow_min_visible = 1.0, wrap_focus = false } })"
     )
     applied = []
     for ws in sorted(ws_ids, key=lambda s: int(s) if s.isdigit() else 99):
