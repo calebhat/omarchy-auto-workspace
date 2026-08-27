@@ -31,10 +31,26 @@ got=$(find_existing_addr "omarchy-launch-webapp 'https://outlook.office.com/mail
 got=$(find_existing_addr "omarchy-launch-webapp 'https://outlook.office.com/mail/'" "Outlook" "$clients" "3" "")
 [[ -z $got ]] || { echo "outlook stole: $got"; exit 1; }
 
+got=$(find_existing_addr "outlook-mail" "Outlook" "$clients" "1" "")
+[[ -z $got ]] || { echo "outlook-mail matched tabbed brave: $got"; exit 1; }
+
+got=$(find_existing_addr "outlook-mail" "Outlook" "$clients" "4" "")
+[[ $got == "0x4" ]] || { echo "outlook-mail missed site app: $got"; exit 1; }
+
+prot=$(browser_reuse_only_on_target "outlook-mail")
+[[ $prot == "true" ]] || { echo "outlook-mail not protected: $prot"; exit 1; }
+
 prot=$(browser_reuse_only_on_target "/home/user/.local/bin/brave")
 [[ $prot == "true" ]] || { echo "brave not protected: $prot"; exit 1; }
 prot=$(browser_reuse_only_on_target "/home/user/.local/bin/grok-bot")
 [[ $prot == "false" ]] || { echo "grok should move: $prot"; exit 1; }
+prot=$(browser_reuse_only_on_target "foot")
+[[ $prot == "true" ]] || { echo "foot not protected: $prot"; exit 1; }
+
+got=$(find_existing_addr "foot" "Foot" "$clients" "6" "")
+[[ $got == "0x5" ]] || { echo "foot on target: $got"; exit 1; }
+got=$(find_existing_addr "foot" "Foot" "$clients" "3" "")
+[[ -z $got ]] || { echo "foot stole off-target: $got"; exit 1; }
 prot=$(browser_reuse_only_on_target "omarchy-launch-webapp 'https://outlook.office.com/mail/'")
 [[ $prot == "true" ]] || { echo "webapp not protected: $prot"; exit 1; }
 

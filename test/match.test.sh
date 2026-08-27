@@ -165,10 +165,9 @@ profile = {
 }
 m.apply_ws_prefs({"monitors": []}, profile, [])
 lua = " ".join(str(c) for c in calls)
-assert "layout = \"scrolling\"" in lua, lua
-assert "fullscreen_on_one_column = true" in lua, lua
-assert "follow_focus = false" in lua, lua
-print("lock forces scrolling ok")
+assert "layout = \"dwindle\"" in lua, lua
+assert "lua:workscape" not in lua, lua
+print("dwindle extras=block keeps dwindle ok")
 PY
 
 python3 - "$MATCH" <<'PY'
@@ -191,7 +190,7 @@ out = m.reset_empty_workspaces({"profiles": [profile]}, profile)
 assert "5" in out["overflowKept"]
 assert "8" in out["cleared"]
 assert "1" not in out["cleared"]
-assert "5" not in (profile.get("workspacePrefs") or {}) or profile["workspacePrefs"]["5"]["layout"] == "stage"
+assert "5" not in (profile.get("workspacePrefs") or {}) or profile["workspacePrefs"]["5"]["layout"] == "scrolling"
 assert "8" not in profile.get("workspacePrefs", {})
 print("reset empty keeps overflow, clears leftovers ok")
 PY
@@ -246,19 +245,18 @@ m.safe_connector = lambda n: n or ""
 m.workspace_bindings = lambda cfg, profile, live: {"5": "DVI-I-2"}
 m.subprocess.run = lambda *a, **k: calls.append(a)
 profile = {
-    "workspacePrefs": {"5": {"layout": "stage", "visibleCount": 3, "lockSizes": False, "extras": "around"}},
+    "workspacePrefs": {"5": {"layout": "scrolling", "visibleCount": 3, "lockSizes": False, "extras": "around"}},
     "assignments": [{"workspace": 5, "exec": "foot", "lockPlace": False}],
     "workspaceMonitors": {"5": "desk-left"},
 }
 out = m.apply_ws_prefs({"monitors": []}, profile, [])
 lua = " ".join(str(c) for c in calls)
-assert out["workspaces"][0]["layout"] == "stage", out
+assert out["workspaces"][0]["layout"] == "scrolling", out
 assert "layout = \"scrolling\"" in lua, lua
-assert "fullscreen_on_one_column = true" in lua, lua
-assert "follow_focus = false" in lua, lua
-assert "column_width = 0.32" in lua, lua
+assert "column_width = 0.3333" in lua, lua
+assert "follow_focus = false" not in lua, lua
 assert "orientation" not in lua, lua
-print("stage layout rule ok")
+print("scrolling layout rule ok")
 PY
 
 python3 - "$MATCH" <<'PY'
@@ -275,9 +273,9 @@ profile = {
 }
 m.apply_ws_prefs({"monitors": []}, profile, [])
 lua = " ".join(str(c) for c in calls)
-assert "fullscreen_on_one_column = true" in lua, lua
-assert "follow_focus = false" in lua, lua
-print("single locked window fills ok")
+assert "layout = \"scrolling\"" in lua, lua
+assert "lua:workscape" not in lua, lua
+print("single assignment scrolling ok")
 PY
 
 python3 - "$MATCH" <<'PY'
@@ -297,9 +295,9 @@ profile = {
 }
 m.apply_ws_prefs({"monitors": []}, profile, [])
 lua = " ".join(str(c) for c in calls)
-assert "layout = \"lua:workscape\"" in lua, lua
-assert "layout = \"dwindle\"" not in lua, lua
-print("multi locked split uses workscape tape ok")
+assert "layout = \"dwindle\"" in lua, lua
+assert "lua:workscape" not in lua, lua
+print("multi locked split uses dwindle + block ok")
 PY
 
 python3 - "$MATCH" <<'PY'
@@ -311,16 +309,15 @@ m.safe_connector = lambda n: n or ""
 m.workspace_bindings = lambda cfg, profile, live: {}
 m.subprocess.run = lambda *a, **k: calls.append(a)
 profile = {
-    "workspacePrefs": {"1": {"layout": "set-width", "visibleCount": 4, "lockSizes": False, "extras": "around"}},
+    "workspacePrefs": {"1": {"layout": "scrolling", "visibleCount": 4, "lockSizes": False, "extras": "around"}},
     "assignments": [{"workspace": 1, "exec": "foot", "lockPlace": False}],
 }
 m.apply_ws_prefs({"monitors": []}, profile, [])
 lua = " ".join(str(c) for c in calls)
 assert "layout = \"scrolling\"" in lua, lua
-assert "fullscreen_on_one_column = false" in lua, lua
 assert "column_width = 0.25" in lua, lua
 assert "scrolling_width = 0.25" in lua, lua
-print("set-width spawn rule ok")
+print("scrolling spawn rule ok")
 PY
 
 python3 - "$MATCH" <<'PY'
@@ -425,7 +422,8 @@ os.environ["WORKSCAPE_OCCUPIED_WS"] = "2"
 os.environ.pop("WORKSCAPE_MIGRATE_OCCUPIED", None)
 m.apply_ws_prefs({"monitors": []}, profile, [])
 lua = " ".join(str(c) for c in calls)
-assert "layout = \"lua:workscape\"" in lua, lua
+assert "layout = \"dwindle\"" in lua, lua
+assert "lua:workscape" not in lua, lua
 os.environ.pop("WORKSCAPE_OCCUPIED_WS", None)
 print("occupied prefs still restamp layout ok")
 PY

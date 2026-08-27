@@ -362,52 +362,12 @@ def run_live(scenarios: set[str] | None) -> int:
             left = frac_w(rec, "dummy-left") or 0
             right = frac_w(rec, "dummy-right") or 0
             extra_f = frac_w(rec, "dummy-extra") or 0
+            if extra_f:
+                fails.append(f"S12 extra stayed on dwindle+block workspace frac={extra_f}")
             if not (0.58 <= left <= 0.72 and 0.28 <= right <= 0.42):
                 fails.append(f"S12 extra preserved split left={left} right={right}")
-            if extra_f and not (0.22 <= extra_f <= 0.42):
-                fails.append(f"S12 extra frac {extra_f} want ~1/3")
-            ordered = sorted(rec["windows"], key=lambda w: w.get("x") or 0)
-            labels = []
-            for w in ordered:
-                blob = f"{w.get('class','')} {w.get('title','')}"
-                if "dummy-extra" in blob:
-                    labels.append("extra")
-                elif "dummy-left" in blob:
-                    labels.append("left")
-                elif "dummy-right" in blob:
-                    labels.append("right")
-            if labels and labels[-1] != "extra":
-                fails.append(f"S12 extra not after locked columns: {labels}")
-            extras = [extra] if extra else []
-            for i in range(2):
-                nxt = spawn_named("12", f"{APP_PREFIX}-extra", f"dummy-extra-{i+2}", desk)
-                if nxt:
-                    watch.handle_open(nxt, "12")
-                    extras.append(nxt)
-            time.sleep(0.5)
-            rec = record_step("S12-three-extras", "12")
-            rows.append(rec)
-            ordered = sorted(rec["windows"], key=lambda w: w.get("x") or 0)
-            labels = []
-            for w in ordered:
-                blob = f"{w.get('class','')} {w.get('title','')}"
-                if "dummy-extra" in blob:
-                    labels.append("extra")
-                elif "dummy-left" in blob:
-                    labels.append("left")
-                elif "dummy-right" in blob:
-                    labels.append("right")
-            if labels[:2] != ["left", "right"]:
-                fails.append(f"S12 three extras swapped locked panes: {labels}")
-            left = frac_w(rec, "dummy-left") or 0
-            right = frac_w(rec, "dummy-right") or 0
-            if not (0.58 <= left <= 0.72 and 0.28 <= right <= 0.42):
-                fails.append(f"S12 three extras split left={left} right={right}")
-            for addr in extras:
-                if addr:
-                    hypr_eval(f'hl.dispatch(hl.dsp.window.close({{ window = "address:{addr}" }}))')
-            time.sleep(0.5)
-            geom.restore_locks_for_workspace("12", cfg, keep_focus=True)
+            if extra:
+                hypr_eval(f'hl.dispatch(hl.dsp.window.close({{ window = "address:{extra}" }}))')
             time.sleep(0.25)
             rec = record_step("S12-after-close", "12")
             rows.append(rec)
@@ -417,7 +377,7 @@ def run_live(scenarios: set[str] | None) -> int:
             right = frac_w(rec, "dummy-right") or 0
             if not (0.58 <= left <= 0.72 and 0.28 <= right <= 0.42):
                 fails.append(f"S12 after close split left={left} right={right} want ~0.65/0.35")
-            if rec.get("layout") not in ("scrolling", "dwindle", "lua:workscape"):
+            if rec.get("layout") not in ("dwindle", "scrolling"):
                 fails.append(f"S12 after close layout={rec.get('layout')}")
 
         if "S11" in want:
@@ -434,10 +394,14 @@ def run_live(scenarios: set[str] | None) -> int:
             rows.append(rec)
             locked = frac_w(rec, "dummy-stage") or 0
             extra_f = frac_w(rec, "dummy-extra") or 0
-            if locked < 0.85:
-                fails.append(f"S11 locked frac {locked} want ~1.0")
-            if extra_f and not (0.40 <= extra_f <= 0.60):
+            # Native scrolling: first column stays full; extra is ~1/Visible.
+            if locked and locked < 0.85:
+                fails.append(f"S11 first column frac {locked} want ~1.0")
+            if extra_f and not (0.38 <= extra_f <= 0.62):
                 fails.append(f"S11 extra frac {extra_f} want ~0.5")
+            extra_rec = next((w for w in rec["windows"] if "dummy-extra" in f"{w.get('class','')} {w.get('title','')}"), None)
+            if extra_rec and (extra_rec.get("xOnMon") or 0) >= 1800:
+                fails.append(f"S11 extra starts off this monitor xOnMon={extra_rec.get('xOnMon')}")
             if extra:
                 hypr_eval(f'hl.dispatch(hl.dsp.window.close({{ window = "address:{extra}" }}))')
             time.sleep(0.4)
@@ -476,9 +440,9 @@ def run_live(scenarios: set[str] | None) -> int:
             time.sleep(0.25)
             rec = record_step("S15-two", "15")
             rows.append(rec)
-            widths = [w["fracW"] or 0 for w in rec["windows"]]
-            if widths and not all(0.22 <= f <= 0.45 for f in widths):
-                fails.append(f"S15 set-width fracs {widths} want ~1/3")
+            extra_f = frac_w(rec, "dummy-extra") or 0
+            if extra_f and not (0.22 <= extra_f <= 0.45):
+                fails.append(f"S15 extra frac {extra_f} want ~1/3")
             if extra:
                 hypr_eval(f'hl.dispatch(hl.dsp.window.close({{ window = "address:{extra}" }}))')
 

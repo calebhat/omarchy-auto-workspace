@@ -39,16 +39,16 @@
       },
       "workspacePrefs": {
         "1": {
-          "layout": "stage",
+          "layout": "scrolling",
           "visibleCount": 2,
           "lockSizes": false,
           "extras": "around"
         },
         "2": {
-          "layout": "scrolling",
-          "visibleCount": 3,
+          "layout": "dwindle",
+          "visibleCount": 2,
           "lockSizes": false,
-          "extras": "around"
+          "extras": "block"
         },
         "3": {
           "layout": "scrolling",
@@ -57,19 +57,19 @@
           "extras": "around"
         },
         "4": {
-          "layout": "stage",
+          "layout": "scrolling",
           "visibleCount": 2,
           "lockSizes": false,
           "extras": "around"
         },
         "5": {
-          "layout": "set-width",
+          "layout": "scrolling",
           "visibleCount": 3,
           "lockSizes": false,
           "extras": "around"
         },
         "6": {
-          "layout": "set-width",
+          "layout": "scrolling",
           "visibleCount": 4,
           "lockSizes": false,
           "extras": "block"
@@ -87,10 +87,10 @@
           "extras": "around"
         },
         "9": {
-          "layout": "stage",
+          "layout": "scrolling",
           "visibleCount": 1,
           "lockSizes": false,
-          "extras": "around"
+          "extras": "block"
         }
       },
       "assignments": [

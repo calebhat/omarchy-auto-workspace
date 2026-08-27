@@ -31,8 +31,6 @@ Item {
     readonly property string layoutLabel: {
         if (customLayout) return "tiled · drag the splitters"
         if (hyprLayout === "scrolling") return "scrolling • " + Math.round(columnWidth * 100) + "% columns"
-        if (hyprLayout === "set-width") return "set width · every window is 1/visible"
-        if (hyprLayout === "stage") return "stage · first window full width"
         if (hyprLayout === "master") return "master · large pane + stack"
         if (hyprLayout === "dwindle") return "dwindle · split tree"
         return hyprLayout
@@ -215,18 +213,13 @@ Item {
                             anchors.top: parent.verticalCenter
                             anchors.topMargin: 4
                             width: parent.width - 12
-                            text: ((root.lockAll || (modelData && modelData.lockPlace)) ? "🔒 " : "") + (modelData ? (modelData.name || "App") : "")
+                            text: modelData ? (modelData.name || "App") : ""
                             color: Color.foreground
                             font.family: Style.font.family
                             font.pixelSize: Style.font.caption - 1
                             font.bold: true
                             wrapMode: Text.WordWrap
                             horizontalAlignment: Text.AlignHCenter
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            acceptedButtons: Qt.RightButton
-                            onClicked: if (modelData && modelData.id) root.appLockToggled(modelData.id)
                         }
                         MouseArea {
                             z: 5

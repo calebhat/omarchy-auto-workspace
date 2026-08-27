@@ -62,11 +62,12 @@ def test_lock_plan_and_assignment():
     assert plan["locked"][0]["exec"] == "herdr"
     assert plan["extras"] == "around"
     stage_profile = {
-        "workspacePrefs": {"1": {"layout": "stage", "visibleCount": 2, "extras": "around"}},
-        "assignments": [{"workspace": 1, "exec": "brave", "lockPlace": False}],
+        "workspacePrefs": {"1": {"layout": "scrolling", "visibleCount": 2, "extras": "around"}},
+        "assignments": [{"workspace": 1, "exec": "brave", "lockPlace": False, "geom": {"x": 0, "y": 0, "w": 1, "h": 1}}],
     }
     sp = geom.lock_plan_for_workspace(stage_profile, "1")
-    assert sp["stage"] is True
+    assert sp["layout"] == "scrolling"
+    assert sp["stage"] is False
     assert len(sp["locked"]) == 1
     assert sp["locked"][0]["geom"]["w"] == 1.0
 
@@ -87,7 +88,7 @@ def test_managed_workspaces():
     }
     got = geom.managed_workspaces(profile)
     assert "1" in got and "2" in got and "3" in got
-    assert "5" not in got
+    assert "5" in got
 
 
 def test_column_width_frac():
@@ -107,16 +108,11 @@ def test_column_width_frac():
     extra = {"lock": False, "geom": {}}
     assert geom.column_width_frac(locked, 0.5) == 0.6279
     assert geom.column_width_frac(extra, 0.5) == 0.5
-    assert "fullscreen_on_one_column = false" in geom.scrolling_layout_opts(2, lock=True)
-    assert "fullscreen_on_one_column = false" in geom.scrolling_layout_opts(2, lock=False)
-    assert "fullscreen_on_one_column = true" in geom.scrolling_layout_opts(2, stage=True)
-    assert "follow_focus = false" in geom.scrolling_layout_opts(2, lock=True)
-    assert "follow_focus = false" in geom.scrolling_layout_opts(2, stage=True)
-    assert "follow_min_visible = 1.0" in geom.scrolling_layout_opts(2, stage=True)
-    assert "fullscreen_on_one_column = true" in geom.scrolling_layout_opts(2, lock=True, fill_one=True)
+    assert "column_width = 0.5" in geom.scrolling_layout_opts(2)
     assert "column_width = 0.3333" in geom.scrolling_layout_opts(3)
     assert "column_width = 0.25" in geom.scrolling_layout_opts(4)
-    assert "fullscreen_on_one_column = false" in geom.scrolling_layout_opts(4, fill_one=False)
+    assert "follow_focus" not in geom.scrolling_layout_opts(2, lock=True)
+    assert "fullscreen_on_one_column" not in geom.scrolling_layout_opts(2, stage=True)
 
 
 def test_apply_scrolling_globals_sets_hypr_config():
@@ -125,12 +121,7 @@ def test_apply_scrolling_globals_sets_hypr_config():
     geom.hypr_eval = lambda lua: calls.append(lua)
     try:
         geom.apply_scrolling_globals()
-        joined = "\n".join(calls)
-        assert "hl.config" in joined
-        assert "follow_focus = false" in joined
-        assert "fullscreen_on_one_column = false" in joined
-        assert "follow_min_visible = 1.0" in joined
-        assert "wrap_focus = false" in joined
+        assert calls == []
     finally:
         geom.hypr_eval = orig
 
@@ -379,7 +370,9 @@ def test_pack_peek_camera_left_middle_right():
         assert calls == [], calls
         calls.clear()
         geom.pack_peek_camera("1", "0xb")
-        assert calls == [], calls
+        peek_px = max(16, int(round(geom.PEEK_FRAC * 1920)))
+        slack = 2400 - (1440 + peek_px)
+        assert f"move {-slack}" in calls, calls
         calls.clear()
         geom.pack_peek_camera("1", "0xc")
         assert "move -960" in calls, calls
@@ -475,8 +468,8 @@ def test_force_scrolling_not_persistent_by_default():
         lua = "\n".join(calls)
         assert "persistent = false" in lua
         assert "layout = \"scrolling\"" in lua
-        assert "fullscreen_on_one_column = true" in lua
-        assert "follow_focus = false" in lua
+        assert "column_width = 0.5" in lua
+        assert "follow_focus" not in lua
         calls.clear()
         geom.force_scrolling("2", visible_count=2, lock=True, persist=True)
         assert "persistent = true" in "\n".join(calls)
@@ -1532,42 +1525,16 @@ if __name__ == "__main__":
     test_close_enough_and_fallback()
     test_column_width_frac()
     test_managed_workspaces()
-    test_push_column_after_locked()
-    test_append_extra_restores_prior_focus()
-    test_push_column_from_left_uses_few_swaps()
-    test_push_column_skips_when_extra_already_after_locked()
-    test_clamp_pans_shifted_split_back()
-    test_clamp_grows_last_instead_of_panning_gutter()
-    test_pack_peek_camera_left_middle_right()
-    test_clamp_single_column_fills()
-    test_clamp_pans_16px_fresh_offset()
     test_apply_scrolling_globals_sets_hypr_config()
-    test_clamp_skips_when_already_filled()
-    test_fit_column_fracs_keeps_columns_on_screen()
     test_force_scrolling_not_persistent_by_default()
-    test_restamp_does_not_set_global_column_width()
-    test_restamp_set_width_disables_fullscreen_on_one_column()
-    test_restore_resizes_locked_pane()
-    test_locked_colresize_frac_uses_pixel_width()
-    test_append_extra_preserves_locked_column_sizes()
-    test_append_extra_skips_when_already_tape()
-    test_two_locked_around_stays_scrolling()
     test_apply_config_skips_occupied()
     test_apply_config_migrates_occupied_on_profile_change()
-    test_restamp_layout_sizes_locked_settles_tape()
-    test_restamp_layout_sizes_stage_fills_lone()
-    test_apply_config_occupied_stage_still_fills()
     test_restore_locks_occupied_skips_unless_migrate()
     test_apply_items_scrolling_vs_stacked_rows()
     test_geom_pixels_master_stack()
     test_match_app_id_when_title_is_shell_prompt()
     test_match_herdr_not_shophawk()
     test_match_outlook_prefers_full_pane()
-    test_set_width_plan_ignores_lockplace()
-    test_restore_set_width_applies_scrolling_without_locks()
-    test_restore_set_width_resizes_locked_assignment_to_frac()
-    test_size_new_scrolling_column_set_width_resizes_every_column()
-    test_size_new_scrolling_column_set_width_skips_inactive()
     test_set_size_lock_is_noop()
     test_clear_size_lock_is_noop()
     test_force_tiled_uses_off_not_toggle()

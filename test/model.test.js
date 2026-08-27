@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -205,20 +205,11 @@ const pref = prefCfg.profiles[0].workspacePrefs["2"]
 if (pref.layout !== "scrolling" || pref.visibleCount !== 3 || pref.lockSizes !== true || pref.extras !== "block")
   throw new Error("workspace prefs")
 if (m.layoutDescription("master").indexOf("stack") < 0) throw new Error("master layout copy")
-if (m.layoutDescription("stage").indexOf("full width") < 0) throw new Error("stage layout copy")
-if (m.normalizeWorkspacePref({ layout: "stage" }).layout !== "stage") throw new Error("persist stage")
-if (m.normalizeWorkspacePref({ layout: "set-width" }).layout !== "set-width") throw new Error("persist set-width")
-if (m.layoutDescription("set-width").indexOf("1/Visible") < 0) throw new Error("set-width layout copy")
-const setWidthRects = m.autoLayoutRects(1, "set-width", 0.25)
-if (setWidthRects.length !== 1 || Math.abs(setWidthRects[0].w - 0.25) > 0.02) throw new Error("set-width first is not full")
-if (m.visibleCountHelp(4, false, "set-width").indexOf("1/4") < 0) throw new Error("set-width visible help")
-const stageRects = m.autoLayoutRects(2, "stage", 0.5)
-if (stageRects[0].w !== 1) throw new Error("stage first full")
-if (!(stageRects[1].w > 0.4 && stageRects[1].w < 0.6)) throw new Error("stage extra width")
+if (m.normalizeWorkspacePref({ layout: "stage" }).layout !== "scrolling") throw new Error("stage maps to scrolling")
+if (m.normalizeWorkspacePref({ layout: "set-width" }).layout !== "scrolling") throw new Error("set-width maps to scrolling")
 if (m.layoutDescription("scrolling").indexOf("column") < 0) throw new Error("scrolling layout copy")
-if (m.layoutDescription("dwindle").indexOf("split") < 0) throw new Error("dwindle layout copy")
-if (m.layoutDescription("dwindle", true).indexOf("clip") < 0) throw new Error("lock uses scrolling copy")
-if (m.visibleCountHelp(2, true).indexOf("1/2") < 0) throw new Error("visible extra width")
+if (m.layoutDescription("dwindle").indexOf("dwindle") < 0) throw new Error("dwindle layout copy")
+if (m.visibleCountHelp(2, false, "scrolling").indexOf("1/2") < 0) throw new Error("visible extra width")
 if (m.clampVisibleCount(10) !== 10) throw new Error("visible 10")
 if (m.clampVisibleCount(21) !== 20) throw new Error("visible max 20")
 if (m.clampVisibleCount(0) !== 1) throw new Error("visible min 1")
@@ -388,10 +379,9 @@ if (!(master3[0].w > 0.5 && master3[0].h === 1)) throw new Error("master left pa
 if (!(master3[1].x > 0.5 && master3[2].x > 0.5)) throw new Error("master stack on right")
 if (Math.abs(master3[1].y + master3[1].h - master3[2].y) > 0.05) throw new Error("master stack stacked")
 noOverlap(master3)
-const stage3 = m.autoLayoutRects(3, "stage", 0.5)
-if (stage3.length !== 3 || stage3[0].w !== 1) throw new Error("stage lead full")
-if (!(stage3[1].w > 0.4 && stage3[1].w < 0.6)) throw new Error("stage extra width")
-if (!(stage3[2].w > 0.4 && stage3[2].w < 0.6)) throw new Error("stage second extra width")
+const stage3 = m.autoLayoutRects(3, "scrolling", 0.5)
+if (stage3.length !== 3) throw new Error("scrolling three columns")
+if (!(stage3[0].w > 0.4 && stage3[0].w < 0.6)) throw new Error("scrolling column width")
 const sameType = m.packedGeomsForApps([
   { id: "f1", exec: "foot", geom: { x: 0, y: 0, w: 0.5, h: 1 } },
   { id: "f2", exec: "foot", geom: { x: 0.5, y: 0, w: 0.5, h: 1 } }
@@ -501,6 +491,127 @@ if (m.clampVisibleCount(8) !== 8) throw new Error("visible 8")
 const ovBlock = m.normalizeWorkspacePref({ extras: "block" })
 const ovAround = m.normalizeWorkspacePref({ extras: "around" })
 if (ovBlock.extras !== "block" || ovAround.extras !== "around") throw new Error("extras block vs around")
+function assertFlags(label, profile, ws, want) {
+  const got = m.workspaceControlFlags(profile, ws)
+  for (const key of Object.keys(want)) {
+    if (got[key] !== want[key])
+      throw new Error(label + " " + key + "=" + got[key] + " want " + want[key])
+  }
+  for (const field of ["layout", "visibleCount", "extras"]) {
+    const can = m.canEditWorkspacePref(profile, ws, field)
+    const expect = field === "layout" ? got.showLayoutPicker
+      : field === "visibleCount" ? got.showVisibleCount
+      : got.showExtrasToggle
+    if (can !== expect) throw new Error(label + " canEdit " + field)
+  }
+}
+
+const openLayout = {
+  showLayoutPicker: true,
+  showScrollingLayout: true,
+  showMasterLayout: true,
+  forcedBlock: false
+}
+const lockedSplitUi = {
+  layout: "dwindle",
+  extras: "block",
+  forcedBlock: true,
+  showLayoutPicker: false,
+  showVisibleCount: false,
+  showExtrasToggle: false,
+  showScrollingLayout: false,
+  showMasterLayout: false
+}
+
+assertFlags("empty dwindle", { assignments: [], workspacePrefs: {} }, 1, {
+  layout: "dwindle", extras: "around", showVisibleCount: false,
+  showExtrasToggle: true, ...openLayout
+})
+assertFlags("dwindle around", {
+  assignments: [{ workspace: 4, exec: "foot", enabled: true }],
+  workspacePrefs: { "4": { layout: "dwindle", extras: "around" } }
+}, 4, { layout: "dwindle", extras: "around", showVisibleCount: false, showExtrasToggle: true, ...openLayout })
+assertFlags("dwindle block chosen", {
+  assignments: [{ workspace: 4, exec: "foot", enabled: true }],
+  workspacePrefs: { "4": { layout: "dwindle", extras: "block" } }
+}, 4, { layout: "dwindle", extras: "block", showVisibleCount: false, showExtrasToggle: true, ...openLayout })
+assertFlags("scrolling around", {
+  assignments: [{ workspace: 1, exec: "brave", lockPlace: true, enabled: true }],
+  workspacePrefs: { "1": { layout: "scrolling", visibleCount: 2, extras: "around" } }
+}, 1, { layout: "scrolling", extras: "around", showVisibleCount: true, showExtrasToggle: true, ...openLayout })
+assertFlags("scrolling block chosen", {
+  assignments: [{ workspace: 6, exec: "foot", enabled: true }],
+  workspacePrefs: { "6": { layout: "scrolling", visibleCount: 4, extras: "block" } }
+}, 6, { layout: "scrolling", extras: "block", showVisibleCount: true, showExtrasToggle: true, ...openLayout })
+assertFlags("master around", {
+  assignments: [{ workspace: 7, exec: "foot", enabled: true }],
+  workspacePrefs: { "7": { layout: "master", extras: "around" } }
+}, 7, { layout: "master", extras: "around", showVisibleCount: false, showExtrasToggle: true, ...openLayout })
+assertFlags("one of two lockPlace", {
+  assignments: [
+    { workspace: 2, exec: "herdr", lockPlace: true, enabled: true },
+    { workspace: 2, exec: "panel", lockPlace: false, enabled: true }
+  ],
+  workspacePrefs: { "2": { layout: "scrolling", extras: "around" } }
+}, 2, { layout: "scrolling", extras: "around", forcedBlock: false, showExtrasToggle: true, showVisibleCount: true, ...openLayout })
+assertFlags("disabled second lock does not force", {
+  assignments: [
+    { workspace: 2, exec: "herdr", lockPlace: true, enabled: true },
+    { workspace: 2, exec: "panel", lockPlace: true, enabled: false }
+  ],
+  workspacePrefs: { "2": { layout: "dwindle", extras: "around" } }
+}, 2, { forcedBlock: false, showExtrasToggle: true, showLayoutPicker: true })
+assertFlags("lockSizes one app", {
+  assignments: [{ workspace: 1, exec: "brave", lockPlace: true, enabled: true }],
+  workspacePrefs: { "1": { layout: "scrolling", lockSizes: true, extras: "around" } }
+}, 1, { forcedBlock: false, showExtrasToggle: true, showVisibleCount: true, ...openLayout })
+
+const twoLockProf = {
+  assignments: [
+    { workspace: 2, exec: "herdr", lockPlace: true, enabled: true },
+    { workspace: 2, exec: "panel", lockPlace: true, enabled: true }
+  ],
+  workspacePrefs: { "2": { layout: "scrolling", visibleCount: 2, extras: "around" } }
+}
+if (!m.workspaceForcesBlock(twoLockProf, 2)) throw new Error("two lockPlace forces block")
+const twoLockEff = m.effectiveWorkspacePref(twoLockProf, 2)
+if (twoLockEff.layout !== "dwindle" || twoLockEff.extras !== "block") throw new Error("two lock effective dwindle+block")
+assertFlags("two lockPlace", twoLockProf, 2, lockedSplitUi)
+assertFlags("lockSizes two apps", {
+  assignments: [
+    { workspace: 8, exec: "a", enabled: true },
+    { workspace: 8, exec: "b", enabled: true }
+  ],
+  workspacePrefs: { "8": { layout: "dwindle", lockSizes: true, extras: "around" } }
+}, 8, lockedSplitUi)
+
+const dummy = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/dummy-profile.json"), "utf8"))
+const dummyProf = dummy.profiles[0]
+assertFlags("dummy WS1 scrolling 1-lock", dummyProf, 1, { layout: "scrolling", showVisibleCount: true, showExtrasToggle: true, ...openLayout })
+assertFlags("dummy WS2 two-lock", dummyProf, 2, lockedSplitUi)
+assertFlags("dummy WS3 scrolling vis4", dummyProf, 3, { layout: "scrolling", showVisibleCount: true, showExtrasToggle: true, ...openLayout })
+assertFlags("dummy WS5 scrolling no lock", dummyProf, 5, { layout: "scrolling", showVisibleCount: true, showExtrasToggle: true, ...openLayout })
+assertFlags("dummy WS6 scrolling chosen block", dummyProf, 6, { layout: "scrolling", extras: "block", showVisibleCount: true, showExtrasToggle: true, forcedBlock: false, ...openLayout })
+assertFlags("dummy WS7 master", dummyProf, 7, { layout: "master", showVisibleCount: false, showExtrasToggle: true, ...openLayout })
+assertFlags("dummy WS8 lockSizes split", dummyProf, 8, lockedSplitUi)
+assertFlags("dummy WS9 overflow dest", dummyProf, 9, { layout: "scrolling", extras: "block", showVisibleCount: true, showExtrasToggle: true, ...openLayout })
+assertFlags("dummy empty WS10", dummyProf, 10, { layout: "dwindle", extras: "around", showVisibleCount: false, showExtrasToggle: true, ...openLayout })
+
+const dummyOv = m.profileControlFlags(dummyProf)
+if (!dummyOv.showOverflowCard || !dummyOv.usesBounce) throw new Error("dummy overflow card")
+if (!dummyOv.showOverflowChainControls) throw new Error("dummy overflow chain on")
+
+const aroundOnly = { assignments: [{ workspace: 1, exec: "brave" }], workspacePrefs: { "1": { extras: "around" } } }
+if (m.profileUsesBounce(aroundOnly)) throw new Error("around-only profile has no bounce")
+if (m.profileControlFlags(aroundOnly).showOverflowCard) throw new Error("around-only hides overflow card")
+const migratedLocks = m.sanitizeConfig({ version: 2, profiles: [{ id: "p", name: "P", assignments: twoLockProf.assignments, workspacePrefs: twoLockProf.workspacePrefs }] })
+if (migratedLocks.profiles[0].workspacePrefs["2"].layout !== "dwindle") throw new Error("migrate two-lock layout")
+if (migratedLocks.profiles[0].workspacePrefs["2"].extras !== "block") throw new Error("migrate two-lock extras")
+if (!m.profileUsesBounce(twoLockProf)) throw new Error("two lock uses bounce")
+if (!m.profileControlFlags({ ...aroundOnly, overflow: { enabled: true, workspaces: [9], maxWindows: 1 } }).showOverflowCard)
+  throw new Error("overflow on still shows card")
+if (m.layoutDescription("dwindle", true).indexOf("Locked split") < 0) throw new Error("locked split copy")
+if (m.assignedAppCount(twoLockProf, 2) !== 2) throw new Error("assignedAppCount")
 if (m.maxOrganizerPanes() !== 20) throw new Error("cap 20")
 const twenty = m.autoLayoutRects(20, "dwindle", 0.49)
 if (twenty.length !== 20) throw new Error("20 panes")

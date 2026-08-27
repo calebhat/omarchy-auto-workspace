@@ -150,43 +150,40 @@ def assignment_is_locked(assignment: dict[str, Any], prefs: dict[str, Any] | Non
 
 
 def lock_plan_for_workspace(profile: dict[str, Any], ws: str) -> dict[str, Any]:
+    """Apply-time geoms for assigned windows. Does not drive a live tape."""
     prefs = profile.get("workspacePrefs") or {}
     pref = prefs.get(str(ws)) or {}
     vis = clamp_visible_count(pref.get("visibleCount") or 2)
     extras = "block" if pref.get("extras") == "block" else "around"
-    lock_all = pref.get("lockSizes") is True
-    stage = pref.get("layout") == "stage"
-    set_width = pref.get("layout") == "set-width"
+    layout = str(pref.get("layout") or "dwindle")
+    if layout in ("stage", "set-width"):
+        layout = "scrolling"
+    if layout not in ("dwindle", "scrolling", "master"):
+        layout = "dwindle"
+    n_lock = 0
     locked = []
-    # Set-width is 1/Visible for every column, including a lockPlace app.
-    if not set_width:
-        for a in profile.get("assignments") or []:
-            if a.get("enabled") is False:
-                continue
-            if str(a.get("workspace") or "") != str(ws):
-                continue
-            if lock_all or a.get("lockPlace") is True:
-                locked.append(a)
-    if stage and not locked:
-        for a in profile.get("assignments") or []:
-            if a.get("enabled") is False:
-                continue
-            if str(a.get("workspace") or "") != str(ws):
-                continue
-            primary = dict(a)
-            primary["geom"] = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
-            primary["lockPlace"] = True
-            locked.append(primary)
-            break
+    for a in profile.get("assignments") or []:
+        if a.get("enabled") is False:
+            continue
+        if str(a.get("workspace") or "") != str(ws):
+            continue
+        if a.get("lockPlace") is True or a.get("geom"):
+            locked.append(a)
+        if a.get("lockPlace") is True:
+            n_lock += 1
+    if n_lock >= 2 and extras != "block":
+        layout = "dwindle"
+        extras = "block"
     return {
         "workspace": str(ws),
         "locked": locked,
-        "lock_all": lock_all,
+        "lock_all": pref.get("lockSizes") is True,
         "extras": extras,
         "visibleCount": vis,
         "prefs": prefs,
-        "stage": stage,
-        "setWidth": set_width,
+        "layout": layout,
+        "stage": False,
+        "setWidth": False,
     }
 
 
@@ -519,6 +516,9 @@ def clamp_scrolling_to_monitor(ws: str, metrics: dict[str, float], items: list[d
 
 
 def pack_peek_camera(ws: str, addr: str = "") -> None:
+    """Removed. Hyprland scrolling owns the camera."""
+    return
+    _ = (ws, addr)
     """Pan so peek strips show only where you can still scroll.
 
     Leftmost: flush left, small right peek. Middle: peek both sides.
@@ -568,6 +568,8 @@ def pack_peek_camera(ws: str, addr: str = "") -> None:
     has_left = idx > 0
     has_right = idx < n - 1
     mon_right = mx + int(round(lw))
+    # Last column hanging off this monitor: pull it back first so extras
+    # are not painted on the next output (looks like the wrong workspace).
     over = (x + w) - mon_right
     if over > 8:
         layout_msg(f"move {-over}")
@@ -581,42 +583,35 @@ def pack_peek_camera(ws: str, addr: str = "") -> None:
     slack = x - int(target_x)
     if abs(slack) <= 8:
         return
-    # Tiny alignment only. A whole-column pan yanks the tape onto the next
-    # monitor and cuts the rightmost pane (I-050).
-    if abs(slack) > int(lw * 0.2):
-        return
-    new_right = x - slack + w
+    new_x = x - slack
+    new_right = new_x + w
+    # Keep the focused column on this monitor. A pan that would park it
+    # on the next output is the I-050 yank; clamp to flush-right instead.
     if new_right > mon_right + 8:
+        slack = x - (mon_right - w)
+        new_x = x - slack
+        new_right = new_x + w
+    if abs(slack) <= 8:
+        return
+    if new_right > mon_right + 8:
+        return
+    if new_x + w < mx + 8:
         return
     layout_msg(f"move {-slack}")
 
 
 def scrolling_layout_opts(visible_count: int, lock: bool = False, stage: bool = False, fill_one: bool = False) -> str:
     col = max(0.1, extra_column_frac(visible_count))
-    # Always set fullscreen_on_one_column. Hyprland’s default is true, which
-    # makes a lone Set-width / extra column eat the whole monitor.
-    expand = bool(fill_one or (stage and not lock))
-    fs = "true" if expand else "false"
-    # Hover-focus must not pan the camera (I-040). Click and Super+arrows pan.
-    return (
-        f"column_width = {col}, fullscreen_on_one_column = {fs}, "
-        f"follow_focus = false, follow_min_visible = 1.0, focus_fit_method = 1"
-    )
+    _ = (lock, stage, fill_one)
+    return f"column_width = {col}"
 
 
 OMARCHY_SCROLLING_COLUMN_WIDTH = 0.49
 
 
 def apply_scrolling_globals() -> None:
-    """Hyprland ignores follow_focus / fullscreen_on_one_column on workspace_rule.
-
-    Live getoption showed both still at defaults (set: false) after layout_opts.
-    Stage lone panes still get colresize 1.0 from stageFill.
-    """
-    hypr_eval(
-        "hl.config({ scrolling = { follow_focus = false, fullscreen_on_one_column = false, "
-        "follow_min_visible = 1.0, wrap_focus = false } })"
-    )
+    """No-op. Leave Omarchy/Hyprland scrolling defaults alone."""
+    return
 
 
 def sync_column_width_for_workspace(ws: str, visible_count: int | None = None) -> None:
@@ -696,25 +691,12 @@ def restamp_scrolling_default(
     n_cols: int = 1,
     set_width: bool = False,
 ) -> None:
-    """Keep new columns at 1/visibleCount without restamping existing splits.
-
-    force_scrolling on an already-scrolling workspace restamps column_width
-    and collapses locked panes (I-021). Only set the layout when it is not
-    scrolling yet; otherwise just the spawn-width window rule.
-    """
+    """Set scrolling layout + spawn width. Do not colresize live columns."""
+    _ = (lock, stage, n_cols, set_width)
     vis = clamp_visible_count(visible_count)
-    extra = extra_column_frac(vis) if set_width else peeked_column_frac(vis)
-    already = workspace_is_scrolling(ws)
-    # Set-width must restamp layout_opts even when already scrolling so a
-    # leftover fullscreen_on_one_column=true does not eat the lone pane (I-039).
-    if set_width or not already:
-        force_scrolling(
-            ws,
-            vis,
-            lock=False if set_width else (bool(lock) and n_cols > 1),
-            stage=False if set_width else stage,
-            fill_one=False if set_width else (n_cols <= 1 and not set_width),
-        )
+    extra = extra_column_frac(vis)
+    if not workspace_is_scrolling(ws):
+        force_scrolling(ws, vis)
     apply_spawn_width_rule(ws, extra)
 
 
@@ -997,8 +979,8 @@ def force_scrolling(
     ws = SAFE.safe_ws(ws)
     if not ws:
         return
-    apply_scrolling_globals()
-    opts = scrolling_layout_opts(visible_count, lock=lock, stage=stage, fill_one=fill_one)
+    _ = (lock, stage, fill_one)
+    opts = scrolling_layout_opts(visible_count)
     persist_s = "true" if persist else "false"
     hypr_eval(
         f'hl.workspace_rule({{ workspace = "{ws}", persistent = {persist_s}, layout = "scrolling", '
@@ -1014,14 +996,9 @@ def force_dwindle(ws: str) -> None:
 
 
 def uses_workscape_tape(plan: dict[str, Any]) -> bool:
-    """Two locked panes + extras=around: compositor tape, not swapcol packing."""
-    if not isinstance(plan, dict):
-        return False
-    if plan.get("extras") == "block":
-        return False
-    if plan.get("setWidth") is True or plan.get("stage") is True:
-        return False
-    return len(plan.get("locked") or []) >= 2
+    """Removed. Two-lock tape is no longer a layout."""
+    _ = plan
+    return False
 
 
 def workspace_tiled_layout(ws: str) -> str:
@@ -1040,23 +1017,17 @@ def reset_workscape_layout_cache() -> None:
 
 
 def ensure_workscape_layout() -> None:
-    """Register lua:workscape once per compositor connection. Repeat require during map stalls the extra (I-035)."""
+    """Load Super+arrow overlay. No custom layout."""
     global _layout_ready
     if _layout_ready:
         return
-    hypr_eval('pcall(function() require("hypr.workscape-layout") end)')
+    hypr_eval('pcall(function() require("hypr.workscape-binds") end)')
     _layout_ready = True
 
 
 def force_workscape_layout(ws: str, persist: bool = False) -> None:
-    ws = SAFE.safe_ws(ws)
-    if not ws:
-        return
-    ensure_workscape_layout()
-    persist_s = "true" if persist else "false"
-    hypr_eval(
-        f'hl.workspace_rule({{ workspace = "{ws}", persistent = {persist_s}, layout = "lua:workscape" }})'
-    )
+    _ = persist
+    force_dwindle(ws)
 
 
 def _lua_quote(s: str) -> str:
@@ -1294,7 +1265,7 @@ def managed_workspaces(profile: dict[str, Any] | None = None) -> set[str]:
         if ws:
             out.add(ws)
     for key, pref in (profile.get("workspacePrefs") or {}).items():
-        if isinstance(pref, dict) and pref.get("layout") in ("scrolling", "stage", "set-width"):
+        if isinstance(pref, dict) and pref.get("layout") in ("scrolling", "master", "dwindle", "stage", "set-width"):
             out.add(str(key))
     return out
 
@@ -1769,11 +1740,7 @@ def close_enough(box: dict[str, int] | None, want: dict[str, int] | None, tol: i
 
 
 def restamp_layout_sizes(ws: str, profile: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Apply layout-type column sizes without replaying Apply/Fresh lock splits.
-
-    Stage: lone tiled pane fills the monitor, extras spawn at 1/Visible.
-    Set-width: every column 1/Visible. Unlocked scrolling: same spawn 1/N.
-    """
+    """Stamp native workspace layout + spawn width. No colresize/peek."""
     ws = str(ws)
     if profile is None:
         try:
@@ -1785,39 +1752,25 @@ def restamp_layout_sizes(ws: str, profile: dict[str, Any] | None = None) -> dict
     plan = lock_plan_for_workspace(profile, ws)
     vis = int(plan.get("visibleCount") or 2)
     extra = extra_column_frac(vis)
-    peek = peeked_column_frac(vis)
-    tiled = [c for c in clients_on_workspace(ws) if not c.get("floating")]
-    addr = str((tiled[0].get("address") if tiled else "") or "")
-    if plan.get("setWidth") is True:
-        force_scrolling(ws, vis, lock=False, fill_one=False)
+    layout = str(plan.get("layout") or "dwindle")
+    if layout == "scrolling":
+        force_scrolling(ws, vis)
         apply_spawn_width_rule(ws, extra)
-        if addr:
-            size_new_scrolling_column(ws, addr, vis, set_width=True)
-        return {"ok": True, "mode": "set-width", "workspace": ws, "n": len(tiled)}
-    if plan.get("stage") is True:
-        force_scrolling(ws, vis, lock=False, stage=True, fill_one=True)
-        apply_spawn_width_rule(ws, peek)
-        if len(tiled) == 1 and addr:
-            if ensure_layout_workspace(ws):
-                layout_msg(f"colresize {stage_fill_frac()}")
-                pack_peek_camera(ws, addr)
-            apply_spawn_width_rule(ws, peek)
-        return {"ok": True, "mode": "stage", "workspace": ws, "filled": len(tiled) == 1}
-    if plan.get("locked"):
-        # Occupied Apply still has to place the tape. Skipping here left WS2
-        # at 50/50 scrolling after apply_ws_prefs restamped lua:workscape.
+        return {"ok": True, "mode": "scrolling", "workspace": ws}
+    if layout == "master":
+        hypr_eval(
+            f'hl.workspace_rule({{ workspace = "{SAFE.safe_ws(ws)}", persistent = false, layout = "master", '
+            'layout_opts = { orientation = "left" } })'
+        )
+        apply_spawn_width_rule(ws, None)
+        return {"ok": True, "mode": "master", "workspace": ws}
+    if plan.get("locked") and plan.get("extras") == "block":
         return _settle_workspace_once(ws, plan)
-    force_scrolling(ws, vis, lock=False, fill_one=False)
-    apply_spawn_width_rule(ws, peek)
-    if len(tiled) == 1 and addr:
-        try:
-            aw = hypr_j("activeworkspace")
-            already = str((aw or {}).get("id") or "") == ws
-        except Exception:
-            already = False
-        if already:
-            layout_msg(f"colresize {peek}")
-    return {"ok": True, "mode": "scrolling", "workspace": ws, "n": len(tiled)}
+    force_dwindle(ws)
+    apply_spawn_width_rule(ws, None)
+    if plan.get("locked"):
+        return _settle_workspace_once(ws, plan)
+    return {"ok": True, "mode": "dwindle", "workspace": ws}
 
 
 def restore_locks_for_workspace(
@@ -1871,34 +1824,23 @@ def restore_locks_for_workspace(
 
 
 def _settle_workspace_once(ws: str, plan: dict[str, Any], prefer_addr: str = "") -> dict[str, Any]:
-    """One layout pass. 2-lock around uses lua:workscape; stage/set-width stay scrolling."""
+    """One apply-time pass. Scrolling: spawn width only. Dwindle: split from geoms."""
+    _ = prefer_addr
     cache_clear()
-    tiled_now = [c for c in clients_on_workspace(ws) if not c.get("floating")]
     locked = plan["locked"]
     n_lock = len(locked)
-    n_tiled = len(tiled_now)
-    extras_n = max(0, n_tiled - n_lock)
-    set_width = plan.get("setWidth") is True
-    stage = plan.get("stage") is True
-    around = plan.get("extras") != "block"
-    use_tape = uses_workscape_tape(plan)
-    use_scrolling = bool(
-        not use_tape and (set_width or stage or n_lock <= 1 or extras_n > 0 or (n_lock >= 2 and around))
-    )
-    if use_tape:
-        pass
-    elif use_scrolling:
-        force_scrolling(
-            ws,
-            plan["visibleCount"],
-            lock=n_lock > 1,
-            stage=stage,
-            fill_one=n_lock <= 1 and extras_n == 0 and not set_width,
+    layout = str(plan.get("layout") or "dwindle")
+    use_scrolling = layout == "scrolling"
+    if use_scrolling:
+        force_scrolling(ws, plan["visibleCount"])
+        apply_spawn_width_rule(ws, extra_column_frac(plan["visibleCount"]))
+    elif layout == "master":
+        hypr_eval(
+            f'hl.workspace_rule({{ workspace = "{SAFE.safe_ws(ws)}", persistent = false, layout = "master", '
+            'layout_opts = { orientation = "left" } })'
         )
     else:
         force_dwindle(ws)
-    if not use_tape:
-        activate_workspace_for_layout(ws)
     cache_clear()
     monitors = hypr_j("monitors", cached=True)
     workspaces = hypr_j("workspaces", cached=True)
@@ -1906,6 +1848,8 @@ def _settle_workspace_once(ws: str, plan: dict[str, Any], prefer_addr: str = "")
     if not mon:
         return {"ok": False, "error": "no monitor", "workspace": ws}
     metrics = layout_metrics(mon)
+    if use_scrolling or layout == "master":
+        return {"ok": True, "workspace": ws, "closeEnough": True, "mode": layout, "windows": []}
     clients = clients_on_workspace(ws)
     used: set[str] = set()
     items: list[dict[str, Any]] = []
@@ -1929,31 +1873,14 @@ def _settle_workspace_once(ws: str, plan: dict[str, Any], prefer_addr: str = "")
         return {"ok": True, "skipped": True, "workspace": ws, "reason": "no clients"}
     for it in items:
         clear_size_lock(it["addr"])
-    if use_tape:
-        last = place_workscape_tape(ws, plan, metrics, prefer_addr=prefer_addr)
-    elif use_scrolling:
-        last = place_scrolling_columns(
-            items,
-            metrics,
-            ws,
-            extra_column_frac(plan["visibleCount"]) if set_width else peeked_column_frac(plan["visibleCount"]),
-            prefer_addr=prefer_addr,
-            visible_count=plan["visibleCount"],
-            stage=stage,
-            set_width=set_width,
-        )
-    else:
-        last = apply_tiled_split(items, metrics)
+    last = apply_tiled_split(items, metrics)
     locked_placed = [it for it in last if it.get("lock")]
-    extras_placed = [it for it in last if not it.get("lock")]
-    extra_ok = all(int((it.get("place") or {}).get("w") or 0) >= 40 for it in extras_placed) if extras_placed else True
-    ok = bool(locked_placed) and all(close_enough(it.get("place"), it.get("px"), tol=32) for it in locked_placed) and extra_ok
-    mode = "lua:workscape" if use_tape else ("scrolling" if use_scrolling else "dwindle")
+    ok = bool(locked_placed) and all(close_enough(it.get("place"), it.get("px"), tol=32) for it in locked_placed)
     return {
         "ok": True,
         "workspace": ws,
         "closeEnough": ok,
-        "mode": mode,
+        "mode": "dwindle",
         "windows": [{"addr": it.get("addr"), "actual": it.get("place"), "requested": it.get("px"), "lock": it.get("lock") is True} for it in last],
     }
 

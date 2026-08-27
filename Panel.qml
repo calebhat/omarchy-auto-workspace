@@ -118,7 +118,8 @@ Panel {
     readonly property var transferToProfileOptions: transferMode === "move"
         ? [{ value: activeProfileId, label: activeProfile.name }]
         : root.profileOptions
-    readonly property var currentWsPref: Model.workspacePref(activeProfile, formWorkspace)
+    readonly property var currentWsPref: Model.effectiveWorkspacePref(activeProfile, formWorkspace)
+    readonly property var currentWsUi: Model.workspaceControlFlags(activeProfile, formWorkspace)
     readonly property string workspaceMonitorId: {
         var map = activeProfile.workspaceMonitors || {}
         return String(map[String(formWorkspace)] || "")
@@ -464,6 +465,7 @@ Panel {
         }
     }
     function setWorkspacePref(field, value) {
+        if (!Model.canEditWorkspacePref(root.activeProfile, formWorkspace, field)) return
         var cfg = root.currentConfig()
         var pid = cfg.settings.activeProfileId
         var ws = String(formWorkspace)
@@ -984,7 +986,8 @@ Panel {
                 var ws = String(list[w])
                 if (used[list[w]] === true || used[ws] === true) continue
                 var pref = Model.normalizeWorkspacePref(prefs[ws])
-                pref.layout = "stage"
+                pref.layout = "scrolling"
+                pref.extras = "block"
                 prefs[ws] = pref
             }
             cfg.profiles[i].workspacePrefs = prefs
@@ -992,7 +995,7 @@ Panel {
         config = cfg
         saveConfig()
         overflowOpen = false
-        statusText = "Stage overflow · WS " + (overflowDraft.length ? overflowDraft.join(" → ") : "(empty)")
+        statusText = "Overflow · WS " + (overflowDraft.length ? overflowDraft.join(" → ") : "(empty)")
         clearStatusTimer.restart()
     }
     function setPersistHyprGestures(on) {
@@ -1561,23 +1564,25 @@ Panel {
 
                         SectionCard {
                             title: "LAYOUT"
-                            hint: Model.layoutDescription(root.currentWsPref.layout, root.currentWsPref.lockSizes === true || Model.workspaceHasLockedApp(root.activeProfile, root.formWorkspace))
+                            hint: Model.layoutDescription(root.currentWsPref.layout, root.currentWsUi.forcedBlock || root.anyLockOnWs)
                             foreground: root.foreground
                             fontFamily: root.fontFamily
 
                         GridLayout {
+                            visible: root.currentWsUi.showLayoutPicker
                             Layout.fillWidth: true
                             columns: 2
                             columnSpacing: Style.space(4)
                             rowSpacing: Style.space(4)
                             Repeater {
-                                model: [
-                                    { value: "dwindle", label: "Dwindle" },
-                                    { value: "scrolling", label: "Scrolling" },
-                                    { value: "master", label: "Master" },
-                                    { value: "stage", label: "Stage" },
-                                    { value: "set-width", label: "Set width" }
-                                ]
+                                model: {
+                                    var rows = [{ value: "dwindle", label: "Dwindle" }]
+                                    if (root.currentWsUi.showScrollingLayout)
+                                        rows.push({ value: "scrolling", label: "Scrolling" })
+                                    if (root.currentWsUi.showMasterLayout)
+                                        rows.push({ value: "master", label: "Master" })
+                                    return rows
+                                }
                                 delegate: Button {
                                     required property var modelData
                                     text: modelData.label
@@ -1592,7 +1597,7 @@ Panel {
                             }
                         }
                         RowLayout {
-                            visible: root.currentWsPref.layout === "scrolling" || root.currentWsPref.layout === "stage" || root.currentWsPref.layout === "set-width" || (root.anyLockOnWs && root.currentWsPref.extras !== "block")
+                            visible: root.currentWsUi.showVisibleCount
                             Layout.fillWidth: true
                             spacing: Style.space(6)
                             Text {
@@ -1630,19 +1635,6 @@ Panel {
                                 Layout.preferredWidth: Style.space(28)
                                 onClicked: root.bumpVisibleCount(1)
                             }
-                        }
-                        RowLayout {
-                            visible: root.lockAllViable
-                            Layout.fillWidth: true
-                            spacing: Style.space(4)
-                            WrapToggle {
-                                Layout.fillWidth: true
-                                label: "Lock every app on this workspace"
-                                checked: root.allAssignedLocked
-                                foreground: root.foreground
-                                onClicked: root.setWorkspacePref("lockSizes", !root.allAssignedLocked)
-                            }
-                            HintMark { tooltipText: "Pins each assigned pane. Same as tapping 🔒 on every app in the list. Hidden on Set width; locks return if you switch this workspace back to Stage or Scrolling." }
                         }
                         }
 
@@ -1746,7 +1738,7 @@ Panel {
                             fontFamily: root.fontFamily
                             tools: Button {
                                 text: "Restore defaults"
-                                tooltipText: "On empty workspaces in this profile: restore Omarchy dwindle and drop leftover Stage/scroll rules. Does not close windows. Occupied unassigned workspaces keep their layout until empty. Fill next overflow workspaces stay in that chain."
+                                tooltipText: "On empty workspaces in this profile: restore Omarchy dwindle and drop leftover scroll rules. Does not close windows. Occupied unassigned workspaces keep their layout until empty. Fill next overflow workspaces stay in that chain."
                                 onClicked: root.resetEmptyWorkspaces()
                             }
                         GridLayout {
@@ -1820,7 +1812,7 @@ Panel {
                             }
                         }
                         RowLayout {
-                            visible: root.anyLockOnWs || root.currentWsPref.layout === "scrolling" || root.currentWsPref.layout === "stage" || root.currentWsPref.layout === "set-width"
+                            visible: root.currentWsUi.showExtrasToggle
                             Layout.fillWidth: true
                             spacing: Style.space(4)
                             WrapToggle {
@@ -1832,9 +1824,7 @@ Panel {
                                 onClicked: root.setWorkspacePref("extras", root.currentWsPref.extras === "block" ? "around" : "block")
                             }
                             HintMark {
-                                tooltipText: root.currentWsPref.layout === "set-width"
-                                    ? "On: extras stay as more 1/Visible columns. Off: after Visible columns fill, extras still open, then move to the next workspace. Super+W closes the focused column and focuses the next one in order, even if it is a thin strip."
-                                    : "On: extras stay as more columns after locked panes. Off: extras still open, then move to the next workspace. Super+W focuses the next column in order (including narrow ones). Profiles → Stage overflow is a separate chain."
+                                tooltipText: "On: extras stay on this workspace (Hyprland tiling). Off: extras still open, then move to the next unused workspace. Assigned workspaces and leave-alone pins are skipped."
                             }
                         }
                         Text {
@@ -2156,7 +2146,7 @@ Panel {
 
                         SectionCard {
                             title: "KEYBOARD"
-                            hint: "SUPER+, / . is previous and next workspace (follows Skip empty). On a two-lock tape (lua:workscape), SUPER+ALT+, / . pans extra columns."
+                            hint: "SUPER+, / . is previous and next workspace (follows Skip empty). On scrolling, Super+Left/Right pan columns on this workspace."
                             foreground: root.foreground
                             fontFamily: root.fontFamily
                             RowLayout {
@@ -2253,8 +2243,9 @@ Panel {
                     }
 
                     SectionCard {
+                        visible: Model.profileControlFlags(root.activeProfile).showOverflowCard
                         title: "STAGE OVERFLOW · " + (root.activeProfile.name || "Profile")
-                        hint: "Profile-wide chain of unused workspaces (Stage), not the per-workspace “send extras off a locked workspace” toggle. When this is on, new windows fill the chosen workspaces in order, up to a max per workspace."
+                        hint: "Profile-wide chain of unused workspaces. When this is on, extras bounced from a block workspace fill the chosen workspaces in order, up to a max per workspace."
                         foreground: root.foreground
                         fontFamily: root.fontFamily
                         RowLayout {
@@ -2268,16 +2259,21 @@ Panel {
                                 foreground: root.foreground
                                 onClicked: root.setOverflowEnabled(!root.overflowEnabled())
                             }
-                            HintMark { tooltipText: "Max windows is for this Stage chain only — not Visible columns on a unique Stage workspace. Choose… picks which of 1–20 are in the chain; Set Stage selects unused workspaces." }
+                            HintMark {
+                                visible: root.overflowEnabled()
+                                tooltipText: "Max windows is for this overflow chain only — not Visible columns on a scrolling workspace. Choose… picks which of 1–20 are in the chain; Fill unused selects workspaces with no pinned apps."
+                            }
                             Button {
+                                visible: root.overflowEnabled()
                                 text: "−"
                                 enabled: root.overflowMaxWindows() > 1
                                 Layout.preferredHeight: Style.space(28)
                                 Layout.preferredWidth: Style.space(28)
-                                tooltipText: "Global max windows per overflow workspace (not Visible columns on a unique Stage workspace)"
+                                tooltipText: "Global max windows per overflow workspace (not Visible columns on a scrolling workspace)"
                                 onClicked: root.bumpOverflowMax(-1)
                             }
                             Text {
+                                visible: root.overflowEnabled()
                                 text: String(root.overflowMaxWindows())
                                 color: root.foreground
                                 font.family: root.fontFamily
@@ -2285,6 +2281,7 @@ Panel {
                                 font.bold: true
                             }
                             Button {
+                                visible: root.overflowEnabled()
                                 text: "+"
                                 enabled: root.overflowMaxWindows() < 20
                                 Layout.preferredHeight: Style.space(28)
@@ -2293,8 +2290,9 @@ Panel {
                                 onClicked: root.bumpOverflowMax(1)
                             }
                             Button {
+                                visible: root.overflowEnabled()
                                 text: "Choose…"
-                                tooltipText: "Pick which of 1–20 are in this profile’s Stage chain. Set Stage selects unused workspaces."
+                                tooltipText: "Pick which of 1–20 are in this profile’s overflow chain. Fill unused selects unused workspaces."
                                 onClicked: root.openOverflow()
                             }
                         }
@@ -2849,7 +2847,7 @@ Panel {
                                 font.pixelSize: Style.font.title
                                 font.bold: true
                             }
-                            HintMark { tooltipText: "Profile-wide Stage overflow chain. Checked workspaces take the next new window in this order. Max windows / workspace is for this chain only — not “send extras off a locked workspace,” and not Visible columns on a unique Stage workspace. Set Stage selects workspaces with no pinned apps." }
+                            HintMark { tooltipText: "Profile-wide overflow chain. Checked workspaces take the next extra window in this order. Max windows / workspace is for this chain only. Fill unused selects workspaces with no pinned apps." }
                         }
                         GridLayout {
                             Layout.fillWidth: true
@@ -2919,7 +2917,7 @@ Panel {
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: Style.space(8)
-                            Button { text: "Set Stage"; tooltipText: "Select workspaces with no pinned apps and use Stage. Max windows uses the global setting above, not each workspace’s Visible columns."; onClicked: root.overflowDraftSetStage() }
+                            Button { text: "Fill unused"; tooltipText: "Select workspaces with no pinned apps as overflow destinations (scrolling, extras bounce after the max)."; onClicked: root.overflowDraftSetStage() }
                             Button { text: "None"; onClicked: root.overflowDraftNone() }
                             Item { Layout.fillWidth: true }
                             Button { text: "Cancel"; onClicked: root.closeOverflow() }
@@ -3112,19 +3110,6 @@ Panel {
                 text: "+"
                 tooltipText: "Add another window of this app on this workspace"
                 onClicked: if (app) root.addInstance(app.exec, app.name)
-            }
-            Button {
-                visible: app ? (root.lockUiEnabled && root.isInList(root.addedApps, app.exec)) : false
-                Layout.preferredWidth: Style.space(36)
-                Layout.minimumWidth: Style.space(36)
-                Layout.maximumWidth: Style.space(40)
-                Layout.fillWidth: false
-                Layout.alignment: Qt.AlignVCenter
-                text: app && root.isAppLocked(app.exec) ? "🔒" : "🔓"
-                tooltipText: app && root.isAppLocked(app.exec)
-                    ? "Unlock this app’s size — other windows can resize it"
-                    : "Lock this app’s size and place — others tile around it"
-                onClicked: if (app) root.toggleAppLock(app.exec)
             }
             ToggleSwitch {
                 Layout.alignment: Qt.AlignVCenter

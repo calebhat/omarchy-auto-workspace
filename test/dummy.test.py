@@ -49,43 +49,32 @@ def test_config_path_honors_env(tmp_path=None):
 def test_dummy_lock_plans():
     profile = load_dummy()["profiles"][0]
     s1 = geom.lock_plan_for_workspace(profile, "1")
-    assert s1["stage"] is True and len(s1["locked"]) == 1 and s1["extras"] == "around"
+    assert s1["layout"] == "scrolling" and s1["extras"] == "around"
     s2 = geom.lock_plan_for_workspace(profile, "2")
+    assert s2["layout"] == "dwindle"
+    assert s2["extras"] == "block"
     assert len(s2["locked"]) == 2
-    assert s2["visibleCount"] == 3
-    assert s2["extras"] == "around"
     assert abs(float(s2["locked"][0]["geom"]["w"]) - 0.6456) < 0.0001
     assert abs(float(s2["locked"][1]["geom"]["w"]) - 0.3544) < 0.0001
     s3 = geom.lock_plan_for_workspace(profile, "3")
-    assert s3["stage"] is False and s3["setWidth"] is False and len(s3["locked"]) == 1
+    assert s3["layout"] == "scrolling" and s3["setWidth"] is False
     s5 = geom.lock_plan_for_workspace(profile, "5")
-    assert s5["setWidth"] is True and s5["visibleCount"] == 3 and s5["extras"] == "around"
+    assert s5["layout"] == "scrolling" and s5["visibleCount"] == 3 and s5["extras"] == "around"
     s6 = geom.lock_plan_for_workspace(profile, "6")
-    assert s6["setWidth"] is True and s6["extras"] == "block" and s6["visibleCount"] == 4
+    assert s6["layout"] == "scrolling" and s6["extras"] == "block" and s6["visibleCount"] == 4
     s8 = geom.lock_plan_for_workspace(profile, "8")
-    assert len(s8["locked"]) == 2 and s8["lock_all"] is True
+    assert s8["layout"] == "dwindle"
 
 
 def test_dummy_watch_maps_via_env():
     orig = os.environ.get("WORKSCAPE_CONFIG")
     os.environ["WORKSCAPE_CONFIG"] = str(FIXTURE)
     try:
-        extra = watch.extra_width_workspaces()
-        assert extra["1"]["stage"] is True and extra["1"]["visibleCount"] == 2
-        assert extra["2"]["visibleCount"] == 3 and extra["2"]["stage"] is False
-        assert extra["3"]["visibleCount"] == 4
-        assert extra["5"]["setWidth"] is True and extra["5"]["visibleCount"] == 3
-        assert extra["6"]["setWidth"] is True
-        assert "7" not in extra  # master
-        assert "8" not in extra  # dwindle
         blocked = watch.load_block_map()
-        assert blocked.get("6") == 4
-        assert "2" not in blocked
+        assert blocked.get("6") == 1
+        assert blocked.get("2") == 2
         ov = watch.overflow_order(watch.load_active_profile())
         assert ov == ["9"]
-        assert watch.lock_count("2") == 2
-        assert watch.lock_count("1") == 1
-        assert watch.lock_count("5") == 0
         managed = geom.managed_workspaces(watch.load_active_profile())
         assert {"1", "2", "3", "4", "5", "6", "7", "8", "9"} <= managed
         assert "20" not in managed
@@ -153,8 +142,9 @@ def test_dummy_append_extra_uses_locked_geoms():
             geom.swap_windows, time.sleep,
         ) = orig
     assert result.get("ok") is True
+    assert result.get("skipped") is True
     joined = "\n".join(str(c) for c in calls)
-    assert "Workscape.plans" in joined
+    assert "Workscape.plans" not in joined
     assert "swap" not in joined
 
 

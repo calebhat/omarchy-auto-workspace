@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Keep locked panes pinned and send extras away when extras=block."""
+"""Bounce extras off extras=block workspaces. Hyprland owns tiling."""
 from __future__ import annotations
 
 import json
 import os
 import subprocess
 import sys
-import threading
 import time
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -44,49 +43,75 @@ def geom_mod():
     return _GEOM
 
 
-def load_block_map() -> dict[str, int]:
-    """workspace id -> max windows allowed (assignment count, min 1)."""
+def load_active_profile() -> dict | None:
     path = config_path()
     if not path.exists():
-        return {}
+        return None
     try:
         cfg = json.loads(path.read_text())
     except Exception:
-        return {}
+        return None
     pid = ((cfg.get("settings") or {}).get("activeProfileId")) or ""
-    profile = next((p for p in (cfg.get("profiles") or []) if p.get("id") == pid), None)
-    if not profile:
-        return {}
-    prefs = profile.get("workspacePrefs") or {}
+    return next((p for p in (cfg.get("profiles") or []) if p.get("id") == pid), None)
+
+
+def assignment_counts(profile: dict) -> dict[str, int]:
     counts: dict[str, int] = {}
     for a in profile.get("assignments") or []:
         if a.get("enabled") is False:
             continue
         ws = str(a.get("workspace") or "")
-        counts[ws] = counts.get(ws, 0) + 1
-    out = {}
-    for ws, pref in prefs.items():
-        if not isinstance(pref, dict) or pref.get("extras") != "block":
+        if ws:
+            counts[ws] = counts.get(ws, 0) + 1
+    return counts
+
+
+def pinned_unassigned(profile: dict) -> set[str]:
+    """Pinned workspaces with no apps — leave-alone (laptop, Grok CLI)."""
+    assigned = set(assignment_counts(profile))
+    pins = profile.get("workspaceMonitors") or {}
+    out: set[str] = set()
+    for key in pins:
+        ws = str(key)
+        if ws and ws not in assigned:
+            out.add(ws)
+    return out
+
+
+def load_block_map() -> dict[str, int]:
+    """workspace id -> max tiled windows (assignment count, min 1)."""
+    profile = load_active_profile()
+    if not profile:
+        return {}
+    prefs = profile.get("workspacePrefs") or {}
+    counts = assignment_counts(profile)
+    lock_place: dict[str, int] = {}
+    for a in profile.get("assignments") or []:
+        if a.get("enabled") is False or a.get("lockPlace") is not True:
+            continue
+        ws = str(a.get("workspace") or "")
+        if ws:
+            lock_place[ws] = lock_place.get(ws, 0) + 1
+    out: dict[str, int] = {}
+    keys = set(str(k) for k in prefs) | set(lock_place)
+    for ws in keys:
+        pref = prefs.get(ws) or prefs.get(int(ws) if str(ws).isdigit() else ws) or {}
+        if not isinstance(pref, dict):
+            pref = {}
+        two_lock = lock_place.get(str(ws), 0) >= 2
+        if pref.get("extras") != "block" and not two_lock:
             continue
         n = counts.get(str(ws), 0)
         vis = int(pref.get("visibleCount") or 2)
         vis = max(1, min(20, vis))
-        # Set width fills Visible columns, then bounces. Scrolling/lock uses
-        # assignment count so extras leave after the pinned panes.
-        if pref.get("layout") == "set-width":
-            out[str(ws)] = vis
-        else:
-            out[str(ws)] = max(n, 1) if n else vis
+        out[str(ws)] = max(n, 1) if n else vis
     ov = profile.get("overflow") if isinstance(profile.get("overflow"), dict) else {}
     if ov.get("enabled") is True:
         try:
             ov_max = int(ov.get("maxWindows") or 1)
         except Exception:
             ov_max = 1
-        if ov_max < 1:
-            ov_max = 1
-        if ov_max > 20:
-            ov_max = 20
+        ov_max = max(1, min(20, ov_max))
         for raw in ov.get("workspaces") or []:
             try:
                 n = int(raw)
@@ -126,31 +151,28 @@ def overflow_order(profile: dict | None) -> list[str]:
 
 
 def workspace_can_accept(profile: dict, ws: str, blocked: dict[str, int]) -> bool:
-    """True if sending an extra window here will not immediately bounce."""
-    cap = blocked.get(str(ws))
+    """True if sending an extra here will not immediately bounce or land on a preset."""
+    dest = str(ws)
+    cap = blocked.get(dest)
     if cap is not None:
         if int(cap) <= 0:
             return False
-        if window_count(ws) >= int(cap):
+        if window_count(dest) >= int(cap):
             return False
-        return True
     prefs = profile.get("workspacePrefs") or {}
-    pref = prefs.get(str(ws)) if isinstance(prefs.get(str(ws)), dict) else {}
-    if pref.get("extras") == "block":
+    pref = prefs.get(dest) if isinstance(prefs.get(dest), dict) else {}
+    if pref.get("extras") == "block" and cap is None:
         return False
+    chain = set(overflow_order(profile))
+    if dest in chain:
+        return cap is None or window_count(dest) < int(cap)
+    if dest in pinned_unassigned(profile):
+        return False
+    if dest in assignment_counts(profile):
+        # Empty preset workspaces can take overflow. Occupied ones cannot
+        # (I-051: skipping empty WS4 sent ShopHawk extras to WS5).
+        return window_count(dest) == 0
     return True
-
-
-def load_active_profile() -> dict | None:
-    path = config_path()
-    if not path.exists():
-        return None
-    try:
-        cfg = json.loads(path.read_text())
-    except Exception:
-        return None
-    pid = ((cfg.get("settings") or {}).get("activeProfileId")) or ""
-    return next((p for p in (cfg.get("profiles") or []) if p.get("id") == pid), None)
 
 
 def next_open_ws(blocked: dict[str, int], current: str, profile: dict | None = None) -> str | None:
@@ -181,7 +203,6 @@ def next_open_ws(blocked: dict[str, int], current: str, profile: dict | None = N
 
 
 def window_count(ws: str) -> int:
-    """Count clients on `ws`. Returns -1 if Hyprland cannot be queried (do not restore)."""
     try:
         clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
     except Exception:
@@ -194,14 +215,6 @@ def window_count(ws: str) -> int:
     return n
 
 
-def extras_remain(ws: str) -> bool:
-    """True if extras are still on the workspace, or client list is unknown."""
-    n = window_count(ws)
-    if n < 0:
-        return True
-    return n > lock_count(ws)
-
-
 def client_by_addr(addr: str) -> dict | None:
     want = str(addr or "")
     if not want:
@@ -211,49 +224,6 @@ def client_by_addr(addr: str) -> dict | None:
     except Exception:
         return None
     return next((c for c in (clients or []) if str(c.get("address") or "") == want), None)
-
-
-def column_already_filled(client: dict | None) -> bool:
-    """True if this tiled pane already covers the monitor (skip restamp bounce)."""
-    if not client or client.get("floating"):
-        return False
-    at = client.get("at") or [0, 0]
-    size = client.get("size") or [0, 0]
-    w = int(size[0] or 0)
-    if w < 80:
-        return False
-    try:
-        mons = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
-    except Exception:
-        return False
-    mon = next((m for m in (mons or []) if m.get("id") == client.get("monitor")), None)
-    if not mon:
-        return False
-    scale = float(mon.get("scale") or 1) or 1
-    lw = float(mon.get("width") or 0) / scale
-    if lw < 80:
-        return False
-    return w >= lw * 0.9
-
-
-def tiled_peers(ws: str, addr: str) -> int:
-    """Tiled windows on `ws` other than `addr`. -1 if Hyprland cannot be queried."""
-    try:
-        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
-    except Exception:
-        return -1
-    n = 0
-    want = str(addr or "")
-    for c in clients or []:
-        if c.get("floating"):
-            continue
-        w = c.get("workspace") or {}
-        if str(w.get("id")) != str(ws) and str(w.get("name")) != str(ws):
-            continue
-        if want and str(c.get("address") or "") == want:
-            continue
-        n += 1
-    return n
 
 
 def hypr_eval(lua: str) -> None:
@@ -306,623 +276,6 @@ def socket_path() -> Path | None:
     return None
 
 
-def lock_count(ws: str) -> int:
-    profile = load_active_profile()
-    if not profile:
-        return 0
-    pref = (profile.get("workspacePrefs") or {}).get(str(ws)) or {}
-    if pref.get("layout") == "set-width":
-        return 0
-    n = 0
-    for a in profile.get("assignments") or []:
-        if str(a.get("workspace") or "") != str(ws) or a.get("enabled") is False:
-            continue
-        if a.get("lockPlace") is True:
-            n += 1
-    if n == 0 and pref.get("lockSizes") is True:
-        n = 1
-    return n
-
-
-def extra_width_workspaces() -> dict[str, dict]:
-    """Scrolling/stage workspaces whose extras should be 1/visibleCount wide."""
-    profile = load_active_profile()
-    if not profile:
-        return {}
-    prefs = profile.get("workspacePrefs") or {}
-    out: dict[str, dict] = {}
-    for ws, pref in prefs.items():
-        if not isinstance(pref, dict):
-            continue
-        layout = pref.get("layout")
-        if layout not in ("scrolling", "stage", "set-width"):
-            continue
-        try:
-            vis = int(pref.get("visibleCount") or 2)
-        except (TypeError, ValueError):
-            vis = 2
-        if vis < 1:
-            vis = 1
-        if vis > 20:
-            vis = 20
-        out[str(ws)] = {"visibleCount": vis, "stage": layout == "stage", "setWidth": layout == "set-width"}
-    return out
-
-
-def _ws_is_active(ws: str) -> bool:
-    try:
-        aw = json.loads(subprocess.check_output(["hyprctl", "-j", "activeworkspace"], text=True))
-    except Exception:
-        return False
-    return str((aw or {}).get("id") or "") == str(ws)
-
-
-def restamp_empty_workspace(ws: str) -> None:
-    """Keep layout-type spawn width after the last window closes.
-
-    Apply/Fresh lock geometry is not restored onto a later first window.
-    """
-    info = extra_width_workspaces().get(str(ws)) or {}
-    if not info:
-        return
-    vis = int(info.get("visibleCount") or 2)
-    g = geom_mod()
-    extra = g.extra_column_frac(vis)
-    peek = g.peeked_column_frac(vis) if hasattr(g, "peeked_column_frac") else extra
-    fill = g.stage_fill_frac() if hasattr(g, "stage_fill_frac") else 0.95
-    if info.get("stage"):
-        g.force_scrolling(str(ws), vis, lock=False, stage=True, fill_one=True)
-        g.apply_spawn_width_rule(str(ws), fill)
-    elif info.get("setWidth"):
-        g.force_scrolling(str(ws), vis, lock=False, fill_one=False)
-        g.apply_spawn_width_rule(str(ws), extra)
-    else:
-        g.force_scrolling(str(ws), vis, lock=False, fill_one=False)
-        g.apply_spawn_width_rule(str(ws), peek)
-    print(json.dumps({"emptyLayout": str(ws), "stage": bool(info.get("stage")), "setWidth": bool(info.get("setWidth")), "vis": vis}), flush=True)
-
-
-def apply_first_column(ws: str, addr: str) -> None:
-    """First window on an empty layout workspace inherits stage/set-width/scrolling size."""
-    info = extra_width_workspaces().get(str(ws)) or {}
-    if not info:
-        return
-    vis = int(info.get("visibleCount") or 2)
-    g = geom_mod()
-    extra = g.extra_column_frac(vis)
-    peek = g.peeked_column_frac(vis) if hasattr(g, "peeked_column_frac") else extra
-    fill = g.stage_fill_frac() if hasattr(g, "stage_fill_frac") else 0.95
-    active = _ws_is_active(str(ws))
-    if info.get("stage"):
-        g.force_scrolling(str(ws), vis, lock=False, stage=True, fill_one=True)
-        if active:
-            g.layout_msg(f"colresize {fill}")
-        g.apply_spawn_width_rule(str(ws), peek)
-        pack = getattr(g, "pack_peek_camera", None)
-        if callable(pack) and active:
-            pack(str(ws), addr)
-        print(json.dumps({"firstColumn": str(ws), "addr": addr, "stage": True, "frac": fill, "extraFrac": peek}), flush=True)
-        return
-    if info.get("setWidth"):
-        size = getattr(g, "size_new_scrolling_column", None)
-        if callable(size):
-            size(str(ws), addr, vis, set_width=True)
-        print(json.dumps({"firstColumn": str(ws), "addr": addr, "setWidth": True, "vis": vis}), flush=True)
-        return
-    g.force_scrolling(str(ws), vis, lock=False, fill_one=False)
-    g.apply_spawn_width_rule(str(ws), peek)
-    if active:
-        g.layout_msg(f"colresize {peek}")
-    pack = getattr(g, "pack_peek_camera", None)
-    if callable(pack) and active:
-        pack(str(ws), addr)
-    print(json.dumps({"firstColumn": str(ws), "addr": addr, "scrolling": True, "frac": peek}), flush=True)
-
-
-def locked_workspaces() -> list[str]:
-    path = config_path()
-    if not path.exists():
-        return []
-    try:
-        cfg = json.loads(path.read_text())
-    except Exception:
-        return []
-    g = geom_mod()
-    profile = g.active_profile(cfg)
-    if not profile:
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    prefs = profile.get("workspacePrefs") or {}
-    for ws, pref in prefs.items():
-        if isinstance(pref, dict) and pref.get("lockSizes") is True:
-            seen.add(str(ws))
-    for a in profile.get("assignments") or []:
-        if a.get("enabled") is False:
-            continue
-        if a.get("lockPlace") is True:
-            seen.add(str(a.get("workspace") or ""))
-    for ws in seen:
-        if ws and ws != "None":
-            out.append(ws)
-    return out
-
-
-_restoring = False
-_last_restore: dict[str, float] = {}
-_event_times: list[float] = []
-_burst_until = 0.0
-_window_ws: dict[str, str] = {}
-_window_pos: dict[str, tuple[int, int]] = {}
-_close_restore_timers: dict[str, threading.Timer] = {}
-_open_settle_focus: dict[str, str] = {}
-_layout_quiet_until: dict[str, float] = {}
-_quiet_end_timers: dict[str, threading.Timer] = {}
-_appended_extra: dict[str, bool] = {}
-_pack_timers: dict[str, threading.Timer] = {}
-_stage_extra_timers: dict[str, threading.Timer] = {}
-_peek_camera_timer: threading.Timer | None = None
-CLOSE_RESTORE_DELAY_SEC = 0.4
-WARP_DELAY_SEC = 0.28
-STAGE_EXTRA_DELAY_SEC = 0.2
-LAYOUT_QUIET_SEC = 1.5
-PACK_DEBOUNCE_SEC = 0.15
-STARTED_AT = time.monotonic()
-STARTUP_GRACE_SEC = 4.0
-RESTORE_DEBOUNCE_SEC = 0.45
-BURST_WINDOW_SEC = 1.5
-BURST_EVENTS = 12
-BURST_GRACE_SEC = 3.0
-
-
-def in_startup_grace() -> bool:
-    return time.monotonic() - STARTED_AT < STARTUP_GRACE_SEC
-
-
-def note_event() -> bool:
-    """True if Hyprland is flooding events (sleep/wake remap). Skip hyprctl storms."""
-    global _burst_until
-    now = time.monotonic()
-    _event_times.append(now)
-    cutoff = now - BURST_WINDOW_SEC
-    while _event_times and _event_times[0] < cutoff:
-        _event_times.pop(0)
-    if len(_event_times) >= BURST_EVENTS:
-        _burst_until = now + BURST_GRACE_SEC
-    return now < _burst_until
-
-
-def norm_addr(addr: str) -> str:
-    a = str(addr or "").strip()
-    if a and not a.startswith("0x"):
-        a = "0x" + a
-    return a
-
-
-def remember_window(addr: str, ws: str) -> None:
-    a = norm_addr(addr)
-    if a and ws:
-        _window_ws[a] = str(ws)
-
-
-def snapshot_client_pos(c: dict) -> None:
-    addr = norm_addr(str(c.get("address") or ""))
-    if not addr:
-        return
-    at = c.get("at") or [0, 0]
-    size = c.get("size") or [0, 0]
-    _window_pos[addr] = (int(at[0] or 0), int(size[0] or 0))
-    ws = str((c.get("workspace") or {}).get("id") or "")
-    if ws:
-        _window_ws[addr] = ws
-
-
-def forget_window(addr: str) -> str:
-    a = norm_addr(addr)
-    _window_pos.pop(a, None)
-    return _window_ws.pop(a, "")
-
-
-def pick_successor_after_close(ws: str, closed_x: int | None, remaining: list) -> str | None:
-    """Next tiled pane to the right of the closed column, else the new rightmost."""
-    tiled = [
-        c
-        for c in (remaining or [])
-        if str((c.get("workspace") or {}).get("id")) == str(ws) and not c.get("floating")
-    ]
-    tiled.sort(key=lambda c: int((c.get("at") or [0])[0] or 0))
-    if not tiled:
-        return None
-    if closed_x is None:
-        addr = str(tiled[0].get("address") or "")
-        return addr or None
-    for c in tiled:
-        x = int((c.get("at") or [0])[0] or 0)
-        if x + 8 >= int(closed_x):
-            addr = str(c.get("address") or "")
-            return addr or None
-    addr = str(tiled[-1].get("address") or "")
-    return addr or None
-
-
-def focus_successor_after_close(ws: str, closed_addr: str, closed_x: int | None) -> None:
-    """Super+W must land on the next column even if it is a thin strip (I-034)."""
-    if in_layout_quiet(str(ws)):
-        return
-    try:
-        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
-        aw = json.loads(subprocess.check_output(["hyprctl", "-j", "activeworkspace"], text=True))
-    except Exception:
-        return
-    if str((aw or {}).get("id") or "") != str(ws):
-        return
-    nxt = pick_successor_after_close(ws, closed_x, clients)
-    nxt = norm_addr(nxt or "")
-    closed = norm_addr(closed_addr)
-    if not nxt or nxt == closed:
-        return
-    hypr_eval(f'hl.dispatch(hl.dsp.focus({{ window = "address:{nxt}" }}))')
-    schedule_warp_cursor(nxt)
-    print(json.dumps({"focusNext": nxt, "after": closed, "ws": str(ws)}), flush=True)
-
-
-def seed_window_map() -> None:
-    try:
-        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
-    except Exception:
-        return
-    for c in clients or []:
-        snapshot_client_pos(c)
-
-
-def begin_layout_quiet(ws: str, sec: float | None = None) -> None:
-    """Ignore closewindow restore while extras are being shuffled onto a split."""
-    ws = str(ws)
-    if not ws:
-        return
-    delay = LAYOUT_QUIET_SEC if sec is None else sec
-    _layout_quiet_until[ws] = time.monotonic() + delay
-    prev = _close_restore_timers.pop(ws, None)
-    if prev is not None:
-        prev.cancel()
-    _open_settle_focus.pop(ws, None)
-    prevq = _quiet_end_timers.pop(ws, None)
-    if prevq is not None:
-        prevq.cancel()
-
-    def after_quiet() -> None:
-        _quiet_end_timers.pop(ws, None)
-        if apply_in_progress() or in_startup_grace():
-            return
-        if lock_count(ws) < 2:
-            return
-        # Extra-append owns the layout until extras actually close. A delayed
-        # restore here is the 2s closeEnough:false snap (I-019/I-021).
-        if _appended_extra.get(ws):
-            return
-        if extras_remain(ws):
-            return
-        schedule_close_restore(ws)
-
-    timer = threading.Timer(delay + 0.05, after_quiet)
-    timer.daemon = True
-    _quiet_end_timers[ws] = timer
-    timer.start()
-
-
-def in_layout_quiet(ws: str) -> bool:
-    return time.monotonic() < _layout_quiet_until.get(str(ws), 0.0)
-
-
-def schedule_close_restore(ws: str) -> None:
-    """Restore after the last close, not on every keypress — rapid close must not steal focus."""
-    ws = str(ws)
-    if not ws:
-        return
-    prev = _close_restore_timers.pop(ws, None)
-    if prev is not None:
-        prev.cancel()
-
-    def fire() -> None:
-        _close_restore_timers.pop(ws, None)
-        restore_locks(ws, "", keep_focus=True, ignore_burst=True)
-
-    timer = threading.Timer(CLOSE_RESTORE_DELAY_SEC, fire)
-    timer.daemon = True
-    _close_restore_timers[ws] = timer
-    timer.start()
-
-
-def schedule_stage_fill(ws: str) -> None:
-    """After extras leave a 1-lock stage workspace, fill the remaining pane. No focus steal while extras remain."""
-    ws = str(ws)
-    if not ws:
-        return
-    prev = _close_restore_timers.pop(ws, None)
-    if prev is not None:
-        prev.cancel()
-
-    def fire() -> None:
-        _close_restore_timers.pop(ws, None)
-        try:
-            clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
-            aw = json.loads(subprocess.check_output(["hyprctl", "-j", "activeworkspace"], text=True))
-        except Exception:
-            return
-        if str((aw or {}).get("id") or "") != ws:
-            print(json.dumps({"stageFill": ws, "skipped": "inactive"}), flush=True)
-            return
-        tiled = [
-            c
-            for c in (clients or [])
-            if str((c.get("workspace") or {}).get("id")) == ws and not c.get("floating")
-        ]
-        if len(tiled) != 1:
-            return
-        if column_already_filled(tiled[0]):
-            print(json.dumps({"stageFill": ws, "skipped": "alreadyFull"}), flush=True)
-            return
-        info = extra_width_workspaces().get(ws) or {}
-        vis = int(info.get("visibleCount") or 2)
-        g = geom_mod()
-        addr = str(tiled[0].get("address") or "")
-        if info.get("setWidth"):
-            size = getattr(g, "size_new_scrolling_column", None)
-            if callable(size):
-                size(ws, addr, vis, set_width=True)
-            print(json.dumps({"setWidthFill": ws, "addr": addr, "vis": vis}), flush=True)
-            return
-        g.force_scrolling(ws, vis, lock=False, stage=True, fill_one=True)
-        fill = g.stage_fill_frac() if hasattr(g, "stage_fill_frac") else 0.95
-        peek = g.peeked_column_frac(vis) if hasattr(g, "peeked_column_frac") else g.extra_column_frac(vis)
-        if addr:
-            g.focus_window(addr)
-            g.layout_msg(f"colresize {fill}")
-        g.apply_spawn_width_rule(ws, peek)
-        pack = getattr(g, "pack_peek_camera", None)
-        if callable(pack) and addr:
-            pack(ws, addr)
-        print(json.dumps({"stageFill": ws, "addr": addr, "frac": fill}), flush=True)
-
-    delay = float(CLOSE_RESTORE_DELAY_SEC)
-    if delay <= 0:
-        fire()
-        return
-    timer = threading.Timer(delay, fire)
-    timer.daemon = True
-    _close_restore_timers[ws] = timer
-    timer.start()
-
-
-def schedule_stage_extra_width(ws: str, addr: str) -> None:
-    """Wait out grok/electron click popups before shrinking the stage pane."""
-    ws = str(ws)
-    addr = str(addr or "")
-    if not ws or not addr:
-        return
-    prev = _stage_extra_timers.pop(addr, None)
-    if prev is not None:
-        prev.cancel()
-
-    def fire() -> None:
-        _stage_extra_timers.pop(addr, None)
-        hit = client_by_addr(addr)
-        if not hit or hit.get("floating"):
-            print(json.dumps({"extraWidth": ws, "addr": addr, "skipped": "gone"}), flush=True)
-            return
-        if tiled_peers(ws, addr) < 1:
-            return
-        if not _ws_is_active(ws):
-            return
-        info = extra_width_workspaces().get(ws) or {}
-        vis = int(info.get("visibleCount") or 2)
-        g = geom_mod()
-        extra = g.peeked_column_frac(vis) if hasattr(g, "peeked_column_frac") else g.extra_column_frac(vis)
-        g.apply_spawn_width_rule(ws, extra)
-        # Stage pane stays ~full until this. Resize every column to vis-width
-        # so the extra stays on this monitor instead of painting on the next.
-        g.layout_msg(f"colresize all {extra}")
-        time.sleep(0.08)
-        g.focus_window(addr)
-        pack = getattr(g, "pack_peek_camera", None)
-        if callable(pack):
-            pack(ws, addr)
-        print(json.dumps({"extraWidth": ws, "addr": addr, "stage": True, "frac": extra, "all": True}), flush=True)
-        if window_count(ws) > 1:
-            schedule_warp_cursor(addr)
-
-    delay = float(STAGE_EXTRA_DELAY_SEC)
-    if delay <= 0:
-        fire()
-        return
-    timer = threading.Timer(delay, fire)
-    timer.daemon = True
-    _stage_extra_timers[addr] = timer
-    timer.start()
-
-
-def schedule_pack_extras(ws: str, addr: str = "") -> None:
-    """One address-swap pack after extras stop arriving. Avoids a swap cascade."""
-    ws = str(ws)
-
-    def fire() -> None:
-        _pack_timers.pop(ws, None)
-        try:
-            geom_mod().append_extra_after_locked(ws, addr)
-            print(json.dumps({"extraWidth": ws, "addr": addr, "multiLock": True}), flush=True)
-        except Exception as exc:
-            print(json.dumps({"extraWidth": ws, "ok": False, "error": str(exc)}), flush=True)
-
-    delay = float(PACK_DEBOUNCE_SEC)
-    if delay <= 0:
-        fire()
-        return
-    prev = _pack_timers.pop(ws, None)
-    if prev is not None:
-        prev.cancel()
-    timer = threading.Timer(delay, fire)
-    timer.daemon = True
-    _pack_timers[ws] = timer
-    timer.start()
-
-
-def schedule_open_settle(ws: str, addr: str = "") -> None:
-    """One settle after a burst of new windows, then put focus back on the last extra."""
-    ws = str(ws)
-    if not ws:
-        return
-    if addr:
-        _open_settle_focus[ws] = addr
-    prev = _close_restore_timers.pop(ws, None)
-    if prev is not None:
-        prev.cancel()
-
-    def fire() -> None:
-        _close_restore_timers.pop(ws, None)
-        focus = _open_settle_focus.pop(ws, addr)
-        restore_locks(ws, focus, keep_focus=False, ignore_burst=True)
-        global _focus_quiet_until
-        _focus_quiet_until = time.monotonic() + 0.8
-        if focus:
-            try:
-                geom_mod().focus_window(focus)
-            except Exception:
-                pass
-
-    timer = threading.Timer(CLOSE_RESTORE_DELAY_SEC, fire)
-    timer.daemon = True
-    _close_restore_timers[ws] = timer
-    timer.start()
-
-
-def restore_locks(ws: str, addr: str = "", keep_focus: bool = False, ignore_burst: bool = False) -> None:
-    global _restoring
-    if _restoring:
-        return
-    now = time.monotonic()
-    prev = _last_restore.get(str(ws))
-    if prev is not None and now - prev < RESTORE_DEBOUNCE_SEC:
-        return
-    if not ignore_burst and now < _burst_until:
-        return
-    _restoring = True
-    _last_restore[str(ws)] = now
-    try:
-        result = geom_mod().restore_locks_for_workspace(
-            str(ws), prefer_addr=addr or "", keep_focus=keep_focus
-        )
-        if result and not result.get("skipped"):
-            print(json.dumps({"restore": str(ws), "ok": result.get("ok"), "closeEnough": result.get("closeEnough")}), flush=True)
-    except Exception as exc:
-        print(json.dumps({"restore": str(ws), "ok": False, "error": str(exc)}), flush=True)
-    finally:
-        _restoring = False
-
-
-def handle_open(addr: str, ws: str) -> None:
-    if apply_in_progress():
-        return
-    hit = client_by_addr(addr)
-    if hit and hit.get("floating"):
-        return
-    try:
-        if str(ws) not in geom_mod().managed_workspaces() and str(ws) not in load_block_map():
-            return
-    except Exception:
-        pass
-    bursting = note_event()
-    blocked = load_block_map()
-    locked = locked_workspaces()
-    extra_ws = extra_width_workspaces()
-    if not blocked and not locked and not extra_ws:
-        return
-    if bursting and str(ws) not in locked and not extra_ws.get(str(ws)) and ws not in blocked:
-        return
-    profile = load_active_profile()
-    if ws in blocked:
-        try:
-            tile = getattr(geom_mod(), "tile_covering_floats", None)
-            if callable(tile):
-                tile(ws)
-        except Exception:
-            pass
-        cap = int(blocked[ws])
-        time.sleep(0.08)
-        over = window_count(ws) > cap
-        if over:
-            dest = next_open_ws(blocked, ws, profile)
-            if dest:
-                move_to_ws(addr, dest)
-                if str(ws) in locked:
-                    restore_locks(ws, "")
-                time.sleep(0.08)
-                focus_ws_and_window(dest, addr)
-                print(json.dumps({"moved": addr, "from": ws, "to": dest}), flush=True)
-                return
-    if in_startup_grace() and str(ws) not in locked and not extra_ws.get(str(ws)):
-        return
-    # First window after the workspace was emptied inherits the layout type
-    # (stage fill / set-width 1/N / scrolling 1/N). Apply/Fresh lock sizes
-    # stay off this path. Peers>0 is an extra: do not stageFill (I-033).
-    peers = tiled_peers(str(ws), addr)
-    if peers == 0 and extra_ws.get(str(ws)):
-        apply_first_column(str(ws), addr)
-        return
-    # Stage/set-width extras keep Hyprland spawn width. Full settle on every
-    # map steals focus across monitors. Only multi-lock splits need a settle
-    # so extras land after the locked panes.
-    if lock_count(ws) >= 2:
-        _appended_extra[str(ws)] = True
-        begin_layout_quiet(str(ws))
-        g = geom_mod()
-        already = ""
-        try:
-            tiled = getattr(g, "workspace_tiled_layout", None)
-            if callable(tiled):
-                already = str(tiled(str(ws)) or "")
-        except Exception:
-            already = ""
-        if already == "lua:workscape":
-            # Skip pack (I-035) but still focus/pan the extra (I-036).
-            schedule_warp_cursor(addr)
-            return
-        schedule_pack_extras(str(ws), addr)
-        return
-    info = extra_ws.get(str(ws)) or {}
-    if info.get("setWidth"):
-        try:
-            geom_mod().size_new_scrolling_column(
-                str(ws), addr, int(info.get("visibleCount") or 2), set_width=True
-            )
-            print(json.dumps({"extraWidth": str(ws), "addr": addr, "setWidth": True}), flush=True)
-        except Exception as exc:
-            print(json.dumps({"extraWidth": str(ws), "ok": False, "error": str(exc)}), flush=True)
-        if window_count(str(ws)) > 1:
-            schedule_warp_cursor(addr)
-        return
-    if extra_ws.get(str(ws)) or str(ws) in locked:
-        if extra_ws.get(str(ws)) and lock_count(ws) < 2:
-            try:
-                clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
-                hit = next((c for c in (clients or []) if str(c.get("address") or "") == str(addr)), None)
-            except Exception:
-                hit = None
-            if hit:
-                snapshot_client_pos(hit)
-            info = extra_ws.get(str(ws)) or {}
-            # Stage extras are 1/Visible. Debounce so click popups do not
-            # shrink the stage pane then stageFill it back (I-046).
-            if info.get("stage"):
-                schedule_stage_extra_width(str(ws), addr)
-                return
-            # Same-class extras (Outlook mail) still need the warp. Assigned
-            # match would skip them and leave the pointer on the inbox (I-040).
-            if window_count(str(ws)) > 1:
-                schedule_warp_cursor(addr)
-        # Do not stageFill on open. The extra is not in `clients` yet, so
-        # the 0.4s timer sees one pane and focus_window snaps to WS1/WS3 (I-033).
-
-
 def window_is_assigned(client: dict, profile: dict, ws: str) -> bool:
     cls = str(client.get("class") or "").lower()
     title = str(client.get("title") or "").lower()
@@ -948,6 +301,35 @@ def window_is_assigned(client: dict, profile: dict, ws: str) -> bool:
             if len(part) >= 4 and part in cls:
                 return True
     return False
+
+
+def bounce_if_blocked(addr: str, ws: str) -> bool:
+    """Move addr off an extras=block workspace that is over cap. True if moved."""
+    if apply_in_progress():
+        return False
+    hit = client_by_addr(addr)
+    if hit and hit.get("floating"):
+        return False
+    blocked = load_block_map()
+    if str(ws) not in blocked:
+        return False
+    cap = int(blocked[ws])
+    time.sleep(0.08)
+    if window_count(ws) <= cap:
+        return False
+    profile = load_active_profile()
+    dest = next_open_ws(blocked, ws, profile)
+    if not dest:
+        return False
+    move_to_ws(addr, dest)
+    time.sleep(0.08)
+    focus_ws_and_window(dest, addr)
+    print(json.dumps({"moved": addr, "from": ws, "to": dest}), flush=True)
+    return True
+
+
+def handle_open(addr: str, ws: str) -> None:
+    bounce_if_blocked(addr, ws)
 
 
 def sweep_block_extras() -> list[dict]:
@@ -988,214 +370,7 @@ def sweep_block_extras() -> list[dict]:
     return moved
 
 
-_last_fit_view = 0.0
-_focus_quiet_until = 0.0
-_warp_timers: dict[str, threading.Timer] = {}
-
-
-def warp_cursor_to_window(addr: str) -> None:
-    """Put the pointer in the extra so follow_mouse cannot steal the staged pane."""
-    addr = SAFE.safe_addr(addr) or addr
-    if not addr:
-        return
-    try:
-        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
-        aw = json.loads(subprocess.check_output(["hyprctl", "-j", "activeworkspace"], text=True))
-        mons = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
-    except Exception:
-        return
-    hit = next((c for c in (clients or []) if str(c.get("address") or "") == addr), None)
-    if not hit or hit.get("floating"):
-        return
-    ws = str((hit.get("workspace") or {}).get("id") or "")
-    if ws != str((aw or {}).get("id") or ""):
-        return
-    at = hit.get("at") or [0, 0]
-    size = hit.get("size") or [0, 0]
-    x, y = int(at[0] or 0), int(at[1] or 0)
-    w, h = int(size[0] or 0), int(size[1] or 0)
-    mon = next((m for m in (mons or []) if m.get("id") == hit.get("monitor")), None)
-    mx = float((mon or {}).get("x") or 0)
-    my = float((mon or {}).get("y") or 0)
-    scale = float((mon or {}).get("scale") or 1) or 1
-    lw = float((mon or {}).get("width") or 0) / scale
-    lh = float((mon or {}).get("height") or 0) / scale
-    # Extra often sits off-screen to the right of a full locked pane. Warp
-    # without focusing it lands on the locked window (I-033).
-    layout = ""
-    try:
-        for space in json.loads(subprocess.check_output(["hyprctl", "-j", "workspaces"], text=True)) or []:
-            if str(space.get("id")) == ws:
-                layout = str(space.get("tiledLayout") or "")
-                break
-    except Exception:
-        layout = ""
-    width, height = int(w), int(h)
-    offscreen = bool(mon and (x + 40 >= mx + lw or x + width <= mx + 40))
-    if offscreen or layout in ("lua:workscape", "scrolling"):
-        # follow_focus=false + follow_min_visible=1.0: a soft focus on an
-        # off-screen extra is refused, so fit_into_view would pan Grok/the
-        # leftover pane instead (I-043). Walk the tape until the extra is
-        # on this monitor, then focus + fit.
-        if layout == "scrolling" and mon and lw > 0:
-            for _ in range(8):
-                if not (x + 40 >= mx + lw or x + width <= mx + 40):
-                    break
-                if x + width // 2 >= mx + lw / 2:
-                    hypr_eval('hl.dispatch(hl.dsp.layout("move +col"))')
-                else:
-                    hypr_eval('hl.dispatch(hl.dsp.layout("move -col"))')
-                time.sleep(0.06)
-                try:
-                    clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
-                except Exception:
-                    return
-                hit = next((c for c in (clients or []) if str(c.get("address") or "") == addr), None)
-                if not hit:
-                    return
-                at = hit.get("at") or [0, 0]
-                size = hit.get("size") or [0, 0]
-                x, y = int(at[0] or 0), int(at[1] or 0)
-                w, h = int(size[0] or 0), int(size[1] or 0)
-                width, height = int(w), int(h)
-        hypr_eval(f'hl.dispatch(hl.dsp.focus({{ window = "address:{addr}" }}))')
-        if layout == "lua:workscape":
-            hypr_eval('hl.dispatch(hl.dsp.layout("follow"))')
-        elif layout == "scrolling":
-            hypr_eval('hl.dispatch(hl.dsp.layout("fit_into_view"))')
-        time.sleep(0.12)
-        try:
-            clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
-        except Exception:
-            return
-        hit = next((c for c in (clients or []) if str(c.get("address") or "") == addr), None)
-        if not hit:
-            return
-        at = hit.get("at") or [0, 0]
-        size = hit.get("size") or [0, 0]
-        x, y = int(at[0] or 0), int(at[1] or 0)
-        w, h = int(size[0] or 0), int(size[1] or 0)
-    if w < 8 or h < 8:
-        return
-    if mon and lw > 0 and (x + 40 >= mx + lw or x + w <= mx + 40):
-        print(json.dumps({"cursorWarp": addr, "x": x, "y": y, "ws": ws, "offscreen": True}), flush=True)
-        return
-    cx = x + w // 2
-    cy = y + h // 2
-    if mon and lw > 0 and lh > 0:
-        left = mx + 8
-        right = mx + lw - 8
-        top = my + 8
-        bot = my + lh - 8
-        cx = int(min(max(cx, max(left, x + 8)), min(right, x + w - 8)))
-        cy = int(min(max(cy, max(top, y + 8)), min(bot, y + h - 8)))
-    hypr_eval(f"hl.dispatch(hl.dsp.cursor.move({{ x = {cx}, y = {cy} }}))")
-    print(json.dumps({"cursorWarp": addr, "x": cx, "y": cy, "ws": ws}), flush=True)
-
-
-def schedule_warp_cursor(addr: str) -> None:
-    addr = str(addr or "")
-    if not addr:
-        return
-    prev = _warp_timers.pop(addr, None)
-    if prev is not None:
-        prev.cancel()
-
-    def fire() -> None:
-        _warp_timers.pop(addr, None)
-        warp_cursor_to_window(addr)
-
-    timer = threading.Timer(WARP_DELAY_SEC, fire)
-    timer.daemon = True
-    _warp_timers[addr] = timer
-    timer.start()
-
-
-def bring_clipped_into_view() -> None:
-    """Click/keyboard focus on a full-width stage pane must pan it onto the monitor."""
-    global _last_fit_view
-    if apply_in_progress() or in_startup_grace() or _restoring:
-        return
-    now = time.monotonic()
-    if now < _burst_until or now < _focus_quiet_until:
-        return
-    now = time.monotonic()
-    if now - _last_fit_view < 0.08:
-        return
-    extra = extra_width_workspaces()
-    locked = locked_workspaces()
-    try:
-        win = json.loads(subprocess.check_output(["hyprctl", "-j", "activewindow"], text=True))
-        mons = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"], text=True))
-    except Exception:
-        return
-    if not isinstance(win, dict) or win.get("floating") is True:
-        return
-    ws = str((win.get("workspace") or {}).get("id") or "")
-    if ws not in extra and ws not in locked:
-        return
-    profile = load_active_profile()
-    if profile and not window_is_assigned(win, profile, ws):
-        return
-    at = win.get("at") or [0, 0]
-    size = win.get("size") or [0, 0]
-    mon = next((m for m in (mons or []) if m.get("id") == win.get("monitor")), None)
-    if not mon:
-        return
-    mx = float(mon.get("x") or 0)
-    lw = float(mon.get("width") or 0) / (float(mon.get("scale") or 1) or 1)
-    x = int(at[0] or 0)
-    w = int(size[0] or 0)
-    if x >= mx - 8 and x + w <= mx + lw + 8:
-        return
-    _last_fit_view = now
-    addr = str(win.get("address") or "")
-    g = geom_mod()
-    if addr:
-        g.focus_window(addr)
-    g.layout_msg("fit_into_view")
-
-
-def schedule_peek_camera(addr: str = "", ws: str = "") -> None:
-    """After Super+arrows / click, inset the camera for left/right peeks."""
-    global _peek_camera_timer
-    prev = _peek_camera_timer
-    if prev is not None:
-        prev.cancel()
-        _peek_camera_timer = None
-
-    def fire() -> None:
-        global _peek_camera_timer
-        _peek_camera_timer = None
-        if apply_in_progress():
-            return
-        a, w = str(addr or ""), str(ws or "")
-        if not a or not w:
-            try:
-                win = json.loads(subprocess.check_output(["hyprctl", "-j", "activewindow"], text=True))
-            except Exception:
-                return
-            a = str((win or {}).get("address") or "")
-            w = str(((win or {}).get("workspace") or {}).get("id") or "")
-        info = extra_width_workspaces().get(w) or {}
-        if not info or info.get("setWidth"):
-            return
-        if lock_count(w) >= 2:
-            return
-        g = geom_mod()
-        pack = getattr(g, "pack_peek_camera", None)
-        if callable(pack):
-            pack(w, a)
-
-    timer = threading.Timer(0.08, fire)
-    timer.daemon = True
-    _peek_camera_timer = timer
-    timer.start()
-
-
 def apply_focus_chrome() -> None:
-    if note_event():
-        return
     profile = load_active_profile()
     if not profile:
         return
@@ -1238,46 +413,6 @@ def apply_focus_chrome() -> None:
         geom.apply_chrome(addr, chrome, addr == focus)
 
 
-def handle_close_or_move(ws: str | None, addr: str = "") -> None:
-    if apply_in_progress() or in_startup_grace():
-        if addr:
-            forget_window(addr)
-        return
-    closed_x = None
-    if addr:
-        pos = _window_pos.get(norm_addr(addr))
-        if pos:
-            closed_x = pos[0]
-        remembered = forget_window(addr)
-        if not ws:
-            ws = remembered
-    if not ws:
-        return
-    locked = locked_workspaces()
-    extra_ws = extra_width_workspaces()
-    if str(ws) not in locked and not extra_ws.get(str(ws)):
-        return
-    if closed_x is not None:
-        focus_successor_after_close(str(ws), addr, closed_x)
-    remaining = window_count(str(ws))
-    if remaining == 0:
-        restamp_empty_workspace(str(ws))
-        return
-    if in_layout_quiet(str(ws)):
-        print(json.dumps({"skipRestore": str(ws), "reason": "layoutQuiet"}), flush=True)
-        return
-    if lock_count(str(ws)) >= 2:
-        # expel/layout-switch emits closewindow; restoring then refocuses
-        # locked panes and fights the extra. Only restore once extras are gone.
-        if extras_remain(str(ws)):
-            print(json.dumps({"skipRestore": str(ws), "reason": "extrasRemain"}), flush=True)
-            return
-        _appended_extra.pop(str(ws), None)
-        schedule_close_restore(str(ws))
-        return
-    schedule_stage_fill(str(ws))
-
-
 def _consume_socket(proc: subprocess.Popen) -> None:
     assert proc.stdout
     for line in proc.stdout:
@@ -1291,53 +426,13 @@ def _consume_socket(proc: subprocess.Popen) -> None:
             if addr and not addr.startswith("0x"):
                 addr = "0x" + addr
             if addr and ws and ws.isdigit():
-                remember_window(addr, ws)
                 handle_open(addr, ws)
-            continue
-        if line.startswith("workspace>>") or line.startswith("workspacev2>>"):
-            payload = line.split(">>", 1)[1]
-            ws = payload.split(",", 1)[0].strip()
-            if ws.isdigit():
-                try:
-                    g = geom_mod()
-                    if str(ws) not in g.managed_workspaces():
-                        # Dummy live uses 11–20. Do not dwindle those when the
-                        # user profile does not own them (I-014 analogue).
-                        if int(ws) <= 10:
-                            g.force_dwindle(ws)
-                            tile = getattr(g, "tile_covering_floats", None)
-                            if callable(tile):
-                                tile(ws)
-                    else:
-                        g.sync_column_width_for_workspace(ws)
-                except Exception:
-                    pass
             continue
         if line.startswith("monitoradded") or line.startswith("monitorremoved"):
             print(json.dumps({"monitorChange": True}), flush=True)
             continue
-        if line.startswith("movewindow>>") or line.startswith("movewindowv2>>"):
-            payload = line.split(">>", 1)[1]
-            parts = payload.split(",", 2)
-            addr = parts[0] if parts else ""
-            dest = parts[1] if len(parts) >= 2 else ""
-            if dest.isdigit():
-                remember_window(addr, dest)
-                # Do not restore on movewindow — swapcol/expel from extras
-                # would full-settle the workspace and steal focus.
-            continue
-        if line.startswith("closewindow>>"):
-            addr = line.split(">>", 1)[1].split(",", 1)[0]
-            handle_close_or_move(None, addr)
-            continue
         if line.startswith("activewindow>>") or line.startswith("activewindowv2>>"):
             apply_focus_chrome()
-            payload = line.split(">>", 1)[1]
-            aw = payload.split(",", 1)[0].strip()
-            if aw and aw not in ("0", "0x0"):
-                if not aw.startswith("0x"):
-                    aw = "0x" + aw
-                schedule_peek_camera(aw)
 
 
 def main() -> int:
@@ -1355,41 +450,12 @@ def main() -> int:
             text=True,
         )
         try:
-            seed_window_map()
-            try:
-                g = geom_mod()
-                reset = getattr(g, "reset_workscape_layout_cache", None)
-                if callable(reset):
-                    reset()
-                ensure = getattr(g, "ensure_workscape_layout", None)
-                if callable(ensure):
-                    ensure()
-                cam = getattr(g, "apply_scrolling_globals", None)
-                if callable(cam):
-                    cam()
-            except Exception:
-                pass
-            try:
-                active = json.loads(subprocess.check_output(["hyprctl", "-j", "activeworkspace"], text=True))
-                ws = str((active or {}).get("id") or "")
-                if ws.isdigit():
-                    g = geom_mod()
-                    if str(ws) not in g.managed_workspaces():
-                        g.force_dwindle(ws)
-                        tile = getattr(g, "tile_covering_floats", None)
-                        if callable(tile):
-                            tile(ws)
-                    else:
-                        g.sync_column_width_for_workspace(ws)
-            except Exception:
-                pass
             _consume_socket(proc)
         finally:
             try:
                 proc.kill()
             except Exception:
                 pass
-        # Hyprland dropped the socket (sleep/wake or compositor restart).
         time.sleep(0.5)
     return 0
 

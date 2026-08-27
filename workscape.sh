@@ -327,7 +327,13 @@ profile_assignments() {
   if jq -e '.profiles' "$CONFIG_FILE" >/dev/null 2>&1; then
     jq -c --arg id "$profile_id" '
       (.profiles // [] | map(select(.id == $id)) | .[0].assignments // [])
-      | sort_by(.geom.z // 0)[]?
+      | sort_by(
+          (.geom.z // 0) as $z
+          | (.exec // .command // "") as $e
+          | if ($e | test("outlook-mail|https://|omarchy-launch-webapp")) then ($z - 100)
+            elif ($e | test("brave$|/brave$")) then ($z + 100)
+            else $z end
+        )[]?
     ' "$CONFIG_FILE" 2>/dev/null
   else
     jq -c '.assignments[]?' "$CONFIG_FILE" 2>/dev/null
@@ -493,6 +499,13 @@ cmd_launch() {
   # hl.exec_cmd does not honor Hyprland's "[workspace N silent]" exec prefix —
   # that string is run as a command. Focus the target workspace, then exec.
   local final_cmd="$exec_cmd"
+  # outlook-mail focuses an existing Brave tab titled Outlook (often the
+  # WS1 browser after session restore) and never creates a WS4 window.
+  if [[ $exec_cmd == *outlook-mail* ]]; then
+    final_cmd="${HOME}/.local/bin/brave --new-window https://outlook.office.com/mail/"
+  elif [[ ${exec_cmd##*/} == "brave" && $exec_cmd != *--new-window* && $exec_cmd != *http* ]]; then
+    final_cmd="$exec_cmd --new-window"
+  fi
   if [[ -n $url ]]; then
     if [[ $url == https://* ]] && [[ $url != *"'"* ]] && [[ $url != *'$'* ]] && [[ $url != *'`'* ]] && [[ $url != *$'\n'* ]]; then
       :
@@ -554,9 +567,9 @@ cmd_launch() {
       fi
       ;;
     *)
-      if [[ $final_cmd != uwsm-app* && $final_cmd != omarchy-launch* && $final_cmd != "chromium"* && $final_cmd != "google-chrome"* && $final_cmd != "brave"* && $final_cmd != "firefox"* ]]; then
+      if [[ $final_cmd != uwsm-app* && $final_cmd != omarchy-launch* && $final_cmd != *chromium* && $final_cmd != *google-chrome* && $final_cmd != *brave* && $final_cmd != *firefox* ]]; then
         if [[ $exec_cmd =~ ^[a-zA-Z0-9._-]+$ || $exec_cmd =~ ^[a-zA-Z0-9._-]+[[:space:]] ]]; then
-          final_cmd="uwsm-app -- $exec_cmd"
+          final_cmd="uwsm-app -- $final_cmd"
         fi
       fi
       ;;
@@ -619,7 +632,7 @@ cmd_launch() {
   local ok=false
   local tries=12
   local delay=0.08
-  if [[ ${exec_cmd,,} == *grok-bot* ]]; then
+  if [[ ${exec_cmd,,} == *grok-bot* || ${final_cmd,,} == *brave* || ${exec_cmd,,} == *outlook* ]]; then
     tries=20
     delay=0.1
   fi
@@ -727,6 +740,7 @@ find_existing_addr() {
   printf '%s' "$clients_json" | jq -r --arg n "$needle" --arg appid "$app_id" --arg name "${name,,}" --arg exec "${exec_cmd,,}" --arg host "$host" --arg ws "$target_ws" --arg used "$used" '
     def cls: ((.class // "") | ascii_downcase);
     def hay: (cls + " " + ((.initialClass // "") | ascii_downcase) + " " + ((.title // "") | ascii_downcase));
+    def leave_alone: (cls == "foot" or cls == "com.mitchellh.ghostty") and (hay | test("hyprland workscape"));
     def is_site_app: cls | test("^(brave|chrome|chromium|google-chrome)-[a-z0-9].*\\.");
     def browser_main: cls == "brave-browser" or cls == "brave" or cls == "chromium" or cls == "google-chrome" or cls == "chromium-browser";
     def on_target:
@@ -734,6 +748,10 @@ find_existing_addr() {
     def hit:
       if $host != "" then
         (hay | contains($host)) and on_target
+      elif ($n == "outlook-mail" or $name == "outlook") then
+        (cls | test("outlook")) and on_target
+      elif ($n == "foot" or $n == "ghostty") then
+        (cls == $n or cls == "foot") and on_target
       elif ($n == "brave" or $n == "brave-browser" or $n == "chromium" or $n == "chrome" or $n == "google-chrome") then
         browser_main and (is_site_app | not) and on_target
       elif ($exec | contains("herdr")) then
@@ -750,7 +768,7 @@ find_existing_addr() {
         false
       end;
     def used_set: ($used | split(" ") | map(select(length>0)));
-    [.[] | select((.address as $a | (used_set | index($a) | not)) and hit)]
+    [.[] | select((.address as $a | (used_set | index($a) | not)) and hit and (leave_alone | not))]
     | sort_by(if ($ws != "" and ((.workspace.id|tostring) == $ws or .workspace.name == $ws)) then 0 else 1 end)
     | .[0].address // empty
   ' 2>/dev/null
@@ -769,7 +787,7 @@ browser_reuse_only_on_target() {
     return
   fi
   case "$needle" in
-    brave|brave-browser|chromium|chrome|google-chrome|firefox) echo "true" ;;
+    brave|brave-browser|chromium|chrome|google-chrome|firefox|outlook-mail|foot) echo "true" ;;
     *) echo "false" ;;
   esac
 }
@@ -976,10 +994,9 @@ launch_profile_assignments() {
 }
 
 install_hypr_lua() {
-  # Copy compositor layout into ~/.config/hypr so `require("hypr.workscape-layout")`
-  # works. Does not edit hyprland.lua (user consent).
-  local src="$PLUGIN_DIR/hypr/workscape-layout.lua"
-  local dest="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/workscape-layout.lua"
+  # Copy Super+arrow / Super+J overlay. Does not edit hyprland.lua.
+  local src="$PLUGIN_DIR/hypr/workscape-binds.lua"
+  local dest="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/workscape-binds.lua"
   [[ -f $src ]] || return 0
   mkdir -p "$(dirname "$dest")"
   if [[ -f $dest ]] && cmp -s "$src" "$dest"; then

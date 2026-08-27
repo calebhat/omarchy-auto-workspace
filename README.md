@@ -29,7 +29,7 @@ Use this on [omarchyplugins.com](https://omarchyplugins.com) / the marketplace i
 
 **Longer (about / README excerpt)**
 
-> WorkScape is an Omarchy + Hyprland suite for people who live on more than one monitor layout. Save a **laptop** profile and a **desk** profile: connected displays (EDID, not `DP-1`) pick the match, optional Wi‑Fi SSID / LAN subnet splits two identical laptop-only setups. Each profile presets apps onto workspaces, pins those workspaces to named monitors, and chooses tiling (dwindle, scrolling, master, stage, two-lock tape), locked pane sizes, and whether extras stay or move to the next workspace. The **organizer** edits up to 20 panes with horizontal and vertical splits, drag-to-swap, tile vs float, and per-window opacity/borders. **Fill next open workspace** chains unused workspaces as Stage with a global max windows per workspace. Trackpad workspace swipes can follow the profile or stay global. Apply from the bar, a middle-click, or optionally at login. Occupied workspaces are left alone unless you **Fresh Workscape**. A profile that does not match the connected displays cannot be applied.
+> WorkScape is an Omarchy + Hyprland suite for people who live on more than one monitor layout. Save a **laptop** profile and a **desk** profile: connected displays (EDID, not `DP-1`) pick the match, optional Wi‑Fi SSID / LAN subnet splits two identical laptop-only setups. Each profile presets apps onto workspaces, pins those workspaces to named monitors, and chooses native tiling (dwindle, scrolling, master) and whether extras stay or move to the next workspace. The **organizer** edits up to 20 panes with horizontal and vertical splits, drag-to-swap, tile vs float, and per-window opacity/borders. **Fill next open workspace** chains unused workspaces with a global max windows per workspace. Trackpad workspace swipes can follow the profile or stay global. Apply from the bar, a middle-click, or optionally at login. Occupied workspaces are left alone unless you **Fresh Workscape**. A profile that does not match the connected displays cannot be applied.
 
 **Suggested listing metadata**
 
@@ -79,7 +79,7 @@ rm -rf ~/.local/state/omarchy/workscape ~/.local/state/omarchy/workbook
 rm -f ~/.config/hypr/workscape-gestures.lua ~/.config/hypr/workbook-gestures.lua
 ```
 
-If you added `pcall(require, "hypr.workscape-gestures")` or `pcall(require, "hypr.workscape-layout")` to `hyprland.lua`, delete those lines too. Apply copies `workscape-layout.lua` into `~/.config/hypr/` when it changes; remove that file on uninstall.
+If you added `pcall(require, "hypr.workscape-gestures")` or `pcall(require, "hypr.workscape-binds")` to `hyprland.lua`, delete those lines too. Apply copies `workscape-binds.lua` into `~/.config/hypr/` when it changes; remove that file on uninstall. Old `workscape-layout.lua` (custom tape) is unused — delete it if present.
 
 ---
 
@@ -138,18 +138,27 @@ Pick workspace **1–10** for app presets (overflow chain can use **1–20**).
 | Layout | Behavior |
 |---|---|
 | Dwindle | Hyprland default split tree |
-| Scrolling | Columns; **Visible columns** is how many extra columns fit before you scroll |
+| Scrolling | First window fills; new windows are 1/Visible columns. Super+Left/Right pan on this workspace |
 | Master | Large pane + stack |
-| Stage | First window full width; extras are smaller columns to the right |
-| Two-lock tape | Automatic when two panes are locked and extras stay: compositor layout `lua:workscape` |
 
-**Visible columns** (1–20) is **per workspace**. It is *not* the global overflow max.
+**Visible columns** (1–20) is **per scrolling workspace**. It is *not* the global overflow max.
 
-**Lock every app / lock a pane** pins sizes so later windows tile around them. Two locked panes with extras staying here use a compositor **tape** (`lua:workscape`): locked fractions hold, extras sit to the right, Super+Left/Right pans the camera. **Keep extra windows on this workspace** (on) leaves extras as more columns. Off: extras still open, then move to the next workspace.
+**Keep extra windows on this workspace** (on) leaves extras on this workspace. Off: extras still open, then move to the next unused workspace (assigned workspaces and leave-alone pins are skipped).
+
+Controls that do not apply to the selected workspace are **hidden**, not greyed out:
+
+| Workspace setup | Layout picker | Visible columns | Keep extra windows |
+|---|---|---|---|
+| Dwindle, extras stay or bounce | Dwindle / Scrolling / Master | hidden | shown |
+| Scrolling | Dwindle / Scrolling / Master | shown | shown |
+| Master | Dwindle / Scrolling / Master | hidden | shown |
+| Locked split (every assigned window pinned to a size, two or more apps) | hidden (stays dwindle) | hidden | hidden — extras always bounce so the split stays put |
+
+**Fill next open workspace** (Profiles tab) is hidden unless a workspace bounces extras, or the overflow chain is already on. − / max / + / Choose… only appear once that chain is on.
 
 **Super+W** closes the focused column and focuses the **next** one in left-to-right order, including a strip you resized very small.
 
-**SUPER+J** (Omarchy toggle split) is dwindle-only. On scrolling or tape workspaces it does nothing, so Hyprland does not show a Lua error overlay.
+**SUPER+J** (Omarchy toggle split) is dwindle-only. On scrolling it does nothing, so Hyprland does not show a Lua error overlay.
 
 **Fill next open workspace** is the **global** chain for this profile:
 
@@ -183,8 +192,7 @@ Edits save and apply on change (no Apply button).
 - **Swipe method** (Natural vs Swap left/right) is one row.
 - **Keep swipes after Hyprland reload** is **off** by default. On: writes `~/.config/hypr/workscape-gestures.lua` (explicit consent). Off: session + login apply only.
 - **SUPER+, / .** previous and next workspace (follows Skip empty).
-- On a two-lock tape, **SUPER+ALT+, / .** pans extra columns without changing workspace.
-- **SUPER+J** toggles dwindle split only; ignored on scrolling/tape so the compositor does not show a Lua error.
+- **SUPER+J** toggles dwindle split only; ignored on scrolling so the compositor does not show a Lua error.
 
 ### 5. Typical day
 
@@ -222,11 +230,11 @@ omarchy-shell -q io.github.calebhat.workscape.panel toggle   # open/close the po
 
 ## Hyprland files
 
-Apply copies `hypr/workscape-layout.lua` to `~/.config/hypr/workscape-layout.lua` so two-lock workspaces can use the tape layout. It does **not** edit `hyprland.lua`. For the layout to exist at compositor start (before the first Apply), add:
+Apply copies `hypr/workscape-binds.lua` to `~/.config/hypr/workscape-binds.lua` so Super+arrows on scrolling stay on this workspace. It does **not** edit `hyprland.lua`. For the binds at compositor start (before the first Apply), add:
 
 ```lua
 pcall(require, "hypr.workscape-gestures")
-pcall(require, "hypr.workscape-layout")
+pcall(require, "hypr.workscape-binds")
 ```
 
 Gesture persist to disk is a separate opt-in in the Gestures tab.

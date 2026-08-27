@@ -119,23 +119,23 @@ Item {
                 wrapMode: Text.WordWrap
             }
             Button {
+                visible: paneCount > 0
                 text: "Tile"
                 selected: root.selectedApp() && root.selectedApp().place !== "float"
-                enabled: paneCount > 0
                 onClicked: if (paneCount > 0) root.placeChanged(selectedIndex, "tile")
             }
             Button {
+                visible: paneCount > 0
                 text: "Float"
                 selected: root.selectedApp() && root.selectedApp().place === "float"
-                enabled: paneCount > 0
                 onClicked: if (paneCount > 0) root.placeChanged(selectedIndex, "float")
             }
-            Button { text: "←"; tooltipText: "Split selected with next app, incoming on the left"; onClicked: root.splitRequested(selectedIndex, "left") }
-            Button { text: "→"; tooltipText: "Split right"; onClicked: root.splitRequested(selectedIndex, "right") }
-            Button { text: "↑"; tooltipText: "Split up"; onClicked: root.splitRequested(selectedIndex, "top") }
-            Button { text: "↓"; tooltipText: "Split down"; onClicked: root.splitRequested(selectedIndex, "bottom") }
-            Button { text: "Reset"; onClicked: root.layoutCleared() }
-            Button { text: "⚙"; tooltipText: "Opacity and borders"; onClicked: root.gearRequested(selectedIndex) }
+            Button { visible: paneCount > 1; text: "←"; tooltipText: "Split selected with next app, incoming on the left"; onClicked: root.splitRequested(selectedIndex, "left") }
+            Button { visible: paneCount > 1; text: "→"; tooltipText: "Split right"; onClicked: root.splitRequested(selectedIndex, "right") }
+            Button { visible: paneCount > 1; text: "↑"; tooltipText: "Split up"; onClicked: root.splitRequested(selectedIndex, "top") }
+            Button { visible: paneCount > 1; text: "↓"; tooltipText: "Split down"; onClicked: root.splitRequested(selectedIndex, "bottom") }
+            Button { visible: paneCount > 0; text: "Reset"; onClicked: root.layoutCleared() }
+            Button { visible: paneCount > 0; text: "⚙"; tooltipText: "Opacity and borders"; onClicked: root.gearRequested(selectedIndex) }
             Button { text: "Close"; onClicked: root.closeRequested() }
         }
 

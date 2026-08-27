@@ -449,15 +449,13 @@ function normalizeWorkspaceNames(raw) {
 }
 
 function layoutDescription(layout, hasLock) {
-    if (layout === "set-width")
-        return "Every window is 1/Visible of the monitor, including the first (Hyprland will not stretch a lone column). Pane locks are hidden here and come back if you switch to Stage or Scrolling."
-    if (layout === "stage")
-        return "The first window stays full width. Extra windows are smaller columns to the right; scroll to see them. Visible sets extra-column width, not the first window."
-    if (layout === "master" && !hasLock)
+    if (hasLock && (layout === "dwindle" || !layout))
+        return "Locked split: assigned apps keep their sizes on dwindle. Extra windows open on the next unused workspace — extras cannot stay here."
+    if (layout === "master")
         return "Hyprland master: one large pane with the rest stacked beside it on the same screen. No scrolling."
-    if (layout === "scrolling" || hasLock)
-        return "Windows sit in a row of columns. Locked panes keep their width; extra windows use the Visible size. Focusing a column to the right can clip a wider locked pane off the left."
-    return "Each new window splits the current one in half (Hyprland’s default tiling)."
+    if (layout === "scrolling")
+        return "Hyprland scrolling: the first window fills the workspace. New windows are 1/Visible columns; Super+Left/Right pans on this workspace."
+    return "Hyprland dwindle: each new window splits the current one. Turn off “Keep extra windows” to bounce extras to the next workspace."
 }
 
 function clampVisibleCount(n) {
@@ -470,11 +468,7 @@ function clampVisibleCount(n) {
 
 function visibleCountHelp(visibleCount, hasLock, layout) {
     var n = clampVisibleCount(visibleCount)
-    if (layout === "set-width")
-        return "Every new window is 1/" + n + " of the monitor (1–20), including the first."
-    if (hasLock)
-        return "Extra columns are 1/" + n + " of the screen (1–20). Locked panes keep the size you set."
-    return n + " extra columns (not the first, in Stage) fit on screen before you scroll. Ultrawides can go up to 20."
+    return "New scrolling columns are 1/" + n + " of the monitor (1–20). The first window still fills until a second opens."
 }
 
 function normalizeWorkspacePref(p) {
@@ -482,7 +476,8 @@ function normalizeWorkspacePref(p) {
         return { layout: "dwindle", visibleCount: 2, lockSizes: false, extras: "around" }
     }
     var layout = p.layout
-    if (layout !== "scrolling" && layout !== "master" && layout !== "stage" && layout !== "set-width") layout = "dwindle"
+    if (layout === "stage" || layout === "set-width") layout = "scrolling"
+    if (layout !== "scrolling" && layout !== "master") layout = "dwindle"
     var vis = clampVisibleCount(p.visibleCount)
     var extras = p.extras === "block" ? "block" : "around"
     return {
@@ -505,9 +500,115 @@ function normalizeWorkspacePrefs(raw) {
     return out
 }
 
+function migrateWorkspacePrefs(prefs, assignments) {
+    var list = assignments || []
+    var normalized = prefs || {}
+    var stub = { assignments: list, workspacePrefs: normalized }
+    var keys = {}
+    var existing = Object.keys(normalized)
+    for (var e = 0; e < existing.length; e++) keys[existing[e]] = true
+    for (var n = 1; n <= 10; n++) {
+        if (workspaceForcesBlock(stub, n)) keys[String(n)] = true
+    }
+    var out = {}
+    var names = Object.keys(keys)
+    for (var p = 0; p < names.length; p++) {
+        var ws = names[p]
+        var pref = normalizeWorkspacePref(normalized[ws])
+        if (workspaceForcesBlock(stub, ws)) {
+            pref.layout = "dwindle"
+            pref.extras = "block"
+        }
+        out[ws] = pref
+    }
+    return out
+}
+
 function workspacePref(profile, ws) {
     var map = (profile && profile.workspacePrefs) || {}
     return normalizeWorkspacePref(map[String(ws)])
+}
+
+function assignedAppCount(profile, ws) {
+    var n = 0
+    var list = (profile && profile.assignments) || []
+    var want = Number(ws)
+    for (var i = 0; i < list.length; i++) {
+        if (list[i].enabled === false) continue
+        if (Number(list[i].workspace) === want) n++
+    }
+    return n
+}
+
+function lockPlaceCount(profile, ws) {
+    var n = 0
+    var list = (profile && profile.assignments) || []
+    var want = Number(ws)
+    for (var i = 0; i < list.length; i++) {
+        if (list[i].enabled === false) continue
+        if (Number(list[i].workspace) !== want) continue
+        if (list[i].lockPlace === true) n++
+    }
+    return n
+}
+
+function workspaceForcesBlock(profile, ws) {
+    if (lockPlaceCount(profile, ws) >= 2) return true
+    var pref = workspacePref(profile, ws)
+    return pref.lockSizes === true && assignedAppCount(profile, ws) >= 2
+}
+
+function effectiveWorkspacePref(profile, ws) {
+    var pref = workspacePref(profile, ws)
+    if (workspaceForcesBlock(profile, ws)) {
+        pref.layout = "dwindle"
+        pref.extras = "block"
+    }
+    return pref
+}
+
+function workspaceControlFlags(profile, ws) {
+    var pref = effectiveWorkspacePref(profile, ws)
+    var forced = workspaceForcesBlock(profile, ws)
+    var scrolling = !forced && pref.layout === "scrolling"
+    return {
+        layout: pref.layout,
+        extras: pref.extras,
+        visibleCount: pref.visibleCount,
+        lockSizes: pref.lockSizes === true,
+        forcedBlock: forced,
+        showLayoutPicker: !forced,
+        showVisibleCount: scrolling,
+        showExtrasToggle: !forced,
+        showScrollingLayout: !forced,
+        showMasterLayout: !forced
+    }
+}
+
+function canEditWorkspacePref(profile, ws, field) {
+    var flags = workspaceControlFlags(profile, ws)
+    if (field === "layout") return flags.showLayoutPicker
+    if (field === "visibleCount") return flags.showVisibleCount
+    if (field === "extras") return flags.showExtrasToggle
+    return true
+}
+
+function profileUsesBounce(profile) {
+    for (var ws = 1; ws <= 10; ws++) {
+        if (workspaceForcesBlock(profile, ws)) return true
+        if (workspacePref(profile, ws).extras === "block") return true
+    }
+    return false
+}
+
+function profileControlFlags(profile) {
+    var ov = normalizeOverflow(profile && profile.overflow)
+    var bounce = profileUsesBounce(profile)
+    return {
+        usesBounce: bounce,
+        showOverflowCard: bounce || ov.enabled === true,
+        showOverflowChainControls: ov.enabled === true
+    }
 }
 
 function normalizeMonitorLayout(raw) {
@@ -1671,7 +1772,7 @@ function normalizeProfile(p, monitorIds) {
             return off
         })(),
         monitorLayout: normalizeMonitorLayout(p.monitorLayout),
-        workspacePrefs: normalizeWorkspacePrefs(p.workspacePrefs),
+        workspacePrefs: migrateWorkspacePrefs(normalizeWorkspacePrefs(p.workspacePrefs), assignments),
         assignments: assignments,
         gestures: normalizeGestures(p.gestures),
         workspaceNames: normalizeWorkspaceNames(p.workspaceNames),
