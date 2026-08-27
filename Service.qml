@@ -32,6 +32,16 @@ Item {
     }
 
     Process {
+        id: gestureBootProc
+        command: ["bash", root.script, "--apply-gestures"]
+        stdout: StdioCollector { waitForEnd: true }
+        stderr: SplitParser { onRead: function(d){ console.warn("[workscape] gestures] " + d) } }
+        onExited: function(code) {
+            root.log("apply-gestures exited " + code)
+        }
+    }
+
+    Process {
         id: ensureProc
         command: ["bash", root.script, "--ensure-config"]
         stdout: StdioCollector { id: ensureOut; waitForEnd: true }
@@ -49,6 +59,8 @@ Item {
                     root.launchDelayMs = Number(cfg.settings.launchDelayMs || 1500)
                 }
             } catch (e) { root.log("parse ensure-config: " + e) }
+            if (!gestureBootProc.running)
+                gestureBootProc.running = true
             if (!root.launchScheduled) {
                 root.launchScheduled = true
                 if (root.autoEnabled && root.applyOnBoot) {

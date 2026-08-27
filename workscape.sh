@@ -1014,6 +1014,7 @@ cmd_apply() {
   ensure_config || exit 1
   wait_for_hyprland || exit 1
   install_hypr_lua || true
+  python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "${requested_id:-}" --apply >/dev/null || true
 
   local enabled
   enabled=$(jq -r '.settings.enabled // true' "$CONFIG_FILE")
