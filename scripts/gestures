@@ -148,6 +148,28 @@ def last_fingers_path() -> Path:
     return Path(state) / "omarchy/workscape/last-swipe-fingers"
 
 
+REQUIRE_LINE = 'pcall(require, "hypr.workscape-gestures")'
+
+
+def ensure_hyprland_require(hypr_dir: Path) -> bool:
+    """Load workscape-gestures.lua on compositor start / reload."""
+    lua = Path(hypr_dir) / "hyprland.lua"
+    if not lua.is_file() or lua.is_symlink():
+        return False
+    try:
+        text = lua.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if "hypr.workscape-gestures" in text:
+        return False
+    snippet = (
+        "\n-- WorkScape trackpad workspace swipe (generated file).\n"
+        f"{REQUIRE_LINE}\n"
+    )
+    SAFE.write_nofollow(lua, text.rstrip() + snippet + "\n")
+    return True
+
+
 def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "", reload: bool = False) -> dict:
     g = resolve_gestures(cfg, profile_id)
     home = Path.home()
@@ -158,9 +180,10 @@ def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "", reload:
     persist = ((cfg.get("settings") or {}).get("persistHyprGestures") is True)
     hypr_dest = Path(hypr_dir) if hypr_dir else home / ".config/hypr/workscape-gestures.lua"
     old_hypr = home / ".config/hypr/workbook-gestures.lua"
-    if persist or hypr_dest.exists() or old_hypr.exists():
+    if persist or hypr_dest.exists() or old_hypr.exists() or g["workspaceSwipe"]:
         SAFE.write_nofollow(hypr_dest, lua)
         dest = hypr_dest
+        ensure_hyprland_require(hypr_dest.parent)
         if old_hypr.exists() and old_hypr.resolve() != hypr_dest.resolve():
             SAFE.write_nofollow(old_hypr, '-- Moved to workscape-gestures.lua\npcall(require, "hypr.workscape-gestures")\n')
     hypr_eval(config_lua_eval(g))

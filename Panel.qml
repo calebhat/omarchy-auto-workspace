@@ -2010,7 +2010,7 @@ Panel {
                                     foreground: root.foreground
                                     onClicked: root.setPersistHyprGestures(!(root.config.settings && root.config.settings.persistHyprGestures === true))
                                 }
-                                HintMark { tooltipText: "Writes ~/.config/hypr/workscape-gestures.lua. Off: this session only (and at login if that toggle is on)." }
+                                HintMark { tooltipText: "Writes ~/.config/hypr/workscape-gestures.lua and loads it from hyprland.lua. Workspace swipe is also applied when the shell starts." }
                             }
                         }
 

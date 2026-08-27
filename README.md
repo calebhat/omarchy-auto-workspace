@@ -190,7 +190,8 @@ Edits save and apply on change (no Apply button).
 - **Global** is the default store and the default view. Every profile uses it until you opt into **This profile**.
 - Profile gestures are a separate store; editing one does not overwrite the other.
 - **Swipe method** (Natural vs Swap left/right) is one row.
-- **Keep swipes after Hyprland reload** is **off** by default. On: writes `~/.config/hypr/workscape-gestures.lua` (explicit consent). Off: session + login apply only.
+- Workspace swipe is registered when the shell starts (`hyprctl eval`) and written to `~/.config/hypr/workscape-gestures.lua` so a compositor reload keeps it. WorkScape adds `pcall(require, "hypr.workscape-gestures")` to `hyprland.lua` if that line is missing.
+- **Keep swipes after Hyprland reload** is **on** by default for new configs. Off still evals for this session; the generated file is still written while workspace swipe is enabled.
 - **SUPER+, / .** previous and next workspace (follows Skip empty).
 - **SUPER+J** toggles dwindle split only; ignored on scrolling so the compositor does not show a Lua error.
 
@@ -230,14 +231,11 @@ omarchy-shell -q io.github.calebhat.workscape.panel toggle   # open/close the po
 
 ## Hyprland files
 
-Apply copies `hypr/workscape-binds.lua` to `~/.config/hypr/workscape-binds.lua` so Super+arrows on scrolling stay on this workspace. It does **not** edit `hyprland.lua`. For the binds at compositor start (before the first Apply), add:
+Apply copies `hypr/workscape-binds.lua` to `~/.config/hypr/workscape-binds.lua` so Super+arrows on scrolling stay on this workspace. Gesture apply writes `workscape-gestures.lua` and inserts `pcall(require, "hypr.workscape-gestures")` into `hyprland.lua` when missing. For Super+arrow binds at compositor start (before the first Apply), add:
 
 ```lua
-pcall(require, "hypr.workscape-gestures")
 pcall(require, "hypr.workscape-binds")
 ```
-
-Gesture persist to disk is a separate opt-in in the Gestures tab.
 
 ## Marketplace readiness
 

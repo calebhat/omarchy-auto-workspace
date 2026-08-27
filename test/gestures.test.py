@@ -38,6 +38,38 @@ def test_scratchpad_and_touch():
     assert 'workspace_name = "scratchpad"' in lua
 
 
+def test_ensure_hyprland_require(tmp_path):
+    lua = tmp_path / "hyprland.lua"
+    lua.write_text("-- Learn how to configure Hyprland\nrequire(\"default.hypr.omarchy\")\n")
+    assert g.ensure_hyprland_require(tmp_path) is True
+    text = lua.read_text()
+    assert 'pcall(require, "hypr.workscape-gestures")' in text
+    assert g.ensure_hyprland_require(tmp_path) is False
+
+
+def test_write_registers_workspace_swipe(tmp_path, monkeypatch=None):
+    hypr = tmp_path / "hypr"
+    hypr.mkdir()
+    (hypr / "hyprland.lua").write_text("-- user hyprland\n")
+    cfg = {
+        "settings": {
+            "persistHyprGestures": False,
+            "gestures": {"workspaceSwipe": True, "fingers": 3},
+        }
+    }
+    orig_eval = g.hypr_eval
+    g.hypr_eval = lambda lua: None
+    try:
+        out = g.write_and_apply(cfg, hypr_dir=str(hypr / "workscape-gestures.lua"))
+    finally:
+        g.hypr_eval = orig_eval
+    assert out["ok"] is True
+    written = (hypr / "workscape-gestures.lua").read_text()
+    assert 'action = "workspace"' in written
+    assert 'fingers = 3' in written
+    assert 'pcall(require, "hypr.workscape-gestures")' in (hypr / "hyprland.lua").read_text()
+
+
 def test_resolve_profile_vs_global():
     cfg = {
         "settings": {"gestureSource": "global", "gestures": {"skipEmpty": False}, "activeProfileId": "p"},
@@ -57,4 +89,9 @@ if __name__ == "__main__":
     test_occupied_keyboard()
     test_scratchpad_and_touch()
     test_resolve_profile_vs_global()
+    import tempfile
+    from pathlib import Path as P
+    with tempfile.TemporaryDirectory() as d:
+        test_ensure_hyprland_require(P(d))
+        test_write_registers_workspace_swipe(P(d))
     print("gestures.test.py ok")

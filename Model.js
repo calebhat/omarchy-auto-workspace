@@ -17,7 +17,7 @@ function defaultConfig() {
             lastMainView: "profiles",
             activeProfileId: "default",
             gestureSource: "global",
-            persistHyprGestures: false,
+            persistHyprGestures: true,
             gestures: defaultGestures()
         },
         monitors: [],

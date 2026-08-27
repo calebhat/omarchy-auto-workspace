@@ -21,6 +21,7 @@ if (m.defaultConfig().settings.lastMainView !== "profiles") throw new Error("hom
 if (m.sanitizeConfig({ version: 2, settings: { lastMainView: "gestures" }, profiles: [{ id: "p", name: "P" }] }).settings.lastMainView !== "gestures")
   throw new Error("persist last page")
 if (m.defaultConfig().settings.gestureSource !== "global") throw new Error("gestures default global")
+if (m.defaultConfig().settings.persistHyprGestures !== true) throw new Error("persist gestures default on")
 const gsrcMissing = m.sanitizeConfig({ version: 2, settings: {}, profiles: [{ id: "p", name: "P" }] })
 if (gsrcMissing.settings.gestureSource !== "global") throw new Error("sanitize missing source is global")
 const gsrcKeep = m.sanitizeConfig({ version: 2, settings: { gestureSource: "profile" }, profiles: [{ id: "p", name: "P" }] })
