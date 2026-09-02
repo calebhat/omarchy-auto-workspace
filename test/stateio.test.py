@@ -200,6 +200,21 @@ def test_run_kills_on_overflow(tmp: Path):
     assert len(r.stdout) <= 8192
 
 
+def test_isolate_log_hard_cap(tmp: Path):
+    env = os.environ.copy()
+    env["WORKSCAPE_STATE_DIR"] = str(tmp)
+    r = run(
+        env,
+        ["isolate-apply", "--timeout", "5", "--", "python3", "-c", "print('x'*2000000)"],
+        timeout=8,
+    )
+    assert r.returncode != 0
+    log = tmp / "apply.log"
+    assert log.exists()
+    assert log.stat().st_size <= SAFE.MAX_APPLY_LOG
+    assert len(r.stdout) <= SAFE.MAX_APPLY_LOG
+
+
 def test_isolate_lock(tmp: Path):
     env = os.environ.copy()
     env["WORKSCAPE_STATE_DIR"] = str(tmp)
@@ -220,7 +235,7 @@ if __name__ == "__main__":
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         base = Path(d)
-        for name in list("abcdefghijklm"):
+        for name in list("abcdefghijklmn"):
             (base / name).mkdir()
         test_write_read_roundtrip(base / "a")
         test_symlink_config_rejected(base / "b")
@@ -234,5 +249,6 @@ if __name__ == "__main__":
         test_hung_helper_and_descendants(base / "j")
         test_schema_caps_profiles(base / "k")
         test_run_kills_on_overflow(base / "l")
+        test_isolate_log_hard_cap(base / "n")
         test_isolate_lock(base / "m")
     print("stateio.test.py ok")

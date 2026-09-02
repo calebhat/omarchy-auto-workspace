@@ -72,10 +72,31 @@ def test_write_registers_workspace_swipe(tmp_path, monkeypatch=None):
         assert 'pcall(require, "hypr.workscape-gestures")' in (hypr / "hyprland.lua").read_text()
         restored = g.restore_hypr_persist(str(hypr))
         assert restored["stripped"] is True
+        assert restored["restoredBak"] is True
         assert 'pcall(require, "hypr.workscape-gestures")' not in (hypr / "hyprland.lua").read_text()
+        assert (hypr / "hyprland.lua").read_text() == "-- user hyprland\n"
+        assert (hypr / "hyprland.lua.workscape.bak").exists()
         assert not (hypr / "workscape-gestures.lua").exists()
     finally:
         g.hypr_eval = orig_eval
+
+
+def test_restore_leaves_user_owned_files(tmp_path):
+    hypr = tmp_path / "hypr"
+    hypr.mkdir(parents=True)
+    (hypr / "hyprland.lua").write_text(
+        'require("default.hypr.omarchy")\n'
+        'pcall(require, "hypr.workscape-gestures")\n'
+    )
+    (hypr / "workscape-gestures.lua").write_text("-- my custom swipe\nhl.config({})\n")
+    (hypr / "workscape-binds.lua").write_text("-- not ours\n")
+    out = g.restore_hypr_persist(str(hypr))
+    assert out["stripped"] is False
+    assert out["restoredBak"] is False
+    text = (hypr / "hyprland.lua").read_text()
+    assert 'pcall(require, "hypr.workscape-gestures")' in text
+    assert (hypr / "workscape-gestures.lua").read_text().startswith("-- my custom swipe")
+    assert (hypr / "workscape-binds.lua").exists()
 
 
 def test_resolve_profile_vs_global():
@@ -102,4 +123,5 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as d:
         test_ensure_hyprland_require(P(d))
         test_write_registers_workspace_swipe(P(d))
+        test_restore_leaves_user_owned_files(P(d) / "keep")
     print("gestures.test.py ok")
