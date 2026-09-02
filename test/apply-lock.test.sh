@@ -1,9 +1,9 @@
 #!/bin/bash
-# I-042: Fresh must take apply.lock before closing windows; a held lock
-# must not close anything.
+# I-042: Fresh must isolate (lock + detach) before closing windows.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SH="$ROOT/workscape.sh"
+STATEIO="$ROOT/scripts/stateio"
 
 python3 - "$SH" <<'PY'
 from pathlib import Path
@@ -12,24 +12,23 @@ text = Path(sys.argv[1]).read_text()
 start = text.index("cmd_fresh_apply()")
 end = text.index("\ncmd_launch_all")
 body = text[start:end]
-assert "reexec_apply_detached" in body, "fresh must detach from the panel Process"
-assert "acquire_apply_lock" in body, "fresh must take apply.lock"
-assert body.index("acquire_apply_lock") < body.index("close_preset_workspaces"), body
-assert body.index("reexec_apply_detached") < body.index("close_preset_workspaces")
+assert "ensure_isolated" in body, "fresh must isolate from the panel Process"
+assert "close_preset_workspaces" in body
+assert body.index("ensure_isolated") < body.index("close_preset_workspaces"), body
+assert "acquire_apply_lock" not in body
+assert "reexec_apply_detached" not in body
 print("fresh locks before close ok")
 PY
 
-notify() { :; }
-STATE_DIR=$(mktemp -d)
-trap 'rm -rf "$STATE_DIR"' EXIT
-# shellcheck disable=SC1091
-eval "$(sed -n '/^acquire_apply_lock()/,/^}/p' "$SH")"
-exec 8>"$STATE_DIR/apply.lock"
-flock -n 8
-if acquire_apply_lock; then
-  echo "acquire_apply_lock took a held lock"
-  exit 1
-fi
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+export WORKSCAPE_STATE_DIR=$TMP
+python3 "$STATEIO" isolate-apply --timeout 5 -- sleep 2 >/dev/null 2>&1 &
+holder=$!
+sleep 0.25
+out=$(python3 "$STATEIO" isolate-apply --timeout 1 -- true)
+wait "$holder" || true
+[[ $out == *"apply already in progress"* ]]
 echo "held apply.lock refuses second acquire ok"
 
 python3 - "$SH" <<'PY'

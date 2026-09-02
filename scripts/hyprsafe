@@ -1,14 +1,39 @@
 #!/usr/bin/env python3
-"""Allowlists for values interpolated into hyprctl eval Lua."""
+"""Allowlists plus descriptor-relative file and subprocess helpers."""
 from __future__ import annotations
 
+import errno
+import fcntl
+import json
 import os
 import re
+import signal
+import stat
+import subprocess
+import sys
+import time
 from pathlib import Path
+from typing import Any
 
 _WS_RE = re.compile(r"^(?:[1-9]|1[0-9]|20)$")
 _ADDR_RE = re.compile(r"^(?:0x)?[0-9a-fA-F]+$")
 _CONNECTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+
+MAX_CONFIG_BYTES = 524288
+MAX_HYPR_JSON = 262144
+MAX_HELPER_OUT = 524288
+MAX_PROC_FILE = 4096
+STATE_NAMES = frozenset({
+    "config.json",
+    "apply.lock",
+    "apply.pid",
+    "apply.log",
+    "last-swipe-fingers",
+    "last_boot_id",
+    "last_applied_profile",
+    "workscape-gestures.lua",
+    "state.json",
+})
 
 
 def safe_ws(ws) -> str | None:
@@ -58,11 +83,329 @@ def clamp_scale(raw) -> float:
     return n
 
 
-def write_nofollow(path: Path, text: str, mode: int = 0o644) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
-    fd = os.open(path, flags, mode)
+def _pdeathsig() -> None:
     try:
-        os.write(fd, text.encode("utf-8"))
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        if libc.prctl(1, signal.SIGKILL) != 0:
+            return
+    except Exception:
+        return
+
+
+def _check_name(name: str) -> str:
+    base = os.path.basename(str(name or ""))
+    if not base or base in {".", ".."} or "/" in str(name) or "\\" in str(name):
+        raise OSError("invalid file name")
+    return base
+
+
+def open_dir_fd(path: Path, create: bool = False, private: bool = False) -> int:
+    raw = os.path.abspath(os.fsdecode(path))
+    p = Path(raw)
+    if not p.is_absolute():
+        raise OSError("path must be absolute")
+    parts = p.parts[1:]
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for i, part in enumerate(parts):
+            if part in {"", ".", ".."}:
+                raise OSError("invalid path component")
+            last = i == len(parts) - 1
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            try:
+                nxt = os.open(part, flags, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                mode = 0o700 if last and private else 0o755
+                os.mkdir(part, mode, dir_fd=fd)
+                nxt = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+            st = os.fstat(fd)
+            if not stat.S_ISDIR(st.st_mode):
+                raise OSError("not a directory")
+            if last:
+                if private:
+                    if st.st_uid != os.getuid():
+                        raise OSError("directory owner mismatch")
+                    if st.st_mode & 0o077:
+                        os.fchmod(fd, 0o700)
+                elif st.st_uid != os.getuid() and not (st.st_mode & stat.S_ISVTX):
+                    raise OSError("directory owner mismatch")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def state_dir() -> Path:
+    override = os.environ.get("WORKSCAPE_STATE_DIR", "").strip()
+    if override:
+        return Path(override)
+    cfg = os.environ.get("WORKSCAPE_CONFIG", "").strip()
+    if cfg:
+        return Path(os.path.abspath(cfg)).parent
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
+    return Path(state) / "omarchy" / "workscape"
+
+
+def open_state_dir(create: bool = True) -> int:
+    return open_dir_fd(state_dir(), create=create, private=True)
+
+
+def _fstat_reg(fd: int) -> os.stat_result:
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        raise OSError("not a regular file")
+    if st.st_uid != os.getuid():
+        raise OSError("file owner mismatch")
+    return st
+
+
+def read_at(dirfd: int, name: str, max_bytes: int) -> bytes:
+    name = _check_name(name)
+    fd = os.open(
+        name,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+        dir_fd=dirfd,
+    )
+    try:
+        st = _fstat_reg(fd)
+        if st.st_size > max_bytes:
+            raise OSError("file too large")
+        buf = bytearray()
+        while len(buf) <= max_bytes:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if len(buf) > max_bytes:
+                raise OSError("file too large")
+        return bytes(buf)
     finally:
         os.close(fd)
+
+
+def _reject_bad_dest(dirfd: int, name: str) -> None:
+    try:
+        fd = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+            dir_fd=dirfd,
+        )
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        if e.errno in {errno.ELOOP, errno.EEXIST}:
+            raise OSError("refusing symlink destination") from e
+        raise
+    try:
+        _fstat_reg(fd)
+    finally:
+        os.close(fd)
+
+
+def _atomic_replace(dirfd: int, name: str, data: bytes, mode: int) -> None:
+    name = _check_name(name)
+    _reject_bad_dest(dirfd, name)
+    tmp = f".{name}.{os.urandom(8).hex()}.tmp"
+    fd = os.open(
+        tmp,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        mode,
+        dir_fd=dirfd,
+    )
+    try:
+        view = memoryview(data)
+        off = 0
+        while off < len(data):
+            n = os.write(fd, view[off:])
+            if n <= 0:
+                raise OSError("short write")
+            off += n
+        os.fsync(fd)
+        st = _fstat_reg(fd)
+        if st.st_size != len(data):
+            raise OSError("incomplete write")
+        os.fchmod(fd, mode)
+    except Exception:
+        os.close(fd)
+        try:
+            os.unlink(tmp, dir_fd=dirfd)
+        except OSError:
+            pass
+        raise
+    os.close(fd)
+    os.replace(tmp, name, src_dir_fd=dirfd, dst_dir_fd=dirfd)
+
+
+def write_at(dirfd: int, name: str, data: bytes, mode: int = 0o600, max_bytes: int | None = None) -> None:
+    if max_bytes is not None and len(data) > max_bytes:
+        raise OSError("payload too large")
+    _atomic_replace(dirfd, name, data, mode)
+
+
+def unlink_at(dirfd: int, name: str) -> None:
+    name = _check_name(name)
+    try:
+        os.unlink(name, dir_fd=dirfd)
+    except FileNotFoundError:
+        return
+
+
+def read_nofollow(path: Path, max_bytes: int = MAX_CONFIG_BYTES) -> bytes:
+    dirfd = open_dir_fd(path.parent, create=False, private=False)
+    try:
+        return read_at(dirfd, path.name, max_bytes)
+    finally:
+        os.close(dirfd)
+
+
+def write_atomic(
+    path: Path,
+    text: str | bytes,
+    mode: int = 0o644,
+    backup: bool = False,
+    max_bytes: int | None = None,
+) -> None:
+    data = text.encode("utf-8") if isinstance(text, str) else text
+    if max_bytes is not None and len(data) > max_bytes:
+        raise OSError("payload too large")
+    dirfd = open_dir_fd(path.parent, create=True, private=False)
+    try:
+        name = _check_name(path.name)
+        if backup:
+            try:
+                old = read_at(dirfd, name, max_bytes or max(len(data), MAX_CONFIG_BYTES) + 65536)
+            except FileNotFoundError:
+                old = None
+            except OSError:
+                old = None
+            if old is not None:
+                _atomic_replace(dirfd, name + ".workscape.bak", old, mode)
+        _atomic_replace(dirfd, name, data, mode)
+    finally:
+        os.close(dirfd)
+
+
+def load_json_file(path: Path, max_bytes: int = MAX_CONFIG_BYTES) -> dict:
+    data = read_nofollow(Path(path), max_bytes)
+    obj = json.loads(data.decode("utf-8"))
+    if not isinstance(obj, dict) and not isinstance(obj, list):
+        raise OSError("json root must be object or array")
+    return obj
+
+
+def write_nofollow(path: Path, text: str, mode: int = 0o644) -> None:
+    write_atomic(path, text, mode=mode, backup=False)
+
+
+def unlink_nofollow(path: Path) -> None:
+    dirfd = open_dir_fd(path.parent, create=False, private=False)
+    try:
+        unlink_at(dirfd, path.name)
+    finally:
+        os.close(dirfd)
+
+
+def copy_regular(src: Path, dest: Path, max_bytes: int, mode: int = 0o600) -> None:
+    data = read_nofollow(src, max_bytes)
+    write_atomic(dest, data, mode=mode, backup=False, max_bytes=max_bytes)
+
+
+def hypr_json(args: list[str], timeout: float = 3.0) -> Any:
+    raw = bounded_output(["hyprctl", "-j", *args], timeout=timeout, max_bytes=MAX_HYPR_JSON)
+    return json.loads(raw.decode("utf-8"))
+
+
+def bounded_output(cmd: list[str], timeout: float = 3.0, max_bytes: int = MAX_HYPR_JSON) -> bytes:
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        preexec_fn=_pdeathsig,
+    )
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        time.sleep(0.2)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.communicate(timeout=0.5)
+        except Exception:
+            proc.kill()
+            proc.wait()
+        raise
+    if proc.returncode not in (0, None) and not out:
+        raise subprocess.CalledProcessError(proc.returncode or 1, cmd)
+    out = out or b""
+    if len(out) > max_bytes:
+        raise OSError("output too large")
+    return out
+
+
+def bounded_run(cmd: list[str], timeout: float = 3.0) -> int:
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        preexec_fn=_pdeathsig,
+    )
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        time.sleep(0.2)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        return 124
+
+
+def try_lock(dirfd: int) -> int | None:
+    fd = os.open(
+        "apply.lock",
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+        dir_fd=dirfd,
+    )
+    try:
+        _fstat_reg(fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def write_pid(dirfd: int, pid: int) -> None:
+    write_at(dirfd, "apply.pid", f"{int(pid)}\n".encode(), mode=0o600, max_bytes=32)
+
+
+def read_pid(dirfd: int) -> int:
+    try:
+        raw = read_at(dirfd, "apply.pid", 32).decode("ascii", "replace").strip()
+        return int(raw)
+    except Exception:
+        return 0

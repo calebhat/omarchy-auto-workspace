@@ -2,6 +2,7 @@
 """Bounce extras off extras=block workspaces. Hyprland owns tiling."""
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
@@ -27,13 +28,19 @@ def lock_path() -> Path:
 
 
 def apply_in_progress() -> bool:
-    lock = lock_path()
-    if not lock.exists():
+    try:
+        dirfd = SAFE.open_state_dir(create=False)
+    except OSError:
         return False
     try:
-        return subprocess.call(["flock", "-n", str(lock), "-c", "true"]) != 0
-    except Exception:
+        lock = SAFE.try_lock(dirfd)
+        if lock is None:
+            return True
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        os.close(lock)
         return False
+    finally:
+        os.close(dirfd)
 
 
 def geom_mod():
@@ -48,7 +55,7 @@ def load_active_profile() -> dict | None:
     if not path.exists():
         return None
     try:
-        cfg = json.loads(path.read_text())
+        cfg = SAFE.load_json_file(path)
     except Exception:
         return None
     pid = ((cfg.get("settings") or {}).get("activeProfileId")) or ""
@@ -204,7 +211,7 @@ def next_open_ws(blocked: dict[str, int], current: str, profile: dict | None = N
 
 def window_count(ws: str) -> int:
     try:
-        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
+        clients = SAFE.hypr_json(["clients"])
     except Exception:
         return -1
     n = 0
@@ -220,7 +227,7 @@ def client_by_addr(addr: str) -> dict | None:
     if not want:
         return None
     try:
-        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
+        clients = SAFE.hypr_json(["clients"])
     except Exception:
         return None
     return next((c for c in (clients or []) if str(c.get("address") or "") == want), None)
@@ -341,7 +348,7 @@ def sweep_block_extras() -> list[dict]:
     if not blocked:
         return []
     try:
-        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
+        clients = SAFE.hypr_json(["clients"])
     except Exception:
         return []
     occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
@@ -377,8 +384,8 @@ def apply_focus_chrome() -> None:
     if not any(isinstance(a.get("chrome"), dict) for a in (profile.get("assignments") or [])):
         return
     try:
-        active = json.loads(subprocess.check_output(["hyprctl", "-j", "activewindow"], text=True))
-        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"], text=True))
+        active = SAFE.hypr_json(["activewindow"])
+        clients = SAFE.hypr_json(["clients"])
     except Exception:
         return
     focus = str((active or {}).get("address") or "")
@@ -416,6 +423,8 @@ def apply_focus_chrome() -> None:
 def _consume_socket(proc: subprocess.Popen) -> None:
     assert proc.stdout
     for line in proc.stdout:
+        if len(line) > 4096:
+            continue
         line = line.strip()
         if line.startswith("openwindow>>"):
             payload = line.split(">>", 1)[1]
@@ -448,6 +457,8 @@ def main() -> int:
             ["socat", "-u", f"UNIX-CONNECT:{sock}", "-"],
             stdout=subprocess.PIPE,
             text=True,
+            start_new_session=True,
+            preexec_fn=SAFE._pdeathsig,
         )
         try:
             _consume_socket(proc)

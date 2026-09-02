@@ -16,33 +16,8 @@ PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MATCH="$PLUGIN_DIR/scripts/match"
 GEOM="$PLUGIN_DIR/scripts/geom"
 GESTURES="$PLUGIN_DIR/scripts/gestures"
+STATEIO="$PLUGIN_DIR/scripts/stateio"
 WORKSCAPE_APPLY_ARGV=("$@")
-
-mkdir -p -m 700 "$STATE_DIR"
-
-# Detached apply child: keep a log the parent can tail after the panel Process
-# dies (bar recreate on hl.monitor).
-if [[ ${WORKSCAPE_APPLY_DETACHED:-} == "1" ]]; then
-  exec >>"$STATE_DIR/apply.log" 2>&1
-fi
-
-migrate_config() {
-  if [[ -f $CONFIG_FILE ]]; then
-    return 0
-  fi
-  mkdir -p -m 700 "$STATE_DIR"
-  if [[ -f $PREV_WORKBOOK_DIR/config.json ]]; then
-    cp -a "$PREV_WORKBOOK_DIR/." "$STATE_DIR/" 2>/dev/null || true
-    return 0
-  fi
-  if [[ -f $PREV_STATE_DIR/config.json ]]; then
-    cp -a "$PREV_STATE_DIR/." "$STATE_DIR/" 2>/dev/null || true
-    return 0
-  fi
-  if [[ -f $LEGACY_CONFIG_FILE ]]; then
-    cp "$LEGACY_CONFIG_FILE" "$CONFIG_FILE" 2>/dev/null || true
-  fi
-}
 
 default_config() {
   cat <<'JSON'
@@ -75,57 +50,31 @@ JSON
 }
 
 ensure_config() {
-  migrate_config
-  mkdir -p -m 700 "$STATE_DIR"
-  if [[ ! -f $CONFIG_FILE ]]; then
-    default_config >"$CONFIG_FILE"
-    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
-    return 0
-  fi
-  if ! command -v jq >/dev/null 2>&1; then
-    echo "jq is required" >&2
-    return 1
-  fi
-  if ! jq empty "$CONFIG_FILE" >/dev/null 2>&1; then
-    echo "invalid config JSON: $CONFIG_FILE (left in place; not overwritten)" >&2
-    return 1
-  fi
-  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
-  return 0
+  python3 "$STATEIO" ensure-config >/dev/null
+}
+
+read_config() {
+  python3 "$STATEIO" ensure-config
+}
+
+jq_config() {
+  read_config | jq "$@"
+}
+
+state_get() {
+  python3 "$STATEIO" read-state "$1" 2>/dev/null || true
+}
+
+state_put() {
+  printf '%s' "$2" | python3 "$STATEIO" write-state "$1"
 }
 
 cmd_ensure_config() {
-  ensure_config || exit 1
-  local sz
-  sz=$(stat -c%s "$CONFIG_FILE" 2>/dev/null || echo 0)
-  if (( sz > MAX_CONFIG_BYTES )); then
-    echo "config too large ($sz bytes)" >&2
-    exit 1
-  fi
-  cat "$CONFIG_FILE"
+  python3 "$STATEIO" ensure-config || exit 1
 }
 
 cmd_write_config() {
-  local json="${2:-}"
-  if [[ -z $json ]]; then
-    echo "empty config" >&2
-    return 1
-  fi
-  if (( ${#json} > MAX_CONFIG_BYTES )); then
-    echo "config too large" >&2
-    return 1
-  fi
-  mkdir -p -m 700 "$STATE_DIR"
-  local tmp="$CONFIG_FILE.tmp.$$"
-  printf '%s' "$json" >"$tmp"
-  if ! command -v jq >/dev/null 2>&1 || ! jq empty "$tmp" >/dev/null 2>&1; then
-    rm -f "$tmp"
-    echo "invalid json" >&2
-    return 1
-  fi
-  mv -f "$tmp" "$CONFIG_FILE"
-  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
-  echo OK
+  python3 "$STATEIO" write-config
 }
 
 cmd_hypr_layout() {
@@ -145,64 +94,11 @@ hypr_clients_json() {
   timeout 2 hyprctl clients -j </dev/null 2>/dev/null || echo "[]"
 }
 
-acquire_apply_lock() {
-  mkdir -p -m 700 "$STATE_DIR"
-  if [[ ${WORKSCAPE_APPLY_LOCKED:-} == "1" ]]; then
+ensure_isolated() {
+  if [[ ${WORKSCAPE_APPLY_ISOLATED:-} == "1" ]]; then
     return 0
   fi
-  exec 9>"$STATE_DIR/apply.lock"
-  if ! flock -n 9; then
-    echo "apply already in progress"
-    notify "WorkScape" "Apply already in progress"
-    return 1
-  fi
-  WORKSCAPE_APPLY_LOCKED=1
-  echo $$ > "$STATE_DIR/apply.pid"
-  trap 'rm -f "$STATE_DIR/apply.pid"' EXIT
-  return 0
-}
-
-# Panel/Service Process dies when hl.monitor() recreates bars. Fork into a new
-# session before close/launch so Fresh can finish; parent tails the log so the
-# UI stays on "Applying…" until the lock drops.
-reexec_apply_detached() {
-  if [[ ${WORKSCAPE_APPLY_DETACHED:-} == "1" ]]; then
-    return 0
-  fi
-  mkdir -p -m 700 "$STATE_DIR"
-  local log="$STATE_DIR/apply.log"
-  : > "$log"
-  export WORKSCAPE_APPLY_DETACHED=1
-  if command -v setsid >/dev/null 2>&1; then
-    setsid -f /bin/bash "$PLUGIN_DIR/workscape.sh" "${WORKSCAPE_APPLY_ARGV[@]}"
-  else
-    nohup /bin/bash "$PLUGIN_DIR/workscape.sh" "${WORKSCAPE_APPLY_ARGV[@]}" </dev/null >/dev/null 2>&1 &
-    disown
-  fi
-  echo "apply started"
-  trap '' TERM HUP
-  tail -n +1 -f "$log" &
-  local tail_pid=$!
-  local n=0 pid=""
-  while (( n < 40 )); do
-    if [[ -f $STATE_DIR/apply.pid ]]; then
-      pid=$(cat "$STATE_DIR/apply.pid" 2>/dev/null || true)
-      break
-    fi
-    sleep 0.05
-    n=$((n + 1))
-  done
-  while [[ -f $STATE_DIR/apply.pid ]]; do
-    pid=$(cat "$STATE_DIR/apply.pid" 2>/dev/null || true)
-    if [[ -z $pid ]] || ! kill -0 "$pid" 2>/dev/null; then
-      break
-    fi
-    sleep 0.2
-  done
-  sleep 0.05
-  kill "$tail_pid" 2>/dev/null || true
-  wait "$tail_pid" 2>/dev/null || true
-  exit 0
+  exec python3 "$STATEIO" isolate-apply --timeout 180 -- /bin/bash "$PLUGIN_DIR/workscape.sh" "${WORKSCAPE_APPLY_ARGV[@]}"
 }
 
 apply_profile_outputs() {
@@ -226,23 +122,18 @@ cmd_sync_active_profile() {
     echo '{"synced":false}'
     return 0
   fi
-  if ! jq -e --arg id "$id" '.profiles[] | select(.id==$id)' "$CONFIG_FILE" >/dev/null 2>&1; then
+  if ! jq_config -e --arg id "$id" '.profiles[] | select(.id==$id)' >/dev/null 2>&1; then
     echo '{"synced":false}'
     return 0
   fi
-  cur=$(jq -r '.settings.activeProfileId // empty' "$CONFIG_FILE")
+  cur=$(jq_config -r '.settings.activeProfileId // empty')
   if [[ $id == "$cur" ]]; then
     printf '{"synced":false,"id":"%s"}\n' "$id"
     return 0
   fi
-  local tmp
-  tmp=$(mktemp)
-  if jq --arg id "$id" '.settings.activeProfileId = $id' "$CONFIG_FILE" >"$tmp" && jq empty "$tmp" >/dev/null 2>&1; then
-    mv -f "$tmp" "$CONFIG_FILE"
-    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+  if read_config | jq --arg id "$id" '.settings.activeProfileId = $id' | python3 "$STATEIO" write-config >/dev/null; then
     printf '{"synced":true,"id":"%s","from":"%s"}\n' "$id" "$cur"
   else
-    rm -f "$tmp"
     echo '{"synced":false,"error":"write"}'
     return 1
   fi
@@ -361,8 +252,8 @@ for ws, name in b.items():
 
 profile_assignments() {
   local profile_id=$1
-  if jq -e '.profiles' "$CONFIG_FILE" >/dev/null 2>&1; then
-    jq -c --arg id "$profile_id" '
+  if jq_config -e '.profiles' >/dev/null 2>&1; then
+    jq_config -c --arg id "$profile_id" '
       (.profiles // [] | map(select(.id == $id)) | .[0].assignments // [])
       | sort_by(
           (.geom.z // 0) as $z
@@ -371,9 +262,9 @@ profile_assignments() {
             elif ($e | test("brave$|/brave$")) then ($z + 100)
             else $z end
         )[]?
-    ' "$CONFIG_FILE" 2>/dev/null
+    ' 2>/dev/null
   else
-    jq -c '.assignments[]?' "$CONFIG_FILE" 2>/dev/null
+    jq_config -c '.assignments[]?' 2>/dev/null
   fi
 }
 
@@ -397,7 +288,7 @@ cmd_list_apps() {
     printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$extra_name" "$extra_exec" "${extra_icon:-utilities-terminal}" "" "extra" "9999"
     seen+="|$extra_exec|"
     seen_name["${extra_name,,}"]=1
-  done < <(jq -c '.extraApps[]?' "$CONFIG_FILE" 2>/dev/null)
+  done < <(jq_config -c '.extraApps[]?' 2>/dev/null)
 
   # Skip walking the icon themes here — the panel resolves Icon= via Quickshell.
   local hist_txt="" h
@@ -473,12 +364,12 @@ cmd_list_apps() {
 cmd_status() {
   ensure_config
   local count enabled_count profile_count
-  count=$(jq '[.profiles[]?.assignments[]?] | length' "$CONFIG_FILE" 2>/dev/null || echo 0)
-  enabled_count=$(jq '[.profiles[]?.assignments[]? | select(.enabled==true)] | length' "$CONFIG_FILE" 2>/dev/null || echo 0)
-  profile_count=$(jq '.profiles | length' "$CONFIG_FILE" 2>/dev/null || echo 0)
+  count=$(jq_config '[.profiles[]?.assignments[]?] | length' 2>/dev/null || echo 0)
+  enabled_count=$(jq_config '[.profiles[]?.assignments[]? | select(.enabled==true)] | length' 2>/dev/null || echo 0)
+  profile_count=$(jq_config '.profiles | length' 2>/dev/null || echo 0)
   local enabled apply_on_boot
-  enabled=$(jq -r '.settings.enabled // true' "$CONFIG_FILE" 2>/dev/null)
-  apply_on_boot=$(jq -r '.settings.applyOnBoot // false' "$CONFIG_FILE" 2>/dev/null)
+  enabled=$(jq_config -r '.settings.enabled // true' 2>/dev/null)
+  apply_on_boot=$(jq_config -r '.settings.applyOnBoot // false' 2>/dev/null)
   cat <<EOF
 {
   "configFile": "$CONFIG_FILE",
@@ -891,16 +782,14 @@ launch_profile_assignments() {
   local profile_id=$1
   local force=${2:-false}
 
-  local only_on_boot_global boot_id last_boot_file last_boot stagger silent
-  only_on_boot_global=$(jq -r '.settings.onlyOnBoot // true' "$CONFIG_FILE")
+  local only_on_boot_global boot_id last_boot stagger silent
+  only_on_boot_global=$(jq_config -r '.settings.onlyOnBoot // true')
   boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown")
-  last_boot_file="$STATE_DIR/last_boot_id"
-  last_boot=""
-  [[ -f $last_boot_file ]] && last_boot=$(cat "$last_boot_file" 2>/dev/null || echo "")
-  stagger=$(jq -r '.settings.staggerMs // 80' "$CONFIG_FILE")
+  last_boot=$(state_get last_boot_id | tr -d '\n')
+  stagger=$(jq_config -r '.settings.staggerMs // 80')
   if ! [[ $stagger =~ ^[0-9]+$ ]]; then stagger=80; fi
   if ((stagger > 2000)); then stagger=2000; fi
-  silent=$(jq -r '.settings.silent // true' "$CONFIG_FILE")
+  silent=$(jq_config -r '.settings.silent // true')
   local clients_json used_addrs=""
   clients_json=$(hypr_clients_json)
   local occupied_ws="${WORKSCAPE_OCCUPIED_WS:-}"
@@ -909,11 +798,7 @@ launch_profile_assignments() {
     export WORKSCAPE_OCCUPIED_WS="$occupied_ws"
   fi
   local pinned_ws
-  pinned_ws=$(jq -c --arg id "$profile_id" '([.profiles[] | select(.id==$id) | .workspaceMonitors][0] // {})' "$CONFIG_FILE" 2>/dev/null || echo "{}")
-
-  local boot_log="$STATE_DIR/launch-$boot_id.log"
-  : > "$boot_log" 2>/dev/null || true
-  echo "$(date -u) boot_id=$boot_id profile=$profile_id force=$force" >> "$boot_log" 2>/dev/null || true
+  pinned_ws=$(jq_config -c --arg id "$profile_id" '([.profiles[] | select(.id==$id) | .workspaceMonitors][0] // {})' 2>/dev/null || echo "{}")
   local apply_prev_ws
   apply_prev_ws=$(hyprctl -j activeworkspace </dev/null 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)
   export WORKSCAPE_RESTORE_FOCUS=0
@@ -941,9 +826,9 @@ launch_profile_assignments() {
     pin=$(printf '%s' "$pinned_ws" | jq -r --arg ws "$ws" '.[$ws] // empty')
     if [[ -n $pin ]]; then
       local pin_off
-      pin_off=$(jq -r --arg id "$profile_id" --arg pin "$pin" '
+      pin_off=$(jq_config -r --arg id "$profile_id" --arg pin "$pin" '
         [.profiles[] | select(.id==$id) | .disabledMonitors[]?] | index($pin) | if . == null then "no" else "yes" end
-      ' "$CONFIG_FILE" 2>/dev/null)
+      ' 2>/dev/null)
       if [[ $pin_off == "yes" ]]; then
         echo "skip $name on ws $ws — target display is off"
         continue
@@ -1026,7 +911,7 @@ launch_profile_assignments() {
   fi
   unset WORKSCAPE_RESTORE_FOCUS
 
-  echo "$boot_id" > "$last_boot_file"
+  state_put last_boot_id "$boot_id"
   echo "done"
 }
 
@@ -1035,26 +920,21 @@ install_hypr_lua() {
   local src="$PLUGIN_DIR/hypr/workscape-binds.lua"
   local dest="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/workscape-binds.lua"
   [[ -f $src ]] || return 0
-  mkdir -p "$(dirname "$dest")"
-  if [[ -f $dest ]] && cmp -s "$src" "$dest"; then
-    return 0
-  fi
-  cp -f "$src" "$dest"
+  python3 "$STATEIO" copy-file "$src" "$dest" || true
 }
 
 cmd_apply() {
   local mode=$1
   local requested_id=${2:-}
   local force=${3:-false}
-  reexec_apply_detached
-  acquire_apply_lock || exit 0
+  ensure_isolated
   ensure_config || exit 1
   wait_for_hyprland || exit 1
   install_hypr_lua || true
   python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "${requested_id:-}" --apply >/dev/null || true
 
   local enabled
-  enabled=$(jq -r '.settings.enabled // true' "$CONFIG_FILE")
+  enabled=$(jq_config -r '.settings.enabled // true')
   if [[ $enabled != "true" && $force != "true" && $mode == "boot" ]]; then
     echo "plugin disabled, skipping (use --force to override)" >&2
     exit 0
@@ -1062,18 +942,16 @@ cmd_apply() {
 
   if [[ $mode == "boot" ]]; then
     local apply_on_boot
-    apply_on_boot=$(jq -r '.settings.applyOnBoot // false' "$CONFIG_FILE")
+    apply_on_boot=$(jq_config -r '.settings.applyOnBoot // false')
     if [[ $apply_on_boot != "true" && $force != "true" ]]; then
       echo "apply on boot disabled — use hotkey or Apply now"
       exit 0
     fi
     # Same kernel boot_id means this is a shell restart (plugin install),
     # not a new login. Re-applying would resize existing windows.
-    local boot_id last_boot_file last_boot
+    local boot_id last_boot
     boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "")
-    last_boot_file="$STATE_DIR/last_boot_id"
-    last_boot=""
-    [[ -f $last_boot_file ]] && last_boot=$(cat "$last_boot_file" 2>/dev/null || echo "")
+    last_boot=$(state_get last_boot_id | tr -d '\n')
     if [[ $force != "true" && -n $boot_id && -n $last_boot && $last_boot == "$boot_id" ]]; then
       echo "already applied this login — skip shell restart"
       exit 0
@@ -1092,7 +970,7 @@ cmd_apply() {
   if [[ -n $requested_id ]]; then
     profile_must_match "$requested_id" || exit 1
     profile_id=$requested_id
-    profile_name=$(jq -r --arg id "$profile_id" '([.profiles[]? | select(.id==$id) | .name][0] // $id)' "$CONFIG_FILE")
+    profile_name=$(jq_config -r --arg id "$profile_id" '([.profiles[]? | select(.id==$id) | .name][0] // $id)')
     bindings=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --bindings)
   else
     profile_id=$(printf '%s' "$status_json" | jq -r '.matchedProfileId // empty')
@@ -1120,14 +998,12 @@ cmd_apply() {
   fi
 
   echo "applying profile $profile_name ($profile_id)"
-  local clients_now occupied_ws last_applied_file last_applied
+  local clients_now occupied_ws last_applied
   clients_now=$(hypr_clients_json)
   occupied_ws=$(printf '%s' "$clients_now" | jq -r '[.[] | (.workspace.id|tostring)] | unique | join(" ")' 2>/dev/null || echo "")
   export WORKSCAPE_OCCUPIED_WS="$occupied_ws"
   unset WORKSCAPE_MIGRATE_OCCUPIED
-  last_applied_file="$STATE_DIR/last_applied_profile"
-  last_applied=""
-  [[ -f $last_applied_file ]] && last_applied=$(tr -d '\n' < "$last_applied_file" 2>/dev/null || true)
+  last_applied=$(state_get last_applied_profile | tr -d '\n')
   if [[ -n $profile_id && $last_applied != "$profile_id" ]]; then
     export WORKSCAPE_MIGRATE_OCCUPIED=1
     echo "profile changed (${last_applied:-none} → $profile_id) — moving occupied workspaces onto this layout"
@@ -1154,7 +1030,7 @@ cmd_apply() {
     launch_force=true
   fi
   launch_profile_assignments "$profile_id" "$launch_force"
-  printf '%s\n' "$profile_id" > "$last_applied_file"
+  state_put last_applied_profile "$profile_id"
   notify "WorkScape" "Applied $profile_name"
 }
 
@@ -1168,10 +1044,10 @@ close_preset_workspaces() {
       hyprctl eval "$(printf 'hl.dispatch(hl.dsp.window.close({ window = "address:%s" }))' "$addr")" >/dev/null 2>&1 || true
       echo "close $addr on ws $ws"
     done < <(hypr_clients_json | jq -r --arg ws "$ws" '.[] | select((.workspace.id|tostring) == $ws) | .address // empty' 2>/dev/null)
-  done < <(jq -r --arg id "$profile_id" '
+  done < <(jq_config -r --arg id "$profile_id" '
     [.profiles[]? | select(.id==$id) | .assignments[]? | .workspace | tostring]
     | unique | .[]
-  ' "$CONFIG_FILE" 2>/dev/null)
+  ' 2>/dev/null)
 }
 
 cmd_reset_empty() {
@@ -1194,7 +1070,7 @@ cmd_reset_empty() {
 
 cmd_fresh_apply() {
   local profile_id=${1:-}
-  reexec_apply_detached
+  ensure_isolated
   ensure_config || exit 1
   wait_for_hyprland || exit 1
   if [[ -z $profile_id ]]; then
@@ -1205,11 +1081,10 @@ cmd_fresh_apply() {
     exit 1
   fi
   profile_must_match "$profile_id" || exit 1
-  acquire_apply_lock || exit 0
   echo "closing windows on $profile_id preset workspaces…"
   close_preset_workspaces "$profile_id"
   local assigned leftover n
-  assigned=$(jq -r --arg id "$profile_id" '[.profiles[] | select(.id==$id) | .assignments[].workspace | tostring] | unique | join(" ")' "$CONFIG_FILE")
+  assigned=$(jq_config -r --arg id "$profile_id" '[.profiles[] | select(.id==$id) | .assignments[].workspace | tostring] | unique | join(" ")')
   for n in 1 2 3 4 5 6 7 8 9 10; do
     leftover=$(hypr_clients_json | jq -r --arg ws "$assigned" '
       ($ws | split(" ")) as $a
@@ -1253,7 +1128,7 @@ case "${1:-}" in
 workscape.sh — helper for io.github.calebhat.workscape
 
   --ensure-config              ensure config exists and print it
-  --write-config <json>        atomically write config.json (capped)
+  --write-config               atomically write config.json from stdin (capped)
   --hypr-layout                print general:layout|scrolling:column_width
   --list-apps                  list .desktop + extra apps as TSV
   --status                     json status

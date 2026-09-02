@@ -15,7 +15,10 @@ GEOM = SourceFileLoader("workscape_geom_capture", str(Path(__file__).resolve().p
 
 
 def hypr_j(cmd: str):
-    return json.loads(subprocess.check_output(["hyprctl", "-j", cmd], text=True))
+    data = GEOM.SAFE.hypr_json(cmd.split())
+    if isinstance(data, list) and len(data) > 40:
+        return data[:40]
+    return data
 
 
 _CWD_OK = re.compile(r"^/[A-Za-z0-9._/+\- ]{0,399}$")
@@ -41,22 +44,26 @@ def safe_url(url: str) -> str:
 
 def children(pid: int) -> list[int]:
     try:
-        raw = Path(f"/proc/{pid}/task/{pid}/children").read_text().split()
-        return [int(x) for x in raw]
+        raw = Path(f"/proc/{int(pid)}/task/{int(pid)}/children").read_bytes()[:256].decode("ascii", "replace").split()
+        out = []
+        for x in raw[:32]:
+            out.append(int(x))
+        return out
     except Exception:
         return []
 
 
 def proc_cwd(pid: int) -> str:
     try:
-        return os.readlink(f"/proc/{pid}/cwd")
+        return os.readlink(f"/proc/{int(pid)}/cwd")[:400]
     except Exception:
         return ""
 
 
 def proc_cmd(pid: int) -> str:
     try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+        raw = Path(f"/proc/{int(pid)}/cmdline").read_bytes()[:4096]
+        return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
     except Exception:
         return ""
 

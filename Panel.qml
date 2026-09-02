@@ -20,7 +20,20 @@ Panel {
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
     readonly property string pluginId: "io.github.calebhat.workscape"
     readonly property string configFile: stateHome + "/omarchy/workscape/config.json"
-    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/workscape.sh"
+    readonly property string pluginDir: {
+        var u = String(Qt.resolvedUrl("./manifest.json"))
+        if (u.indexOf("file://") === 0) u = u.slice(7)
+        try { u = decodeURIComponent(u) } catch (e) {}
+        var i = u.lastIndexOf("/")
+        return i > 0 ? u.slice(0, i) : u
+    }
+    readonly property string script: root.pluginDir + "/workscape.sh"
+    readonly property string stateio: root.pluginDir + "/scripts/stateio"
+
+    function helperRun(args, timeoutSec, maxOut) {
+        var cmd = ["python3", root.stateio, "run", "--timeout", String(timeoutSec), "--max-out", String(maxOut), "--"]
+        return cmd.concat(args)
+    }
 
     signal countsChanged()
 
@@ -230,7 +243,8 @@ Panel {
             return
         }
         if (saveProc.running) { saveProc.wantsSave = true; return }
-        saveProc.command = ["bash", root.script, "--write-config", saveProc.pendingJson]
+        saveProc.command = ["python3", root.stateio, "write-config"]
+        saveProc.stdinEnabled = true
         saveProc.running = true
     }
     function setActiveProfile(id) {
@@ -567,7 +581,7 @@ Panel {
         root.addInstance(exec, name)
     }
     function captureWorkspace() {
-        captureProc.command = ["python3", root.home + "/.config/omarchy/plugins/" + root.pluginId + "/scripts/capture", "--workspace", String(root.formWorkspace)]
+        captureProc.command = root.helperRun(["python3", root.pluginDir + "/scripts/capture", "--workspace", String(root.formWorkspace)], 8, 262144)
         captureProc.running = true
         statusText = "Capturing WS" + root.formWorkspace + "…"
         clearStatusTimer.restart()
@@ -620,7 +634,7 @@ Panel {
     function applyMatching() {
         if (root.applyBusy || applyProc.running) return
         root.applyBusy = true
-        applyProc.command = ["bash", root.script, "--apply-matching"]
+        applyProc.command = root.helperRun(["bash", root.script, "--apply-matching"], 180, 65536)
         applyProc.running = true
         statusText = "Applying matching profile…"
         clearStatusTimer.restart()
@@ -716,7 +730,7 @@ Panel {
         if (root.applyBusy || applyProc.running) return
         if (!root.profileCanApply(id)) return
         root.applyBusy = true
-        applyProc.command = ["bash", root.script, "--apply-profile", id]
+        applyProc.command = root.helperRun(["bash", root.script, "--apply-profile", id], 180, 65536)
         applyProc.running = true
         statusText = "Applying profile…"
         clearStatusTimer.restart()
@@ -729,7 +743,7 @@ Panel {
         if (target !== activeProfileId) setActiveProfile(target)
         if (!root.profileCanApply(target)) return
         root.applyBusy = true
-        applyProc.command = ["bash", root.script, "--fresh-apply-profile", target]
+        applyProc.command = root.helperRun(["bash", root.script, "--fresh-apply-profile", target], 180, 65536)
         applyProc.running = true
         statusText = "Closing workspaces that have apps in this profile, then applying fresh…"
         clearStatusTimer.restart()
@@ -738,7 +752,7 @@ Panel {
     function resetEmptyWorkspaces() {
         if (root.applyBusy || applyProc.running) return
         root.applyBusy = true
-        applyProc.command = ["bash", root.script, "--reset-empty-workspaces", root.activeProfileId]
+        applyProc.command = root.helperRun(["bash", root.script, "--reset-empty-workspaces", root.activeProfileId], 30, 65536)
         applyProc.running = true
         statusText = "Restoring Omarchy defaults on workspaces with no apps in this profile…"
         clearStatusTimer.restart()
@@ -1206,7 +1220,7 @@ Panel {
 
     Process {
         id: loadProc
-        command: ["bash", root.script, "--ensure-config"]
+        command: root.helperRun(["bash", root.script, "--ensure-config"], 8, Model.maxConfigBytes())
         stdout: StdioCollector { id: loadOut; waitForEnd: true }
         stderr: StdioCollector { id: loadErr; waitForEnd: true }
         onExited: function(code){
@@ -1238,14 +1252,20 @@ Panel {
         property string pendingJson: ""
         property bool wantsSave: false
         property bool wantsGestures: false
+        stdinEnabled: true
         stdout: StdioCollector { id: saveOut; waitForEnd: true }
         stderr: StdioCollector { id: saveErr; waitForEnd: true }
+        onStarted: {
+            write(saveProc.pendingJson)
+            stdinEnabled = false
+        }
         onExited: function(code){
             if (code !== 0) { root.errorText = "Save failed (" + code + "): " + (saveErr.text || "") }
             else root.errorText = ""
             if (saveProc.wantsSave) {
                 saveProc.wantsSave = false
-                saveProc.command = ["bash", root.script, "--write-config", saveProc.pendingJson]
+                saveProc.command = ["python3", root.stateio, "write-config"]
+                saveProc.stdinEnabled = true
                 saveProc.running = true
             } else if (code === 0) {
                 root.countsChanged(); refreshServiceProc.running = true
@@ -1285,7 +1305,7 @@ Panel {
     }
     Process {
         id: layoutProc
-        command: ["bash", root.script, "--hypr-layout"]
+        command: root.helperRun(["bash", root.script, "--hypr-layout"], 5, 256)
         stdout: StdioCollector { id: layoutOut; waitForEnd: true }
         onExited: function(code) {
             if (code !== 0) return
@@ -1303,7 +1323,7 @@ Panel {
     }
     Process {
         id: gestureProc
-        command: ["python3", home + "/.config/omarchy/plugins/" + pluginId + "/scripts/gestures", "--config", root.configFile, "--profile-id", root.activeProfileId, "--apply"]
+        command: root.helperRun(["python3", root.pluginDir + "/scripts/gestures", "--config", root.configFile, "--profile-id", root.activeProfileId, "--apply"], 8, 8192)
         stdout: StdioCollector { waitForEnd: true }
         onExited: function(code) {
             statusText = code === 0 ? "Gestures applied" : "Gesture apply failed"
@@ -1312,7 +1332,7 @@ Panel {
     }
     Process {
         id: liveProc
-        command: ["bash", root.script, "--live-status"]
+        command: root.helperRun(["bash", root.script, "--live-status"], 8, Model.maxConfigBytes())
         stdout: StdioCollector { id: liveOut; waitForEnd: true }
         onExited: function(code) {
             if (code !== 0) return
@@ -1337,7 +1357,7 @@ Panel {
     }
     Process {
         id: appsProc
-        command: ["bash", root.script, "--list-apps"]
+        command: root.helperRun(["bash", root.script, "--list-apps"], 8, 262144)
         stdout: StdioCollector { id: appsOut; waitForEnd: true }
         onExited: function(code){
             if (code !== 0) return

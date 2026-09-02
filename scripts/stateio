@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Safe state-dir I/O and bounded helper runner for WorkScape."""
+from __future__ import annotations
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+SAFE = SourceFileLoader("workscape_hyprsafe", str(Path(__file__).resolve().parent / "hyprsafe")).load_module()
+
+DEFAULT_CONFIG = """{
+  "version": 2,
+  "settings": {
+    "enabled": true,
+    "applyOnBoot": false,
+    "launchDelayMs": 800,
+    "staggerMs": 80,
+    "silent": true,
+    "onlyOnBoot": true,
+    "lastFormWorkspace": 1,
+    "activeProfileId": "default"
+  },
+  "monitors": [],
+  "extraApps": [],
+  "profiles": [
+    {
+      "id": "default",
+      "name": "Default",
+      "matchMode": "exact",
+      "monitors": [],
+      "workspaceMonitors": {},
+      "assignments": []
+    }
+  ]
+}
+"""
+
+
+def _legacy_sources() -> list[Path]:
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
+    cfg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return [
+        Path(state) / "omarchy" / "workbook" / "config.json",
+        Path(state) / "omarchy" / "auto-workspace" / "config.json",
+        Path(cfg) / "omarchy" / "plugins" / "tenzin.auto-workspace" / "config.json",
+    ]
+
+
+def migrate_one_config(dirfd: int) -> None:
+    try:
+        SAFE.read_at(dirfd, "config.json", SAFE.MAX_CONFIG_BYTES)
+        return
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return
+    for src in _legacy_sources():
+        try:
+            data = SAFE.read_nofollow(src, SAFE.MAX_CONFIG_BYTES)
+        except OSError:
+            continue
+        try:
+            json.loads(data.decode("utf-8"))
+        except Exception:
+            continue
+        SAFE.write_at(dirfd, "config.json", data, mode=0o600, max_bytes=SAFE.MAX_CONFIG_BYTES)
+        return
+
+
+def ensure_config() -> bytes:
+    dirfd = SAFE.open_state_dir(create=True)
+    try:
+        migrate_one_config(dirfd)
+        try:
+            data = SAFE.read_at(dirfd, "config.json", SAFE.MAX_CONFIG_BYTES)
+        except FileNotFoundError:
+            data = DEFAULT_CONFIG.encode("utf-8")
+            SAFE.write_at(dirfd, "config.json", data, mode=0o600, max_bytes=SAFE.MAX_CONFIG_BYTES)
+        json.loads(data.decode("utf-8"))
+        return data
+    finally:
+        os.close(dirfd)
+
+
+def write_config_stdin() -> None:
+    raw = sys.stdin.buffer.read(SAFE.MAX_CONFIG_BYTES + 1)
+    if not raw:
+        print("empty config", file=sys.stderr)
+        sys.exit(1)
+    if len(raw) > SAFE.MAX_CONFIG_BYTES:
+        print("config too large", file=sys.stderr)
+        sys.exit(1)
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+    except Exception:
+        print("invalid json", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(obj, dict):
+        print("invalid json", file=sys.stderr)
+        sys.exit(1)
+    dirfd = SAFE.open_state_dir(create=True)
+    try:
+        SAFE.write_at(dirfd, "config.json", raw, mode=0o600, max_bytes=SAFE.MAX_CONFIG_BYTES)
+    finally:
+        os.close(dirfd)
+    print("OK")
+
+
+def write_state(name: str) -> None:
+    if name not in SAFE.STATE_NAMES:
+        print("name not allowed", file=sys.stderr)
+        sys.exit(1)
+    raw = sys.stdin.buffer.read(4096 + 1)
+    if len(raw) > 4096:
+        print("payload too large", file=sys.stderr)
+        sys.exit(1)
+    dirfd = SAFE.open_state_dir(create=True)
+    try:
+        SAFE.write_at(dirfd, name, raw, mode=0o600, max_bytes=4096)
+    finally:
+        os.close(dirfd)
+
+
+def read_state(name: str) -> None:
+    if name not in SAFE.STATE_NAMES:
+        print("name not allowed", file=sys.stderr)
+        sys.exit(1)
+    dirfd = SAFE.open_state_dir(create=False)
+    try:
+        sys.stdout.buffer.write(SAFE.read_at(dirfd, name, 4096))
+    finally:
+        os.close(dirfd)
+
+
+def unlink_state(name: str) -> None:
+    if name not in SAFE.STATE_NAMES:
+        print("name not allowed", file=sys.stderr)
+        sys.exit(1)
+    dirfd = SAFE.open_state_dir(create=False)
+    try:
+        SAFE.unlink_at(dirfd, name)
+    finally:
+        os.close(dirfd)
+
+
+def _copy_log(dirfd: int, offset: int, dest) -> int:
+    try:
+        data = SAFE.read_at(dirfd, "apply.log", SAFE.MAX_HELPER_OUT)
+    except OSError:
+        return offset
+    if len(data) > offset:
+        dest.write(data[offset:])
+        dest.flush()
+        return len(data)
+    return offset
+
+
+def isolate_apply(argv: list[str], timeout: float) -> int:
+    dirfd = SAFE.open_state_dir(create=True)
+    lockfd = SAFE.try_lock(dirfd)
+    if lockfd is None:
+        print("apply already in progress")
+        os.close(dirfd)
+        return 0
+    logfd = None
+    proc = None
+    try:
+        logfd = os.open(
+            "apply.log",
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=dirfd,
+        )
+        SAFE._fstat_reg(logfd)
+        env = os.environ.copy()
+        env["WORKSCAPE_APPLY_ISOLATED"] = "1"
+        env["WORKSCAPE_APPLY_LOCKED"] = "1"
+        env["WORKSCAPE_APPLY_DETACHED"] = "1"
+        proc = subprocess.Popen(
+            argv,
+            stdout=logfd,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+            preexec_fn=SAFE._pdeathsig,
+        )
+        os.close(logfd)
+        logfd = None
+        SAFE.write_pid(dirfd, proc.pid)
+        deadline = time.monotonic() + timeout
+        off = 0
+        while proc.poll() is None:
+            if time.monotonic() > deadline:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                time.sleep(0.3)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+                print("apply timed out", file=sys.stderr)
+                return 124
+            off = _copy_log(dirfd, off, sys.stdout.buffer)
+            time.sleep(0.1)
+        _copy_log(dirfd, off, sys.stdout.buffer)
+        return proc.returncode or 0
+    finally:
+        if logfd is not None:
+            os.close(logfd)
+        SAFE.unlink_at(dirfd, "apply.pid")
+        try:
+            import fcntl
+            fcntl.flock(lockfd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        os.close(lockfd)
+        os.close(dirfd)
+
+
+def run_helper(argv: list[str], timeout: float, max_out: int) -> int:
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        preexec_fn=SAFE._pdeathsig,
+    )
+    try:
+        wait = None if timeout <= 0 else timeout
+        out, err = proc.communicate(timeout=wait)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        time.sleep(0.2)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.communicate(timeout=0.5)
+        except Exception:
+            proc.kill()
+            proc.wait()
+        print("timeout", file=sys.stderr)
+        return 124
+    if err:
+        sys.stderr.buffer.write(err[:65536])
+    out = out or b""
+    if len(out) > max_out:
+        print("output too large", file=sys.stderr)
+        return 1
+    sys.stdout.buffer.write(out)
+    return proc.returncode or 0
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        print("usage: stateio <command>", file=sys.stderr)
+        return 2
+    cmd = argv[0]
+    if cmd == "ensure-config":
+        sys.stdout.buffer.write(ensure_config())
+        return 0
+    if cmd == "write-config":
+        write_config_stdin()
+        return 0
+    if cmd == "write-state":
+        write_state(argv[1] if len(argv) > 1 else "")
+        return 0
+    if cmd == "read-state":
+        read_state(argv[1] if len(argv) > 1 else "")
+        return 0
+    if cmd == "unlink-state":
+        unlink_state(argv[1] if len(argv) > 1 else "")
+        return 0
+    if cmd == "isolate-apply":
+        timeout = 180.0
+        rest = argv[1:]
+        if rest[:1] == ["--timeout"] and len(rest) >= 2:
+            timeout = float(rest[1])
+            rest = rest[2:]
+        if rest[:1] == ["--"]:
+            rest = rest[1:]
+        if not rest:
+            print("isolate-apply: missing command", file=sys.stderr)
+            return 2
+        return isolate_apply(rest, timeout)
+    if cmd == "run":
+        timeout = 8.0
+        max_out = SAFE.MAX_HELPER_OUT
+        rest = argv[1:]
+        while rest:
+            if rest[0] == "--timeout" and len(rest) >= 2:
+                timeout = float(rest[1])
+                rest = rest[2:]
+                continue
+            if rest[0] == "--max-out" and len(rest) >= 2:
+                max_out = int(rest[1])
+                rest = rest[2:]
+                continue
+            if rest[0] == "--":
+                rest = rest[1:]
+                break
+            break
+        if not rest:
+            print("run: missing command", file=sys.stderr)
+            return 2
+        return run_helper(rest, timeout, max_out)
+    if cmd == "copy-file":
+        if len(argv) < 3:
+            print("copy-file src dest", file=sys.stderr)
+            return 2
+        SAFE.copy_regular(Path(argv[1]), Path(argv[2]), SAFE.MAX_CONFIG_BYTES, mode=0o644)
+        return 0
+    print(f"unknown command: {cmd}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except OSError as e:
+        print(str(e), file=sys.stderr)
+        raise SystemExit(1)

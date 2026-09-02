@@ -18,8 +18,21 @@ Item {
     readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || home + "/.config"
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
     readonly property string pluginId: "io.github.calebhat.workscape"
-    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/workscape.sh"
+    readonly property string pluginDir: {
+        var u = String(Qt.resolvedUrl("./manifest.json"))
+        if (u.indexOf("file://") === 0) u = u.slice(7)
+        try { u = decodeURIComponent(u) } catch (e) {}
+        var i = u.lastIndexOf("/")
+        return i > 0 ? u.slice(0, i) : u
+    }
+    readonly property string script: root.pluginDir + "/workscape.sh"
+    readonly property string stateio: root.pluginDir + "/scripts/stateio"
     readonly property string configFile: stateHome + "/omarchy/workscape/config.json"
+
+    function helperRun(args, timeoutSec, maxOut) {
+        var cmd = ["python3", root.stateio, "run", "--timeout", String(timeoutSec), "--max-out", String(maxOut), "--"]
+        return cmd.concat(args)
+    }
 
     property bool autoEnabled: true
     property bool applyOnBoot: false
@@ -34,7 +47,7 @@ Item {
 
     Process {
         id: gestureBootProc
-        command: ["bash", root.script, "--apply-gestures"]
+        command: root.helperRun(["bash", root.script, "--apply-gestures"], 8, 8192)
         stdout: StdioCollector { waitForEnd: true }
         stderr: SplitParser { onRead: function(d){ console.warn("[workscape] gestures] " + d) } }
         onExited: function(code) {
@@ -44,7 +57,7 @@ Item {
 
     Process {
         id: ensureProc
-        command: ["bash", root.script, "--ensure-config"]
+        command: root.helperRun(["bash", root.script, "--ensure-config"], 8, Model.maxConfigBytes())
         stdout: StdioCollector { id: ensureOut; waitForEnd: true }
         onExited: function(code) {
             if (code !== 0) {
@@ -99,10 +112,11 @@ Item {
 
     Process {
         id: extrasWatch
-        command: ["python3", root.home + "/.config/omarchy/plugins/" + root.pluginId + "/scripts/watch"]
+        command: ["python3", root.pluginDir + "/scripts/watch"]
         running: false
         stdout: SplitParser {
             onRead: function(d) {
+                if (d.length > 4096) return
                 root.log("extras " + d)
                 if (d.indexOf('"monitorChange"') >= 0 && !syncMatchProc.running)
                     syncMatchProc.running = true
@@ -113,7 +127,7 @@ Item {
 
     Process {
         id: syncMatchProc
-        command: ["bash", root.script, "--sync-active-profile"]
+        command: root.helperRun(["bash", root.script, "--sync-active-profile"], 8, 4096)
         stdout: SplitParser { onRead: function(d){ root.log("sync " + d) } }
         stderr: SplitParser { onRead: function(d){ console.warn("[workscape] sync] " + d) } }
     }
@@ -145,7 +159,7 @@ Item {
                 return
             }
             root.log("auto-applying matching profile...")
-            launchProc.command = ["bash", root.script, "--launch-all"]
+            launchProc.command = root.helperRun(["bash", root.script, "--launch-all"], 180, 65536)
             launchProc.running = true
         }
     }
@@ -153,22 +167,22 @@ Item {
     function launchAll(force) {
         if (launchProc.running) return
         if (force) {
-            launchProc.command = ["bash", root.script, "--force-launch-all"]
+            launchProc.command = root.helperRun(["bash", root.script, "--force-launch-all"], 180, 65536)
         } else {
-            launchProc.command = ["bash", root.script, "--launch-all"]
+            launchProc.command = root.helperRun(["bash", root.script, "--launch-all"], 180, 65536)
         }
         launchProc.running = true
     }
 
     function applyMatching() {
         if (launchProc.running) return
-        launchProc.command = ["bash", root.script, "--apply-matching"]
+        launchProc.command = root.helperRun(["bash", root.script, "--apply-matching"], 180, 65536)
         launchProc.running = true
     }
 
     function applyProfile(profileId) {
         if (launchProc.running) return
-        launchProc.command = ["bash", root.script, "--apply-profile", String(profileId || "")]
+        launchProc.command = root.helperRun(["bash", root.script, "--apply-profile", String(profileId || "")], 180, 65536)
         launchProc.running = true
     }
 
@@ -177,13 +191,13 @@ Item {
             root.log("apply already in progress")
             return
         }
-        launchProc.command = ["bash", root.script, "--fresh-apply-profile", String(profileId || "")]
+        launchProc.command = root.helperRun(["bash", root.script, "--fresh-apply-profile", String(profileId || "")], 180, 65536)
         launchProc.running = true
     }
 
     function launchOnWorkspace(workspace, execCmd) {
         var silent = "true"
-        manualLaunchProc.command = ["bash", root.script, "--launch", String(workspace), execCmd, silent]
+        manualLaunchProc.command = root.helperRun(["bash", root.script, "--launch", String(workspace), execCmd, silent], 15, 4096)
         manualLaunchProc.running = true
     }
 
@@ -192,7 +206,7 @@ Item {
     }
 
     function status(): string {
-        if (!statusProc.running) statusProc.command = ["bash", root.script, "--status"]
+        if (!statusProc.running) statusProc.command = root.helperRun(["bash", root.script, "--status"], 5, 8192)
         if (!statusProc.running) statusProc.running = true
         try {
             var cached = root.lastStatus

@@ -15,7 +15,15 @@ BarWidget {
     readonly property string home: Quickshell.env("HOME")
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
     readonly property string configFile: stateHome + "/omarchy/workscape/config.json"
-    readonly property string script: home + "/.config/omarchy/plugins/" + pluginId + "/workscape.sh"
+    readonly property string pluginDir: {
+        var u = String(Qt.resolvedUrl("./manifest.json"))
+        if (u.indexOf("file://") === 0) u = u.slice(7)
+        try { u = decodeURIComponent(u) } catch (e) {}
+        var i = u.lastIndexOf("/")
+        return i > 0 ? u.slice(0, i) : u
+    }
+    readonly property string script: root.pluginDir + "/workscape.sh"
+    readonly property string stateio: root.pluginDir + "/scripts/stateio"
 
     property int totalCount: 0
     property int enabledCount: 0
@@ -57,7 +65,7 @@ BarWidget {
 
     function applyMatching() {
         if (applyProc.running) return
-        applyProc.command = ["bash", root.script, "--apply-matching"]
+        applyProc.command = ["python3", root.stateio, "run", "--timeout", "180", "--max-out", "65536", "--", "bash", root.script, "--apply-matching"]
         applyProc.running = true
     }
 
@@ -66,7 +74,7 @@ BarWidget {
 
     Process {
         id: statusProc
-        command: ["bash", root.script, "--status"]
+        command: ["python3", root.stateio, "run", "--timeout", "5", "--max-out", "8192", "--", "bash", root.script, "--status"]
         stdout: StdioCollector { id: statusOut; waitForEnd: true }
         onExited: function(code){
             try {

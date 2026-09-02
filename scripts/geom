@@ -26,8 +26,8 @@ _layout_ready = False
 def hypr_j(cmd: str, cached: bool = False) -> Any:
     if cached and cmd in _json_cache:
         return _json_cache[cmd]
-    out = subprocess.check_output(["hyprctl", "-j", cmd], text=True)
-    data = json.loads(out)
+    raw = SAFE.bounded_output(["hyprctl", "-j", cmd], timeout=3.0, max_bytes=SAFE.MAX_HYPR_JSON)
+    data = json.loads(raw.decode("utf-8"))
     if cached:
         _json_cache[cmd] = data
     return data
@@ -38,16 +38,7 @@ def cache_clear() -> None:
 
 
 def hypr_eval(lua: str) -> None:
-    try:
-        subprocess.run(
-            ["hyprctl", "eval", lua],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-        )
-    except subprocess.TimeoutExpired:
-        pass
+    SAFE.bounded_run(["hyprctl", "eval", lua], timeout=2.0)
 
 
 def _css_box(option: str, fallback: int) -> tuple[int, int, int, int]:
@@ -216,8 +207,7 @@ def lock_plan_for_workspace(profile: dict[str, Any], ws: str) -> dict[str, Any]:
 
 
 def load_config(path: str) -> dict[str, Any]:
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+    return SAFE.load_json_file(Path(path))
 
 
 def active_profile(cfg: dict[str, Any], profile_id: str = "") -> dict[str, Any] | None:

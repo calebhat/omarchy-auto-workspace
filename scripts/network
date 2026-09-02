@@ -9,10 +9,12 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
-import subprocess
 import time
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import Any
+
+SAFE = SourceFileLoader("workscape_hyprsafe", str(Path(__file__).resolve().parent / "hyprsafe")).load_module()
 
 
 SKIP_IFACE_PREFIXES = (
@@ -185,7 +187,7 @@ def _skip_iface(name: str) -> bool:
 
 def _run(cmd: list[str]) -> str:
     try:
-        return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip()
+        return SAFE.bounded_output(cmd, timeout=2.0, max_bytes=8192).decode("utf-8", "replace").strip()
     except Exception:
         return ""
 

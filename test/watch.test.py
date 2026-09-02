@@ -222,14 +222,17 @@ def test_sweep_skips_occupied():
     watch.move_to_ws = lambda addr, dest: moved.append((addr, dest))
     watch.next_open_ws = lambda blocked, ws, profile=None: "6"
     watch.os.environ["WORKSCAPE_OCCUPIED_WS"] = "5 8"
-    orig_check = watch.subprocess.check_output
-    watch.subprocess.check_output = lambda *a, **k: '[{"address":"0x1","class":"foot","workspace":{"id":5}},{"address":"0x2","class":"foot","workspace":{"id":5}}]'
+    orig_json = watch.SAFE.hypr_json
+    watch.SAFE.hypr_json = lambda args, timeout=3.0: [
+        {"address": "0x1", "class": "foot", "workspace": {"id": 5}},
+        {"address": "0x2", "class": "foot", "workspace": {"id": 5}},
+    ]
     try:
         out = watch.sweep_block_extras()
         assert out == []
         assert moved == []
     finally:
-        watch.subprocess.check_output = orig_check
+        watch.SAFE.hypr_json = orig_json
         watch.os.environ.pop("WORKSCAPE_OCCUPIED_WS", None)
         watch.move_to_ws = orig_move
         watch.load_active_profile = orig_profile

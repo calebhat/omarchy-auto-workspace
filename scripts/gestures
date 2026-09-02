@@ -140,7 +140,7 @@ def config_lua_eval(g: dict) -> str:
 
 
 def hypr_eval(lua: str) -> None:
-    subprocess.run(["hyprctl", "eval", lua], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    SAFE.bounded_run(["hyprctl", "eval", lua], timeout=3.0)
 
 
 def last_fingers_path() -> Path:
@@ -154,10 +154,8 @@ REQUIRE_LINE = 'pcall(require, "hypr.workscape-gestures")'
 def ensure_hyprland_require(hypr_dir: Path) -> bool:
     """Load workscape-gestures.lua on compositor start / reload."""
     lua = Path(hypr_dir) / "hyprland.lua"
-    if not lua.is_file() or lua.is_symlink():
-        return False
     try:
-        text = lua.read_text(encoding="utf-8")
+        text = SAFE.read_nofollow(lua, 1024 * 1024).decode("utf-8")
     except OSError:
         return False
     if "hypr.workscape-gestures" in text:
@@ -166,7 +164,7 @@ def ensure_hyprland_require(hypr_dir: Path) -> bool:
         "\n-- WorkScape trackpad workspace swipe (generated file).\n"
         f"{REQUIRE_LINE}\n"
     )
-    SAFE.write_nofollow(lua, text.rstrip() + snippet + "\n")
+    SAFE.write_atomic(lua, text.rstrip() + snippet + "\n", mode=0o644, backup=True, max_bytes=2 * 1024 * 1024)
     return True
 
 
@@ -176,21 +174,28 @@ def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "", reload:
     state = Path(os.environ.get("XDG_STATE_HOME") or str(home / ".local/state")) / "omarchy/workscape"
     lua = render_lua(g)
     dest = state / "workscape-gestures.lua"
-    SAFE.write_nofollow(dest, lua)
+    SAFE.write_atomic(dest, lua, mode=0o600)
     persist = ((cfg.get("settings") or {}).get("persistHyprGestures") is True)
     hypr_dest = Path(hypr_dir) if hypr_dir else home / ".config/hypr/workscape-gestures.lua"
     old_hypr = home / ".config/hypr/workbook-gestures.lua"
     if persist or hypr_dest.exists() or old_hypr.exists() or g["workspaceSwipe"]:
-        SAFE.write_nofollow(hypr_dest, lua)
+        SAFE.write_atomic(hypr_dest, lua, mode=0o644)
         dest = hypr_dest
         ensure_hyprland_require(hypr_dest.parent)
-        if old_hypr.exists() and old_hypr.resolve() != hypr_dest.resolve():
-            SAFE.write_nofollow(old_hypr, '-- Moved to workscape-gestures.lua\npcall(require, "hypr.workscape-gestures")\n')
+        try:
+            if old_hypr.exists() and old_hypr.resolve() != hypr_dest.resolve():
+                SAFE.write_atomic(
+                    old_hypr,
+                    '-- Moved to workscape-gestures.lua\npcall(require, "hypr.workscape-gestures")\n',
+                    mode=0o644,
+                )
+        except OSError:
+            pass
     hypr_eval(config_lua_eval(g))
     prev = 0
     stamp = last_fingers_path()
     try:
-        prev = int(stamp.read_text().strip() or "0")
+        prev = int(SAFE.read_nofollow(stamp, 32).decode("ascii", "replace").strip() or "0")
     except Exception:
         prev = 0
     # Hyprland lets one HORIZONTAL workspace gesture shadow another. Always
@@ -201,17 +206,16 @@ def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "", reload:
         hypr_eval(
             f'hl.gesture({{ fingers = {g["fingers"]}, direction = "horizontal", action = "workspace" }})'
         )
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.write_text(str(g["fingers"]))
+        SAFE.write_atomic(stamp, str(g["fingers"]), mode=0o600)
     else:
         try:
-            stamp.unlink()
+            SAFE.unlink_nofollow(stamp)
         except Exception:
             pass
     # Reload only when keybinds change; a full reload remounts the panel and
     # makes Gestures options vanish.
     if reload and g["keyboard"]:
-        subprocess.run(["hyprctl", "reload"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        SAFE.bounded_run(["hyprctl", "reload"], timeout=8.0)
     return {"ok": True, "path": str(dest), "gestures": g}
 
 
@@ -266,8 +270,7 @@ def main() -> int:
     p.add_argument("--extras", action="store_true")
     p.add_argument("--render", action="store_true")
     args = p.parse_args()
-    with open(args.config, encoding="utf-8") as fh:
-        cfg = json.load(fh)
+    cfg = SAFE.load_json_file(Path(args.config))
     if args.render:
         print(render_lua(resolve_gestures(cfg, args.profile_id)))
         return 0

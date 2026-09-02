@@ -157,7 +157,7 @@ m = SourceFileLoader("match", sys.argv[1]).load_module()
 calls = []
 m.safe_connector = lambda n: n or ""
 m.workspace_bindings = lambda cfg, profile, live: {"2": "DVI-I-1"}
-m.subprocess.run = lambda *a, **k: calls.append(a)
+m.SAFE.bounded_run = lambda cmd, timeout=3.0: calls.append(cmd) or 0
 profile = {
     "workspacePrefs": {"2": {"layout": "dwindle", "visibleCount": 2, "lockSizes": False, "extras": "block"}},
     "assignments": [{"workspace": 2, "exec": "herdr", "lockPlace": True}],
@@ -184,7 +184,7 @@ assert m.overflow_active_workspaces(profile) == set()
 profile["overflow"]["enabled"] = True
 assert m.overflow_active_workspaces(profile) == {"5", "6", "7"}
 calls = []
-m.subprocess.run = lambda *a, **k: calls.append(a[0] if a else [])
+m.SAFE.bounded_run = lambda cmd, timeout=3.0: calls.append(cmd) or 0
 m.SAFE.lua_str = lambda s: s
 out = m.reset_empty_workspaces({"profiles": [profile]}, profile)
 assert "5" in out["overflowKept"]
@@ -222,7 +222,7 @@ m = SourceFileLoader("match", sys.argv[1]).load_module()
 calls = []
 m.safe_connector = lambda n: n or ""
 m.workspace_bindings = lambda cfg, profile, live: {"1": "DVI-I-2"}
-m.subprocess.run = lambda *a, **k: calls.append(a)
+m.SAFE.bounded_run = lambda cmd, timeout=3.0: calls.append(cmd) or 0
 profile = {
     "workspacePrefs": {"1": {"layout": "master", "visibleCount": 2, "lockSizes": False, "extras": "around"}},
     "assignments": [{"workspace": 1, "exec": "brave", "lockPlace": False}],
@@ -243,7 +243,7 @@ m = SourceFileLoader("match", sys.argv[1]).load_module()
 calls = []
 m.safe_connector = lambda n: n or ""
 m.workspace_bindings = lambda cfg, profile, live: {"5": "DVI-I-2"}
-m.subprocess.run = lambda *a, **k: calls.append(a)
+m.SAFE.bounded_run = lambda cmd, timeout=3.0: calls.append(cmd) or 0
 profile = {
     "workspacePrefs": {"5": {"layout": "scrolling", "visibleCount": 3, "lockSizes": False, "extras": "around"}},
     "assignments": [{"workspace": 5, "exec": "foot", "lockPlace": False}],
@@ -266,7 +266,7 @@ m = SourceFileLoader("match", sys.argv[1]).load_module()
 calls = []
 m.safe_connector = lambda n: n or ""
 m.workspace_bindings = lambda cfg, profile, live: {}
-m.subprocess.run = lambda *a, **k: calls.append(a)
+m.SAFE.bounded_run = lambda cmd, timeout=3.0: calls.append(cmd) or 0
 profile = {
     "workspacePrefs": {"3": {"layout": "scrolling", "visibleCount": 2, "lockSizes": False, "extras": "around"}},
     "assignments": [{"workspace": 3, "exec": "grok-bot", "lockPlace": True}],
@@ -285,7 +285,7 @@ m = SourceFileLoader("match", sys.argv[1]).load_module()
 calls = []
 m.safe_connector = lambda n: n or ""
 m.workspace_bindings = lambda cfg, profile, live: {}
-m.subprocess.run = lambda *a, **k: calls.append(a)
+m.SAFE.bounded_run = lambda cmd, timeout=3.0: calls.append(cmd) or 0
 profile = {
     "workspacePrefs": {"2": {"layout": "scrolling", "visibleCount": 2, "lockSizes": False, "extras": "around"}},
     "assignments": [
@@ -307,7 +307,7 @@ m = SourceFileLoader("match", sys.argv[1]).load_module()
 calls = []
 m.safe_connector = lambda n: n or ""
 m.workspace_bindings = lambda cfg, profile, live: {}
-m.subprocess.run = lambda *a, **k: calls.append(a)
+m.SAFE.bounded_run = lambda cmd, timeout=3.0: calls.append(cmd) or 0
 profile = {
     "workspacePrefs": {"1": {"layout": "scrolling", "visibleCount": 4, "lockSizes": False, "extras": "around"}},
     "assignments": [{"workspace": 1, "exec": "foot", "lockPlace": False}],
@@ -373,7 +373,7 @@ live = [
     {"name": "DVI-I-1", "description": "HP Inc. HP E24 G5 SN-RIGHT", "x": 1920, "y": 960,
      "width": 1920, "height": 1080, "scale": 1, "refreshRate": 60},
 ]
-m.subprocess.check_output = lambda *a, **k: json.dumps(live)
+m.SAFE.hypr_json = lambda args, timeout=3.0: live
 cfg = {
     "monitors": [
         {"id": "laptop", "description": "BOE NE135A1M-NY1", "name": "eDP-1"},
@@ -396,7 +396,7 @@ assert placed_calls == [], placed_calls
 assert saved == [], saved
 assert "pos:" not in str(out.get("changed")), out
 live[0] = dict(live[0], x=0, y=0)
-m.subprocess.check_output = lambda *a, **k: json.dumps(live)
+m.SAFE.hypr_json = lambda args, timeout=3.0: live
 out = m.apply_outputs(cfg, profile, live, config_path="/tmp/workscape-skip.json")
 assert len(placed_calls) == 1, placed_calls
 assert any(item[0].get("name") == "eDP-1" and item[1:] == (1089, 0) for item in placed_calls[0]), placed_calls[0]
@@ -410,7 +410,7 @@ m = SourceFileLoader("match", sys.argv[1]).load_module()
 calls = []
 m.safe_connector = lambda n: n or ""
 m.workspace_bindings = lambda cfg, profile, live: {"2": "DVI-I-2"}
-m.subprocess.run = lambda *a, **k: calls.append(a)
+m.SAFE.bounded_run = lambda cmd, timeout=3.0: calls.append(cmd) or 0
 profile = {
     "workspacePrefs": {"2": {"layout": "scrolling", "visibleCount": 2, "lockSizes": True, "extras": "around"}},
     "assignments": [
