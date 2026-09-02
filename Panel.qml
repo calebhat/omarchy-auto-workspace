@@ -225,8 +225,12 @@ Panel {
         config = cfg
         assignments = (Model.profileById(cfg, cfg.settings.activeProfileId) || { assignments: [] }).assignments.slice()
         saveProc.pendingJson = JSON.stringify(cfg, null, 2)
+        if (saveProc.pendingJson.length > Model.maxConfigBytes()) {
+            root.errorText = "Config too large to save"
+            return
+        }
         if (saveProc.running) { saveProc.wantsSave = true; return }
-        saveProc.command = ["bash", "-c", "mkdir -p -m 700 \"$(dirname \"$1\")\"; printf '%s' \"$2\" > \"$1.tmp\"; jq empty \"$1.tmp\" && mv -f \"$1.tmp\" \"$1\" && chmod 600 \"$1\" && echo OK || { rm -f \"$1.tmp\"; echo FAIL; }", "_", root.configFile, saveProc.pendingJson]
+        saveProc.command = ["bash", root.script, "--write-config", saveProc.pendingJson]
         saveProc.running = true
     }
     function setActiveProfile(id) {
@@ -574,11 +578,29 @@ Panel {
         for (var i = 0; i < assignments.length; i++) if (assignments[i].workspace !== ws) kept.push(assignments[i])
         var added = []
         var maxN = Model.maxOrganizerPanes()
-        for (var r = 0; r < rows.length && added.length < maxN; r++) {
-            var item = Model.normalizeAssignment(rows[r])
+        var sorted = (rows || []).slice()
+        sorted.sort(function(a, b) {
+            var ga = (a && a.geom) || {}
+            var gb = (b && b.geom) || {}
+            var ax = Number(ga.x); if (isNaN(ax)) ax = 0
+            var bx = Number(gb.x); if (isNaN(bx)) bx = 0
+            if (ax !== bx) return ax - bx
+            var ay = Number(ga.y); if (isNaN(ay)) ay = 0
+            var by = Number(gb.y); if (isNaN(by)) by = 0
+            return ay - by
+        })
+        for (var r = 0; r < sorted.length && added.length < maxN; r++) {
+            var item = Model.normalizeAssignment(sorted[r])
             if (!item.exec) continue
             item.workspace = ws
             added.push(item)
+        }
+        var tiled = 0
+        for (var t = 0; t < added.length; t++) if (added[t].place !== "float") tiled++
+        if (tiled >= 2) {
+            for (var k = 0; k < added.length; k++) {
+                if (added[k].place !== "float") added[k].lockPlace = true
+            }
         }
         assignments = kept.concat(added)
         saveConfig()
@@ -1184,14 +1206,15 @@ Panel {
 
     Process {
         id: loadProc
-        command: ["bash", "-c", "mkdir -p \"$(dirname \"$1\")\"; [[ -f \"$1\" ]] || { [[ -f \"$2\" ]] && cp -a \"$2\" \"$1\"; }; [[ -f \"$1\" ]] || { [[ -f \"$3\" ]] && cp \"$3\" \"$1\"; }; [[ -f \"$1\" ]] || echo '{\"version\":2,\"settings\":{\"enabled\":true,\"applyOnBoot\":false,\"launchDelayMs\":800,\"staggerMs\":400,\"silent\":true,\"onlyOnBoot\":true,\"lastFormWorkspace\":1,\"activeProfileId\":\"default\"},\"monitors\":[],\"extraApps\":[],\"profiles\":[{\"id\":\"default\",\"name\":\"Default\",\"matchMode\":\"exact\",\"monitors\":[],\"workspaceMonitors\":{},\"assignments\":[]}]}' > \"$1\"; cat \"$1\"", "_", root.configFile, root.stateHome + "/omarchy/auto-workspace/config.json", root.configHome + "/omarchy/plugins/tenzin.auto-workspace/config.json"]
+        command: ["bash", root.script, "--ensure-config"]
         stdout: StdioCollector { id: loadOut; waitForEnd: true }
         stderr: StdioCollector { id: loadErr; waitForEnd: true }
         onExited: function(code){
             root.loading = false; var txt = loadOut.text || ""
             if (code !== 0) { root.errorText = "Failed to load config (" + code + ")"; return }
             try {
-                var j = JSON.parse(txt)
+                var j = Model.parseCappedJson(txt)
+                if (!j) { root.errorText = "Invalid or oversized config JSON"; return }
                 var sane = Model.sanitizeConfig(j)
                 var repaired = Model.repairOverlappingLayouts(sane, "dwindle", 0.49)
                 sane = repaired.config
@@ -1222,7 +1245,7 @@ Panel {
             else root.errorText = ""
             if (saveProc.wantsSave) {
                 saveProc.wantsSave = false
-                saveProc.command = ["bash", "-c", "mkdir -p -m 700 \"$(dirname \"$1\")\"; printf '%s' \"$2\" > \"$1.tmp\"; jq empty \"$1.tmp\" && mv -f \"$1.tmp\" \"$1\" && chmod 600 \"$1\" && echo OK || { rm -f \"$1.tmp\"; echo FAIL; }", "_", root.configFile, saveProc.pendingJson]
+                saveProc.command = ["bash", root.script, "--write-config", saveProc.pendingJson]
                 saveProc.running = true
             } else if (code === 0) {
                 root.countsChanged(); refreshServiceProc.running = true
@@ -1233,7 +1256,7 @@ Panel {
             }
         }
     }
-    Process { id: refreshServiceProc; command: ["bash", "-c", "omarchy-shell -q io.github.calebhat.workscape refreshConfig >/dev/null 2>&1 || true"] }
+    Process { id: refreshServiceProc; command: ["omarchy-shell", "-q", "io.github.calebhat.workscape", "refreshConfig"] }
     Process {
         id: applyProc
         stdout: SplitParser { onRead: function(d){ console.log("[workscape] " + d) } }
@@ -1252,7 +1275,7 @@ Panel {
         onExited: function(code) {
             if (code !== 0) { errorText = "Capture failed: " + (captureErr.text || code); return }
             try {
-                var rows = JSON.parse(captureOut.text || "[]")
+                var rows = Model.parseCappedJson(captureOut.text || "[]", 262144)
                 if (!Array.isArray(rows)) throw "bad json"
                 root.applyCapture(rows)
             } catch (e) {
@@ -1262,7 +1285,7 @@ Panel {
     }
     Process {
         id: layoutProc
-        command: ["bash", "-c", "layout=$(hyprctl getoption general:layout -j 2>/dev/null | jq -r '.str // empty' 2>/dev/null); col=$(hyprctl getoption scrolling:column_width -j 2>/dev/null | jq -r '.float // 0.49' 2>/dev/null); echo \"${layout:-dwindle}|${col:-0.49}\""]
+        command: ["bash", root.script, "--hypr-layout"]
         stdout: StdioCollector { id: layoutOut; waitForEnd: true }
         onExited: function(code) {
             if (code !== 0) return
@@ -1296,7 +1319,8 @@ Panel {
             try {
                 var raw = liveOut.text || "{}"
                 if (raw === root.lastLiveJson) return
-                var j = JSON.parse(raw)
+                var j = Model.parseCappedJson(raw)
+                if (!j) return
                 root.lastLiveJson = raw
                 root.liveStatus = j
                 root.liveMonitors = j.live || []
@@ -1516,6 +1540,7 @@ Panel {
                         visible: root.activeMatchLabel !== ""
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
+                        textFormat: Text.PlainText
                         text: root.activeMatchLabel
                         color: (root.activeApplyHint && root.activeApplyHint.matches) ? Color.accent : root.dim
                         font.family: root.fontFamily
@@ -1788,6 +1813,7 @@ Panel {
                                 visible: !root.showMonitorPicker
                                 Layout.fillWidth: true
                                 wrapMode: Text.WordWrap
+                                textFormat: Text.PlainText
                                 text: root.monitorOptions.length ? ("All workspaces → " + root.monitorOptions[0].label) : ""
                                 color: root.dim
                                 font.family: root.fontFamily
@@ -1802,7 +1828,7 @@ Panel {
                             }
                             Button {
                                 text: "Capture WS"
-                                tooltipText: "Replace this workspace’s presets with the windows that are open now (cwd for terminals, URL for web apps when exposed)"
+                                tooltipText: "Replace this workspace’s presets with the windows that are open now, including the live split ratios (cwd for terminals, URL for web apps when exposed)"
                                 onClicked: root.captureWorkspace()
                             }
                             Button {
@@ -1831,6 +1857,7 @@ Panel {
                             visible: root.showMonitorPicker
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
+                            textFormat: Text.PlainText
                             text: root.workspaceMonitorSummary
                             color: root.dim
                             font.family: root.fontFamily
@@ -1936,6 +1963,7 @@ Panel {
                             spacing: Style.space(8)
                             Text {
                                 Layout.fillWidth: true
+                                textFormat: Text.PlainText
                                 text: {
                                     var m = Model.monitorById(root.config, monitorId)
                                     return (m ? m.label : monitorId) + (isOff ? " — off" : "")
@@ -2314,6 +2342,7 @@ Panel {
                     Text {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
+                        textFormat: Text.PlainText
                         text: {
                             var live = root.liveMonitors || []
                             var mon = "No monitors reported by Hyprland."
@@ -2332,6 +2361,7 @@ Panel {
                         visible: root.liveStatus.conflict === true
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
+                        textFormat: Text.PlainText
                         text: {
                             var ids = root.liveStatus.conflictProfileIds || []
                             var names = []
@@ -2401,6 +2431,7 @@ Panel {
                                             Layout.fillWidth: true
                                             Text {
                                                 text: modelData.name
+                                                textFormat: Text.PlainText
                                                 color: root.foreground
                                                 font.family: root.fontFamily
                                                 font.bold: true
@@ -2410,6 +2441,7 @@ Panel {
                                                 Layout.preferredWidth: Style.space(220)
                                                 wrapMode: Text.WordWrap
                                                 horizontalAlignment: Text.AlignRight
+                                                textFormat: Text.PlainText
                                                 text: {
                                                     var h = Model.applyHint(root.config, modelData, root.liveMonitors, root.liveNetwork, root.liveStatus)
                                                     return h.text || ""
@@ -2432,6 +2464,7 @@ Panel {
                                         Text {
                                             Layout.fillWidth: true
                                             wrapMode: Text.WordWrap
+                                            textFormat: Text.PlainText
                                             text: Model.boundNetworkLine(root.profileRecord(modelData.id), root.liveNetwork)
                                             color: {
                                                 var p = root.profileRecord(modelData.id)
@@ -2502,6 +2535,7 @@ Panel {
                     spacing: Style.space(12)
                     Text {
                         visible: root.statusText !== ""
+                        textFormat: Text.PlainText
                         text: "✓ " + root.statusText
                         color: Color.accent
                         font.family: root.fontFamily
@@ -2511,6 +2545,7 @@ Panel {
                     }
                     Text {
                         visible: root.errorText !== ""
+                        textFormat: Text.PlainText
                         text: root.errorText
                         color: Color.urgent || "#ff4444"
                         font.family: root.fontFamily
@@ -2586,6 +2621,7 @@ Panel {
                             Text { text: "From"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; Layout.preferredWidth: Style.space(48) }
                             Text {
                                 text: root.activeProfile.name
+                                textFormat: Text.PlainText
                                 color: root.foreground
                                 font.family: root.fontFamily
                                 Layout.fillWidth: true
@@ -2620,6 +2656,7 @@ Panel {
                                 visible: root.transferMode === "move"
                                 Layout.fillWidth: true
                                 wrapMode: Text.WordWrap
+                                textFormat: Text.PlainText
                                 text: root.activeProfile.name
                                 color: root.foreground
                                 font.family: root.fontFamily
@@ -3074,6 +3111,7 @@ Panel {
                 Layout.fillWidth: true
                 spacing: 1
                 Text {
+                    textFormat: Text.PlainText
                     text: {
                         if (!app) return ""
                         var n = root.countInWorkspace(app.exec)
@@ -3086,6 +3124,7 @@ Panel {
                     Layout.fillWidth: true
                 }
                 Text {
+                    textFormat: Text.PlainText
                     text: {
                         if (!app) return ""
                         var n = root.countInWorkspace(app.exec)

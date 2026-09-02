@@ -66,18 +66,18 @@ BarWidget {
 
     Process {
         id: statusProc
-        command: ["bash", "-c", "cat \"$1\" 2>/dev/null | jq -c '{total: ([.profiles[]?.assignments[]?]|length), enabled: ([.profiles[]?.assignments[]?|select(.enabled==true)]|length), profiles: (.profiles|length), pluginEnabled: (.settings.enabled // true)}' 2>/dev/null || echo '{\"total\":0,\"enabled\":0,\"profiles\":0,\"pluginEnabled\":true}'", "_", root.configFile]
-        property string out: ""
-        stdout: SplitParser { onRead: function(d){ statusProc.out += d } }
+        command: ["bash", root.script, "--status"]
+        stdout: StdioCollector { id: statusOut; waitForEnd: true }
         onExited: function(code){
             try {
-                var j = JSON.parse(statusProc.out.trim() || "{}")
+                var raw = statusOut.text || ""
+                if (raw.length > 8192) return
+                var j = JSON.parse(raw.trim() || "{}")
                 root.totalCount = Number(j.total || 0)
                 root.enabledCount = Number(j.enabled || 0)
                 root.profileCount = Number(j.profiles || 0)
                 root.pluginEnabled = j.pluginEnabled !== false
             } catch (e) {}
-            statusProc.out = ""
         }
     }
 

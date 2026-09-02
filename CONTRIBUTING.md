@@ -37,7 +37,7 @@ python3 test/dummy_live.py --live       # spawn workscape-dummy-* foots only
 Checklist, issue history, and scenario IDs: `test/CHECKLIST.md`, `test/ISSUES.md`. Read ISSUES.md before changing extras, restore, or layoutmsg.
 
 Marketplace listing: only after this tree is on GitHub `master` (the site
-clones HEAD). Submit via `HANCORE-linux/omarchy-plugin-marketplace` using
+clones HEAD). Submit via `omacom/omarchy-plugin-marketplace` using
 `SUBMISSION.md` (category Desktop; tags hyprland, workspaces, bar).
 
-Version in `manifest.json` is **1.9.1**.
+Version in `manifest.json` is **1.9.2**.

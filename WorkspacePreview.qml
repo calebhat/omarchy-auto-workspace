@@ -213,6 +213,7 @@ Item {
                             anchors.top: parent.verticalCenter
                             anchors.topMargin: 4
                             width: parent.width - 12
+                            textFormat: Text.PlainText
                             text: modelData ? (modelData.name || "App") : ""
                             color: Color.foreground
                             font.family: Style.font.family

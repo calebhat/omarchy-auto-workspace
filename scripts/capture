@@ -8,7 +8,10 @@ import os
 import re
 import subprocess
 import sys
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
+
+GEOM = SourceFileLoader("workscape_geom_capture", str(Path(__file__).resolve().parent / "geom")).load_module()
 
 
 def hypr_j(cmd: str):
@@ -124,30 +127,58 @@ def exec_for_client(c: dict, url: str, cwd: str) -> str:
 
 
 def geom_from_client(c: dict, mon: dict) -> dict | None:
+    if not mon:
+        return None
     at = c.get("at") or [0, 0]
     size = c.get("size") or [0, 0]
-    scale = float(mon.get("scale") or 1) or 1
-    mx = int(mon.get("x") or 0)
-    my = int(mon.get("y") or 0)
-    mw = int((mon.get("width") or 0) / scale)
-    mh = int((mon.get("height") or 0) / scale)
-    if mw <= 0 or mh <= 0:
+    box = {"x": int(at[0]), "y": int(at[1]), "w": int(size[0]), "h": int(size[1])}
+    if box["w"] <= 0 or box["h"] <= 0:
         return None
-    x = (int(at[0]) - mx) / mw
-    y = (int(at[1]) - my) / mh
-    w = int(size[0]) / mw
-    h = int(size[1]) / mh
-    return {
-        "x": round(max(0, min(1, x)), 4),
-        "y": round(max(0, min(1, y)), 4),
-        "w": round(max(0.04, min(1, w)), 4),
-        "h": round(max(0.04, min(1, h)), 4),
-    }
+    metrics = GEOM.layout_metrics(mon)
+    if float(metrics.get("w") or 0) <= 0 or float(metrics.get("h") or 0) <= 0:
+        return None
+    return GEOM.box_to_geom(box, metrics, min_size=0.04)
+
+
+def tessellate_tile_geoms(items: list[dict]) -> None:
+    """Snap tiled panes to a shared split so captured ratios fill the screen."""
+    tiled = [it for it in items if it.get("place") != "float" and isinstance(it.get("geom"), dict)]
+    if len(tiled) == 1:
+        tiled[0]["geom"] = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
+        return
+    if len(tiled) < 2:
+        return
+    geoms = [it["geom"] for it in tiled]
+    columns = all(float(g.get("y") or 0) < 0.08 and float(g.get("h") or 0) > 0.84 for g in geoms)
+    rows = all(float(g.get("x") or 0) < 0.08 and float(g.get("w") or 0) > 0.84 for g in geoms)
+    if columns:
+        tiled.sort(key=lambda it: float(it["geom"].get("x") or 0))
+        splits = [0.0]
+        for i in range(len(tiled) - 1):
+            left = tiled[i]["geom"]
+            right = tiled[i + 1]["geom"]
+            edge = (float(left.get("x") or 0) + float(left.get("w") or 0) + float(right.get("x") or 0)) / 2
+            splits.append(round(min(0.96, max(0.04, edge)), 4))
+        splits.append(1.0)
+        for i, it in enumerate(tiled):
+            it["geom"] = {"x": splits[i], "y": 0.0, "w": round(splits[i + 1] - splits[i], 4), "h": 1.0}
+        return
+    if rows:
+        tiled.sort(key=lambda it: float(it["geom"].get("y") or 0))
+        splits = [0.0]
+        for i in range(len(tiled) - 1):
+            top = tiled[i]["geom"]
+            bot = tiled[i + 1]["geom"]
+            edge = (float(top.get("y") or 0) + float(top.get("h") or 0) + float(bot.get("y") or 0)) / 2
+            splits.append(round(min(0.96, max(0.04, edge)), 4))
+        splits.append(1.0)
+        for i, it in enumerate(tiled):
+            it["geom"] = {"x": 0.0, "y": splits[i], "w": 1.0, "h": round(splits[i + 1] - splits[i], 4)}
 
 
 def capture_workspace(ws: str) -> list[dict]:
     clients = hypr_j("clients")
-    mons = {m.get("name"): m for m in hypr_j("monitors")}
+    monitors = list(hypr_j("monitors") or [])
     out = []
     for c in clients:
         w = c.get("workspace") or {}
@@ -165,7 +196,7 @@ def capture_workspace(ws: str) -> list[dict]:
         term = cls in {"foot", "org.wezfurlong.wezterm", "kitty", "Alacritty", "alacritty"} or "ghostty" in cls or cls.startswith("foot")
         cwd = shell_cwd(pid) if pid and term else ""
         url = url_from_client(c)
-        mon = mons.get(c.get("monitor")) or (list(mons.values())[0] if mons else {})
+        mon = GEOM.monitor_for_client(c, monitors) or {}
         item = {
             "workspace": int(ws) if str(ws).isdigit() else ws,
             "name": str(c.get("title") or cls)[:80],
@@ -187,6 +218,17 @@ def capture_workspace(ws: str) -> list[dict]:
         if g:
             item["geom"] = g
         out.append(item)
+    out.sort(key=lambda it: (
+        it.get("place") == "float",
+        float((it.get("geom") or {}).get("x") or 0),
+        float((it.get("geom") or {}).get("y") or 0),
+    ))
+    tessellate_tile_geoms(out)
+    tiled_n = sum(1 for it in out if it.get("place") != "float")
+    if tiled_n >= 2:
+        for it in out:
+            if it.get("place") != "float":
+                it["lockPlace"] = True
     return out
 
 

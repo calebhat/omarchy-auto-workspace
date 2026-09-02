@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import Quickshell
 import Quickshell.Io
 import QtQuick
+import "Model.js" as Model
 
 Item {
     id: root
@@ -52,7 +53,11 @@ Item {
             }
             var txt = ensureOut.text || ""
             try {
-                var cfg = JSON.parse(txt)
+                var cfg = Model.parseCappedJson(txt)
+                if (!cfg) {
+                    root.log("parse ensure-config: oversized or invalid")
+                    return
+                }
                 if (cfg.settings) {
                     root.autoEnabled = cfg.settings.enabled !== false
                     root.applyOnBoot = cfg.settings.applyOnBoot === true

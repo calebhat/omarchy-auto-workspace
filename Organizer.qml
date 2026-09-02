@@ -189,6 +189,7 @@ Item {
                             width: parent.width - 16
                             horizontalAlignment: Text.AlignHCenter
                             wrapMode: Text.Wrap
+                            textFormat: Text.PlainText
                             text: (modelData && modelData.name) || "App"
                             color: Color.foreground
                             font.family: Style.font.family

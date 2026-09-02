@@ -49,6 +49,19 @@ function defaultProfile() {
 
 function maxWorkspace() { return 20 }
 
+function maxConfigBytes() { return 524288 }
+
+function parseCappedJson(txt, maxBytes) {
+    var s = String(txt || "")
+    var cap = maxBytes != null ? maxBytes : maxConfigBytes()
+    if (!s || s.length > cap) return null
+    try {
+        return JSON.parse(s)
+    } catch (e) {
+        return null
+    }
+}
+
 function allowedMainView(v) {
     var s = String(v || "")
     if (s === "profiles" || s === "workspaces" || s === "displays" || s === "gestures") return s
@@ -1829,7 +1842,7 @@ function sanitizeConfig(cfg) {
         out.settings.lastMainView = allowedMainView(cfg.settings.lastMainView)
         out.settings.activeProfileId = String(cfg.settings.activeProfileId || "default").slice(0, 40)
         out.settings.gestureSource = cfg.settings.gestureSource === "profile" ? "profile" : "global"
-        out.settings.persistHyprGestures = cfg.settings.persistHyprGestures === true
+        out.settings.persistHyprGestures = cfg.settings.persistHyprGestures !== false
         out.settings.gestures = normalizeGestures(cfg.settings.gestures)
     }
     var monitors = []

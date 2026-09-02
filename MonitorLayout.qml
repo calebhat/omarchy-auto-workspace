@@ -153,6 +153,7 @@ Item {
                     Text {
                         anchors.centerIn: parent
                         width: parent.width - 10
+                        textFormat: Text.PlainText
                         text: (modelData && modelData.label ? modelData.label : "Display") + "\n" + Math.round(tile.layoutW) + "×" + Math.round(tile.layoutH)
                         color: Color.foreground
                         font.family: Style.font.family

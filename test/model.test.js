@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -22,6 +22,14 @@ if (m.sanitizeConfig({ version: 2, settings: { lastMainView: "gestures" }, profi
   throw new Error("persist last page")
 if (m.defaultConfig().settings.gestureSource !== "global") throw new Error("gestures default global")
 if (m.defaultConfig().settings.persistHyprGestures !== true) throw new Error("persist gestures default on")
+if (m.sanitizeConfig({ version: 2, settings: {}, profiles: [{ id: "p", name: "P" }] }).settings.persistHyprGestures !== true)
+  throw new Error("sanitize missing persist is on")
+if (m.sanitizeConfig({ version: 2, settings: { persistHyprGestures: false }, profiles: [{ id: "p", name: "P" }] }).settings.persistHyprGestures !== false)
+  throw new Error("sanitize keeps persist off")
+if (m.parseCappedJson('{"ok":true}').ok !== true) throw new Error("parse capped json")
+if (m.parseCappedJson("not json") !== null) throw new Error("parse capped invalid")
+if (m.parseCappedJson("{\"x\":1}", 3) !== null) throw new Error("parse capped oversize")
+if (m.maxConfigBytes() !== 524288) throw new Error("config byte cap")
 const gsrcMissing = m.sanitizeConfig({ version: 2, settings: {}, profiles: [{ id: "p", name: "P" }] })
 if (gsrcMissing.settings.gestureSource !== "global") throw new Error("sanitize missing source is global")
 const gsrcKeep = m.sanitizeConfig({ version: 2, settings: { gestureSource: "profile" }, profiles: [{ id: "p", name: "P" }] })

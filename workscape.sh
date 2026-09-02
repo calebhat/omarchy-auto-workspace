@@ -7,6 +7,7 @@ PLUGIN_ID="io.github.calebhat.workscape"
 # panel and restart the service on every settings save.
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/workscape"
 CONFIG_FILE="$STATE_DIR/config.json"
+MAX_CONFIG_BYTES=524288
 PREV_WORKBOOK_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/workbook"
 PREV_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-workspace"
 LEGACY_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/tenzin.auto-workspace/config.json"
@@ -95,7 +96,43 @@ ensure_config() {
 
 cmd_ensure_config() {
   ensure_config || exit 1
+  local sz
+  sz=$(stat -c%s "$CONFIG_FILE" 2>/dev/null || echo 0)
+  if (( sz > MAX_CONFIG_BYTES )); then
+    echo "config too large ($sz bytes)" >&2
+    exit 1
+  fi
   cat "$CONFIG_FILE"
+}
+
+cmd_write_config() {
+  local json="${2:-}"
+  if [[ -z $json ]]; then
+    echo "empty config" >&2
+    return 1
+  fi
+  if (( ${#json} > MAX_CONFIG_BYTES )); then
+    echo "config too large" >&2
+    return 1
+  fi
+  mkdir -p -m 700 "$STATE_DIR"
+  local tmp="$CONFIG_FILE.tmp.$$"
+  printf '%s' "$json" >"$tmp"
+  if ! command -v jq >/dev/null 2>&1 || ! jq empty "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    echo "invalid json" >&2
+    return 1
+  fi
+  mv -f "$tmp" "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+  echo OK
+}
+
+cmd_hypr_layout() {
+  local layout col
+  layout=$(timeout 2 hyprctl getoption general:layout -j </dev/null 2>/dev/null | jq -r '.str // empty' 2>/dev/null || true)
+  col=$(timeout 2 hyprctl getoption scrolling:column_width -j </dev/null 2>/dev/null | jq -r '.float // 0.49' 2>/dev/null || true)
+  printf '%s|%s\n' "${layout:-dwindle}" "${col:-0.49}"
 }
 
 live_monitors_json() {
@@ -1194,6 +1231,8 @@ cmd_launch_all() {
 
 case "${1:-}" in
   --ensure-config) cmd_ensure_config ;;
+  --write-config) cmd_write_config "$@" ;;
+  --hypr-layout) cmd_hypr_layout ;;
   --list-apps) cmd_list_apps ;;
   --status) cmd_status ;;
   --live-status) cmd_live_status ;;
@@ -1214,6 +1253,8 @@ case "${1:-}" in
 workscape.sh — helper for io.github.calebhat.workscape
 
   --ensure-config              ensure config exists and print it
+  --write-config <json>        atomically write config.json (capped)
+  --hypr-layout                print general:layout|scrolling:column_width
   --list-apps                  list .desktop + extra apps as TSV
   --status                     json status
   --live-status                current monitors + matching profile

@@ -44,6 +44,20 @@ def test_box_to_geom():
     assert g["y"] == 0
     assert abs(g["w"] - 0.628) < 0.001
     assert g["h"] == 1
+    thin = geom.box_to_geom({"x": 808, "y": 34, "w": 50, "h": 900}, metrics)
+    assert abs(thin["w"] - 0.05) < 0.001
+
+
+def test_monitor_for_client_uses_id():
+    mons = [
+        {"id": 0, "name": "eDP-1", "width": 2880, "height": 1920, "scale": 2, "x": 0, "y": 0},
+        {"id": 2, "name": "DVI-I-2", "width": 1920, "height": 1080, "scale": 1, "x": 3360, "y": 0},
+    ]
+    hit = geom.monitor_for_client({"monitor": 2}, mons)
+    assert hit["name"] == "DVI-I-2"
+    by_name = geom.monitor_for_client({"monitor": "eDP-1"}, mons)
+    assert by_name["name"] == "eDP-1"
+    assert geom.monitor_for_client({"monitor": 99}, mons) is None
 
 
 def test_lock_plan_and_assignment():
@@ -1521,6 +1535,7 @@ if __name__ == "__main__":
     test_layout_metrics_scale()
     test_geom_pixels()
     test_box_to_geom()
+    test_monitor_for_client_uses_id()
     test_lock_plan_and_assignment()
     test_close_enough_and_fallback()
     test_column_width_frac()

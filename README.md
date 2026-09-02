@@ -129,7 +129,7 @@ Pick workspace **1–10** for app presets (overflow chain can use **1–20**).
 
 **Toggle apps** in the list to place them on the selected workspace. The name shows a live **×N** count of that app on this workspace; the subtitle says **N on this workspace** when there is more than one. **+** adds another window of the same app (two Braves, two terminals). Toggle off removes one instance (the last). Custom commands go in the bottom row.
 
-**Capture WS** snapshots whatever is open on this workspace into the profile: size/place, terminal working directory (from the shell child of `foot` / Ghostty), and a URL when Hyprland exposes it (Brave *web apps* encode the site in the window class; a normal Brave tab only has the page title — that URL cannot be read). Apps without a `.desktop` file (TUIs) need a desktop entry or WorkScape **extraApps** in config.
+**Capture WS** snapshots whatever is open on this workspace into the profile: the exact on-screen split ratios, size/place, terminal working directory (from the shell child of `foot` / Ghostty), and a URL when Hyprland exposes it (Brave *web apps* encode the site in the window class; a normal Brave tab only has the page title — that URL cannot be read). Two or more tiled windows are locked to those ratios. Apps without a `.desktop` file (TUIs) need a desktop entry or WorkScape **extraApps** in config.
 
 **What can be saved per window:** exec, name, class, title, tile vs float, geometry, opacity/borders, lock, **cwd** (terminals), **url** (web apps / explicit `https://` in the command). Not available: the URL of an ordinary browser tab, scroll position, cookies/login, tmux sessions, SSH remote cwd unless it is the local shell.
 
