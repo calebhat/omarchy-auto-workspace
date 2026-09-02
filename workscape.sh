@@ -921,6 +921,7 @@ install_hypr_lua() {
   local dest="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/workscape-binds.lua"
   [[ -f $src ]] || return 0
   python3 "$STATEIO" copy-file "$src" "$dest" || true
+  python3 "$GESTURES" --record-owned workscape-binds.lua --hypr-dir "$(dirname "$dest")" >/dev/null || true
 }
 
 cmd_apply() {

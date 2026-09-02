@@ -85,7 +85,7 @@ Then restore Hyprland files this plugin may have written **only if you opted int
 ~/.config/omarchy/plugins/io.github.calebhat.workscape/workscape.sh --restore-hypr
 ```
 
-That restores `hyprland.lua` from the WorkScape backup when one exists (the backup is kept), otherwise it removes only the marked WorkScape require block. Generated `workscape-gestures.lua` / `workscape-binds.lua` are deleted only if they still start with this plugin’s header. Old `workscape-layout.lua` (custom tape) is unused — delete it if present.
+That removes only the marked WorkScape require block from the current `hyprland.lua` (later user edits stay). The backup is used only if `hyprland.lua` is missing after an interrupted write. Generated lua files are deleted only if their content still matches the digest recorded when this plugin wrote them; a later edit is left in place as a conflict. Old `workscape-layout.lua` (custom tape) is unused — delete it if present.
 
 ---
 

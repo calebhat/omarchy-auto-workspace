@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -39,17 +40,25 @@ def test_scratchpad_and_touch():
 
 
 def test_ensure_hyprland_require(tmp_path):
+    os.environ["WORKSCAPE_STATE_DIR"] = str(tmp_path / "state")
+    (tmp_path / "state").mkdir()
     lua = tmp_path / "hyprland.lua"
     lua.write_text("-- Learn how to configure Hyprland\nrequire(\"default.hypr.omarchy\")\n")
-    assert g.ensure_hyprland_require(tmp_path) is True
-    text = lua.read_text()
-    assert 'pcall(require, "hypr.workscape-gestures")' in text
-    assert g.ensure_hyprland_require(tmp_path) is False
+    try:
+        assert g.ensure_hyprland_require(tmp_path) is True
+        text = lua.read_text()
+        assert 'pcall(require, "hypr.workscape-gestures")' in text
+        assert g.ensure_hyprland_require(tmp_path) is False
+    finally:
+        os.environ.pop("WORKSCAPE_STATE_DIR", None)
 
 
 def test_write_registers_workspace_swipe(tmp_path, monkeypatch=None):
     hypr = tmp_path / "hypr"
     hypr.mkdir()
+    state = tmp_path / "state"
+    state.mkdir(exist_ok=True)
+    os.environ["WORKSCAPE_STATE_DIR"] = str(state)
     (hypr / "hyprland.lua").write_text("-- user hyprland\n")
     cfg = {
         "settings": {
@@ -70,18 +79,34 @@ def test_write_registers_workspace_swipe(tmp_path, monkeypatch=None):
         assert 'action = "workspace"' in written
         assert 'fingers = 3' in written
         assert 'pcall(require, "hypr.workscape-gestures")' in (hypr / "hyprland.lua").read_text()
+        (hypr / "hyprland.lua").write_text(
+            (hypr / "hyprland.lua").read_text() + "-- later user edit\n"
+        )
         restored = g.restore_hypr_persist(str(hypr))
-        assert restored["stripped"] is True
-        assert restored["restoredBak"] is True
-        assert 'pcall(require, "hypr.workscape-gestures")' not in (hypr / "hyprland.lua").read_text()
-        assert (hypr / "hyprland.lua").read_text() == "-- user hyprland\n"
+        assert restored["ok"] is True
+        assert restored["hyprland"] == "stripped"
+        assert restored["backup"] == "kept"
+        text = (hypr / "hyprland.lua").read_text()
+        assert 'pcall(require, "hypr.workscape-gestures")' not in text
+        assert "-- later user edit" in text
         assert (hypr / "hyprland.lua.workscape.bak").exists()
         assert not (hypr / "workscape-gestures.lua").exists()
+        cfg["settings"]["persistHyprGestures"] = True
+        g.write_and_apply(cfg, hypr_dir=str(hypr / "workscape-gestures.lua"))
+        edited = (hypr / "workscape-gestures.lua").read_text() + "\n-- user tweak\n"
+        (hypr / "workscape-gestures.lua").write_text(edited)
+        conflict = g.restore_hypr_persist(str(hypr))
+        assert conflict["ok"] is False
+        assert conflict["files"].get("workscape-gestures.lua") == "conflict"
+        assert (hypr / "workscape-gestures.lua").exists()
     finally:
         g.hypr_eval = orig_eval
+        os.environ.pop("WORKSCAPE_STATE_DIR", None)
 
 
 def test_restore_leaves_user_owned_files(tmp_path):
+    os.environ["WORKSCAPE_STATE_DIR"] = str(tmp_path / "state")
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
     hypr = tmp_path / "hypr"
     hypr.mkdir(parents=True)
     (hypr / "hyprland.lua").write_text(
@@ -91,12 +116,13 @@ def test_restore_leaves_user_owned_files(tmp_path):
     (hypr / "workscape-gestures.lua").write_text("-- my custom swipe\nhl.config({})\n")
     (hypr / "workscape-binds.lua").write_text("-- not ours\n")
     out = g.restore_hypr_persist(str(hypr))
-    assert out["stripped"] is False
-    assert out["restoredBak"] is False
+    assert out["ok"] is True
+    assert out["hyprland"] == "skipped"
     text = (hypr / "hyprland.lua").read_text()
     assert 'pcall(require, "hypr.workscape-gestures")' in text
     assert (hypr / "workscape-gestures.lua").read_text().startswith("-- my custom swipe")
     assert (hypr / "workscape-binds.lua").exists()
+    os.environ.pop("WORKSCAPE_STATE_DIR", None)
 
 
 def test_resolve_profile_vs_global():

@@ -165,6 +165,10 @@ def isolate_apply(argv: list[str], timeout: float) -> int:
         return 0
     logfd = None
     proc = None
+    deadline = time.monotonic() + timeout
+    overflow = False
+    timed_out = False
+    sink_error = None
     try:
         logfd = os.open(
             "apply.log",
@@ -188,9 +192,6 @@ def isolate_apply(argv: list[str], timeout: float) -> int:
         )
         SAFE.write_pid(dirfd, proc.pid)
         written = 0
-        overflow = False
-        timed_out = False
-        deadline = time.monotonic() + timeout
         src = proc.stdout
         while True:
             remain = deadline - time.monotonic()
@@ -199,20 +200,23 @@ def isolate_apply(argv: list[str], timeout: float) -> int:
                 break
             try:
                 readable, _, _ = select.select([src], [], [], min(0.2, remain))
-            except (ValueError, OSError):
+            except (ValueError, OSError) as e:
+                sink_error = e
                 break
             chunk = b""
             if readable:
                 try:
                     chunk = os.read(src.fileno(), 4096)
-                except OSError:
+                except OSError as e:
+                    sink_error = e
                     break
                 if not chunk:
                     break
             elif proc.poll() is not None:
                 try:
                     chunk = os.read(src.fileno(), 4096)
-                except OSError:
+                except OSError as e:
+                    sink_error = e
                     break
                 if not chunk:
                     break
@@ -223,26 +227,43 @@ def isolate_apply(argv: list[str], timeout: float) -> int:
                 overflow = True
                 break
             take = chunk[:room]
-            os.write(logfd, take)
-            sys.stdout.buffer.write(take)
-            sys.stdout.buffer.flush()
+            try:
+                SAFE.write_fully(logfd, take)
+                SAFE.write_fully(sys.stdout.fileno(), take)
+            except OSError as e:
+                sink_error = e
+                break
             written += len(take)
             if len(take) < len(chunk):
                 overflow = True
                 break
-        if overflow or timed_out:
-            SAFE.kill_group(proc.pid)
+        remain = max(0.1, deadline - time.monotonic())
+        if overflow or timed_out or sink_error is not None or (proc.poll() is None):
+            SAFE.reap_process(proc, remain)
+        else:
             try:
-                proc.wait(timeout=2)
+                proc.wait(timeout=remain)
             except Exception:
-                proc.kill()
-                proc.wait()
-            print("apply timed out" if timed_out else "apply log too large", file=sys.stderr)
-            return 124 if timed_out else 1
-        if proc.poll() is None:
-            proc.wait()
+                SAFE.reap_process(proc, remain)
+        if timed_out:
+            print("apply timed out", file=sys.stderr)
+            return 124
+        if overflow:
+            print("apply log too large", file=sys.stderr)
+            return 1
+        if sink_error is not None:
+            print(f"apply collector error: {sink_error}", file=sys.stderr)
+            return 1
         return proc.returncode or 0
+    except Exception as e:
+        remain = max(0.1, deadline - time.monotonic())
+        SAFE.reap_process(proc, remain)
+        print(f"apply failed: {e}", file=sys.stderr)
+        return 1
     finally:
+        remain = max(0.1, deadline - time.monotonic())
+        if proc is not None and proc.poll() is None:
+            SAFE.reap_process(proc, remain)
         if logfd is not None:
             os.close(logfd)
         SAFE.unlink_at(dirfd, "apply.pid")
