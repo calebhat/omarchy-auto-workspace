@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 import re
+import select
 import signal
 import stat
 import subprocess
@@ -22,7 +23,9 @@ _CONNECTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 MAX_CONFIG_BYTES = 524288
 MAX_HYPR_JSON = 262144
 MAX_HELPER_OUT = 524288
+MAX_APPLY_LOG = 262144
 MAX_PROC_FILE = 4096
+MAX_EVENT_LINE = 4096
 STATE_NAMES = frozenset({
     "config.json",
     "apply.lock",
@@ -290,7 +293,7 @@ def write_atomic(
         os.close(dirfd)
 
 
-def load_json_file(path: Path, max_bytes: int = MAX_CONFIG_BYTES) -> dict:
+def load_json_file(path: Path, max_bytes: int = MAX_CONFIG_BYTES) -> Any:
     data = read_nofollow(Path(path), max_bytes)
     obj = json.loads(data.decode("utf-8"))
     if not isinstance(obj, dict) and not isinstance(obj, list):
@@ -320,6 +323,88 @@ def hypr_json(args: list[str], timeout: float = 3.0) -> Any:
     return json.loads(raw.decode("utf-8"))
 
 
+def kill_group(pid: int) -> None:
+    if not pid:
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    time.sleep(0.2)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def stream_collect(
+    proc: subprocess.Popen,
+    max_out: int,
+    timeout: float | None,
+    max_err: int = 65536,
+) -> tuple[bytes, bytes, int]:
+    out = bytearray()
+    err = bytearray()
+    streams = [s for s in (proc.stdout, proc.stderr) if s is not None]
+    deadline = time.monotonic() + timeout if timeout and timeout > 0 else None
+    overflow = False
+    timed_out = False
+    while streams:
+        remain = None
+        if deadline is not None:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                timed_out = True
+                break
+        wait = 0.2 if remain is None else min(0.2, remain)
+        try:
+            readable, _, _ = select.select(streams, [], [], wait)
+        except (ValueError, OSError):
+            break
+        if not readable:
+            if proc.poll() is not None:
+                readable = list(streams)
+            else:
+                continue
+        for stream in list(readable):
+            try:
+                chunk = os.read(stream.fileno(), 65536)
+            except OSError:
+                streams.remove(stream)
+                continue
+            if not chunk:
+                if stream in streams:
+                    streams.remove(stream)
+                continue
+            if stream is proc.stdout:
+                out.extend(chunk)
+                if len(out) > max_out:
+                    overflow = True
+                    streams = []
+                    break
+            else:
+                err.extend(chunk[: max(0, max_err - len(err))])
+                if len(err) >= max_err and len(chunk) > 0:
+                    overflow = True
+                    streams = []
+                    break
+        if proc.poll() is not None and not readable:
+            break
+    if overflow or timed_out:
+        kill_group(proc.pid)
+        try:
+            proc.wait(timeout=1)
+        except Exception:
+            proc.kill()
+            proc.wait()
+        if timed_out:
+            raise subprocess.TimeoutExpired(proc.args, timeout or 0)
+        raise OSError("output too large")
+    if proc.poll() is None:
+        proc.wait()
+    return bytes(out), bytes(err), proc.returncode or 0
+
+
 def bounded_output(cmd: list[str], timeout: float = 3.0, max_bytes: int = MAX_HYPR_JSON) -> bytes:
     proc = subprocess.Popen(
         cmd,
@@ -330,28 +415,11 @@ def bounded_output(cmd: list[str], timeout: float = 3.0, max_bytes: int = MAX_HY
         preexec_fn=_pdeathsig,
     )
     try:
-        out, _ = proc.communicate(timeout=timeout)
+        out, _, code = stream_collect(proc, max_bytes, timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        time.sleep(0.2)
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
-            proc.communicate(timeout=0.5)
-        except Exception:
-            proc.kill()
-            proc.wait()
         raise
-    if proc.returncode not in (0, None) and not out:
-        raise subprocess.CalledProcessError(proc.returncode or 1, cmd)
-    out = out or b""
-    if len(out) > max_bytes:
-        raise OSError("output too large")
+    if code not in (0, None) and not out:
+        raise subprocess.CalledProcessError(code or 1, cmd)
     return out
 
 
@@ -367,15 +435,7 @@ def bounded_run(cmd: list[str], timeout: float = 3.0) -> int:
     try:
         return proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        time.sleep(0.2)
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        kill_group(proc.pid)
         proc.wait()
         return 124
 

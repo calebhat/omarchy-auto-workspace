@@ -61,13 +61,21 @@ def test_write_registers_workspace_swipe(tmp_path, monkeypatch=None):
     g.hypr_eval = lambda lua: None
     try:
         out = g.write_and_apply(cfg, hypr_dir=str(hypr / "workscape-gestures.lua"))
+        assert out["ok"] is True
+        assert not (hypr / "workscape-gestures.lua").exists()
+        assert 'pcall(require, "hypr.workscape-gestures")' not in (hypr / "hyprland.lua").read_text()
+        cfg["settings"]["persistHyprGestures"] = True
+        out = g.write_and_apply(cfg, hypr_dir=str(hypr / "workscape-gestures.lua"))
+        written = (hypr / "workscape-gestures.lua").read_text()
+        assert 'action = "workspace"' in written
+        assert 'fingers = 3' in written
+        assert 'pcall(require, "hypr.workscape-gestures")' in (hypr / "hyprland.lua").read_text()
+        restored = g.restore_hypr_persist(str(hypr))
+        assert restored["stripped"] is True
+        assert 'pcall(require, "hypr.workscape-gestures")' not in (hypr / "hyprland.lua").read_text()
+        assert not (hypr / "workscape-gestures.lua").exists()
     finally:
         g.hypr_eval = orig_eval
-    assert out["ok"] is True
-    written = (hypr / "workscape-gestures.lua").read_text()
-    assert 'action = "workspace"' in written
-    assert 'fingers = 3' in written
-    assert 'pcall(require, "hypr.workscape-gestures")' in (hypr / "hyprland.lua").read_text()
 
 
 def test_resolve_profile_vs_global():

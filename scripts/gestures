@@ -149,6 +149,7 @@ def last_fingers_path() -> Path:
 
 
 REQUIRE_LINE = 'pcall(require, "hypr.workscape-gestures")'
+REQUIRE_MARK = "-- WorkScape trackpad workspace swipe (generated file)."
 
 
 def ensure_hyprland_require(hypr_dir: Path) -> bool:
@@ -161,11 +162,45 @@ def ensure_hyprland_require(hypr_dir: Path) -> bool:
     if "hypr.workscape-gestures" in text:
         return False
     snippet = (
-        "\n-- WorkScape trackpad workspace swipe (generated file).\n"
+        f"\n{REQUIRE_MARK}\n"
         f"{REQUIRE_LINE}\n"
     )
     SAFE.write_atomic(lua, text.rstrip() + snippet + "\n", mode=0o644, backup=True, max_bytes=2 * 1024 * 1024)
     return True
+
+
+def restore_hypr_persist(hypr_dir: str = "") -> dict:
+    home = Path.home()
+    hypr = Path(hypr_dir) if hypr_dir else home / ".config" / "hypr"
+    lua = hypr / "hyprland.lua"
+    stripped = False
+    try:
+        text = SAFE.read_nofollow(lua, 2 * 1024 * 1024).decode("utf-8")
+        keep = [
+            line
+            for line in text.splitlines(True)
+            if REQUIRE_MARK not in line and REQUIRE_LINE not in line
+        ]
+        new = "".join(keep)
+        if new != text:
+            SAFE.write_atomic(lua, new if new.endswith("\n") else new + "\n", mode=0o644, backup=False)
+            stripped = True
+    except OSError:
+        pass
+    removed = []
+    for name in ("workscape-gestures.lua", "workbook-gestures.lua", "workscape-binds.lua"):
+        path = hypr / name
+        try:
+            SAFE.unlink_nofollow(path)
+            removed.append(name)
+        except OSError:
+            pass
+    bak = hypr / "hyprland.lua.workscape.bak"
+    try:
+        SAFE.unlink_nofollow(bak)
+    except OSError:
+        pass
+    return {"ok": True, "stripped": stripped, "removed": removed}
 
 
 def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "", reload: bool = False) -> dict:
@@ -177,20 +212,10 @@ def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "", reload:
     SAFE.write_atomic(dest, lua, mode=0o600)
     persist = ((cfg.get("settings") or {}).get("persistHyprGestures") is True)
     hypr_dest = Path(hypr_dir) if hypr_dir else home / ".config/hypr/workscape-gestures.lua"
-    old_hypr = home / ".config/hypr/workbook-gestures.lua"
-    if persist or hypr_dest.exists() or old_hypr.exists() or g["workspaceSwipe"]:
+    if persist:
         SAFE.write_atomic(hypr_dest, lua, mode=0o644)
         dest = hypr_dest
         ensure_hyprland_require(hypr_dest.parent)
-        try:
-            if old_hypr.exists() and old_hypr.resolve() != hypr_dest.resolve():
-                SAFE.write_atomic(
-                    old_hypr,
-                    '-- Moved to workscape-gestures.lua\npcall(require, "hypr.workscape-gestures")\n',
-                    mode=0o644,
-                )
-        except OSError:
-            pass
     hypr_eval(config_lua_eval(g))
     prev = 0
     stamp = last_fingers_path()
@@ -264,12 +289,20 @@ def apply_profile_extras(profile: dict) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--config", required=True)
+    p.add_argument("--config", default="")
     p.add_argument("--profile-id", default="")
     p.add_argument("--apply", action="store_true")
     p.add_argument("--extras", action="store_true")
     p.add_argument("--render", action="store_true")
+    p.add_argument("--restore-hypr", action="store_true")
+    p.add_argument("--hypr-dir", default="")
     args = p.parse_args()
+    if args.restore_hypr:
+        print(json.dumps(restore_hypr_persist(args.hypr_dir)))
+        return 0
+    if not args.config:
+        print("--config required", file=sys.stderr)
+        return 2
     cfg = SAFE.load_json_file(Path(args.config))
     if args.render:
         print(render_lua(resolve_gestures(cfg, args.profile_id)))

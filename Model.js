@@ -17,7 +17,7 @@ function defaultConfig() {
             lastMainView: "profiles",
             activeProfileId: "default",
             gestureSource: "global",
-            persistHyprGestures: true,
+            persistHyprGestures: false,
             gestures: defaultGestures()
         },
         monitors: [],
@@ -1842,7 +1842,7 @@ function sanitizeConfig(cfg) {
         out.settings.lastMainView = allowedMainView(cfg.settings.lastMainView)
         out.settings.activeProfileId = String(cfg.settings.activeProfileId || "default").slice(0, 40)
         out.settings.gestureSource = cfg.settings.gestureSource === "profile" ? "profile" : "global"
-        out.settings.persistHyprGestures = cfg.settings.persistHyprGestures !== false
+        out.settings.persistHyprGestures = cfg.settings.persistHyprGestures === true
         out.settings.gestures = normalizeGestures(cfg.settings.gestures)
     }
     var monitors = []

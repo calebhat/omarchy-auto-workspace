@@ -240,6 +240,33 @@ def test_sweep_skips_occupied():
         watch.next_open_ws = orig_next
 
 
+def test_oversized_event_kills_group():
+    r, w = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(r)
+        os.write(w, b"x" * 5000)
+        os.close(w)
+        os._exit(0)
+    os.close(w)
+
+    class Proc:
+        stdout = open(r, "rb", buffering=0)
+        pid = child
+
+    proc = Proc()
+    orig_kill = watch.SAFE.kill_group
+    killed = []
+    watch.SAFE.kill_group = lambda pid: killed.append(pid)
+    try:
+        watch._consume_socket(proc)
+    finally:
+        watch.SAFE.kill_group = orig_kill
+        proc.stdout.close()
+        os.waitpid(child, 0)
+    assert killed == [child]
+
+
 if __name__ == "__main__":
     test_openwindow_addr_gets_0x_prefix()
     test_monitor_hotplug_line()
@@ -253,4 +280,5 @@ if __name__ == "__main__":
     test_handle_open_skips_unblocked()
     test_move_to_ws_follow_false()
     test_sweep_skips_occupied()
+    test_oversized_event_kills_group()
     print("watch.test.py ok")

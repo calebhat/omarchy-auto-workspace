@@ -90,6 +90,7 @@ def test_short_write_leaves_dest(tmp: Path):
     env["WORKSCAPE_STATE_DIR"] = str(tmp)
     first = b'{"keep":true}'
     assert run(env, ["write-config"], stdin=first).returncode == 0
+    first = (tmp / "config.json").read_bytes()
     orig = SAFE.write_at
 
     def boom(dirfd, name, data, mode=0o600, max_bytes=None):
@@ -176,6 +177,29 @@ def test_hung_helper_and_descendants(tmp: Path):
                 pass
 
 
+def test_schema_caps_profiles(tmp: Path):
+    env = os.environ.copy()
+    env["WORKSCAPE_STATE_DIR"] = str(tmp)
+    profiles = [{"id": f"p{i}", "name": f"P{i}", "assignments": [{"exec": "foot" + ("x" * 600), "workspace": 1}]} for i in range(20)]
+    r = run(env, ["write-config"], stdin=json.dumps({"version": 2, "profiles": profiles}).encode())
+    assert r.returncode == 0, r.stderr
+    obj = json.loads(run(env, ["ensure-config"]).stdout.decode())
+    assert len(obj["profiles"]) == 12
+    assert len(obj["profiles"][0]["assignments"][0]["exec"]) <= 500
+    assert obj["settings"]["persistHyprGestures"] is False
+
+
+def test_run_kills_on_overflow(tmp: Path):
+    env = os.environ.copy()
+    r = run(
+        env,
+        ["run", "--timeout", "3", "--max-out", "4096", "--", "python3", "-c", "print('x'*200000)"],
+        timeout=6,
+    )
+    assert r.returncode != 0
+    assert len(r.stdout) <= 8192
+
+
 def test_isolate_lock(tmp: Path):
     env = os.environ.copy()
     env["WORKSCAPE_STATE_DIR"] = str(tmp)
@@ -196,7 +220,7 @@ if __name__ == "__main__":
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         base = Path(d)
-        for name in "abcdefghijk":
+        for name in list("abcdefghijklm"):
             (base / name).mkdir()
         test_write_read_roundtrip(base / "a")
         test_symlink_config_rejected(base / "b")
@@ -208,5 +232,7 @@ if __name__ == "__main__":
         test_unlink_does_not_follow(base / "h")
         test_migrate_copies_only_config(base / "i")
         test_hung_helper_and_descendants(base / "j")
-        test_isolate_lock(base / "k")
+        test_schema_caps_profiles(base / "k")
+        test_run_kills_on_overflow(base / "l")
+        test_isolate_lock(base / "m")
     print("stateio.test.py ok")

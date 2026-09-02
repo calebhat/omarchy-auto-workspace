@@ -420,28 +420,49 @@ def apply_focus_chrome() -> None:
         geom.apply_chrome(addr, chrome, addr == focus)
 
 
+def _handle_event_line(line: str) -> None:
+    if line.startswith("openwindow>>"):
+        payload = line.split(">>", 1)[1]
+        parts = payload.split(",", 3)
+        if len(parts) < 2:
+            return
+        addr, ws = parts[0], parts[1]
+        if addr and not addr.startswith("0x"):
+            addr = "0x" + addr
+        if addr and ws and ws.isdigit():
+            handle_open(addr, ws)
+        return
+    if line.startswith("monitoradded") or line.startswith("monitorremoved"):
+        print(json.dumps({"monitorChange": True}), flush=True)
+        return
+    if line.startswith("activewindow>>") or line.startswith("activewindowv2>>"):
+        apply_focus_chrome()
+
+
 def _consume_socket(proc: subprocess.Popen) -> None:
     assert proc.stdout
-    for line in proc.stdout:
-        if len(line) > 4096:
-            continue
-        line = line.strip()
-        if line.startswith("openwindow>>"):
-            payload = line.split(">>", 1)[1]
-            parts = payload.split(",", 3)
-            if len(parts) < 2:
-                continue
-            addr, ws = parts[0], parts[1]
-            if addr and not addr.startswith("0x"):
-                addr = "0x" + addr
-            if addr and ws and ws.isdigit():
-                handle_open(addr, ws)
-            continue
-        if line.startswith("monitoradded") or line.startswith("monitorremoved"):
-            print(json.dumps({"monitorChange": True}), flush=True)
-            continue
-        if line.startswith("activewindow>>") or line.startswith("activewindowv2>>"):
-            apply_focus_chrome()
+    buf = bytearray()
+    fd = proc.stdout.fileno()
+    while True:
+        chunk = os.read(fd, 1024)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        while True:
+            nl = buf.find(b"\n")
+            if nl < 0:
+                if len(buf) > SAFE.MAX_EVENT_LINE:
+                    SAFE.kill_group(proc.pid)
+                    return
+                break
+            raw = bytes(buf[:nl])
+            del buf[: nl + 1]
+            if len(raw) > SAFE.MAX_EVENT_LINE:
+                SAFE.kill_group(proc.pid)
+                return
+            line = raw.decode("utf-8", "replace").strip()
+            if line:
+                _handle_event_line(line)
 
 
 def main() -> int:
@@ -456,7 +477,6 @@ def main() -> int:
         proc = subprocess.Popen(
             ["socat", "-u", f"UNIX-CONNECT:{sock}", "-"],
             stdout=subprocess.PIPE,
-            text=True,
             start_new_session=True,
             preexec_fn=SAFE._pdeathsig,
         )

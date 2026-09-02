@@ -12,6 +12,7 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 SAFE = SourceFileLoader("workscape_hyprsafe", str(Path(__file__).resolve().parent / "hyprsafe")).load_module()
+SCHEMA = SourceFileLoader("workscape_schema", str(Path(__file__).resolve().parent / "schema")).load_module()
 
 DEFAULT_CONFIG = """{
   "version": 2,
@@ -23,7 +24,8 @@ DEFAULT_CONFIG = """{
     "silent": true,
     "onlyOnBoot": true,
     "lastFormWorkspace": 1,
-    "activeProfileId": "default"
+    "activeProfileId": "default",
+    "persistHyprGestures": false
   },
   "monitors": [],
   "extraApps": [],
@@ -103,9 +105,14 @@ def write_config_stdin() -> None:
     if not isinstance(obj, dict):
         print("invalid json", file=sys.stderr)
         sys.exit(1)
+    sane = SCHEMA.sanitize_config(obj)
+    payload = (json.dumps(sane, indent=2) + "\n").encode("utf-8")
+    if len(payload) > SAFE.MAX_CONFIG_BYTES:
+        print("config too large", file=sys.stderr)
+        sys.exit(1)
     dirfd = SAFE.open_state_dir(create=True)
     try:
-        SAFE.write_at(dirfd, "config.json", raw, mode=0o600, max_bytes=SAFE.MAX_CONFIG_BYTES)
+        SAFE.write_at(dirfd, "config.json", payload, mode=0o600, max_bytes=SAFE.MAX_CONFIG_BYTES)
     finally:
         os.close(dirfd)
     print("OK")
@@ -190,25 +197,23 @@ def isolate_apply(argv: list[str], timeout: float) -> int:
             start_new_session=True,
             preexec_fn=SAFE._pdeathsig,
         )
-        os.close(logfd)
-        logfd = None
         SAFE.write_pid(dirfd, proc.pid)
         deadline = time.monotonic() + timeout
         off = 0
         while proc.poll() is None:
             if time.monotonic() > deadline:
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                time.sleep(0.3)
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                SAFE.kill_group(proc.pid)
                 proc.wait()
                 print("apply timed out", file=sys.stderr)
                 return 124
+            try:
+                if os.fstat(logfd).st_size > SAFE.MAX_APPLY_LOG:
+                    SAFE.kill_group(proc.pid)
+                    proc.wait()
+                    print("apply log too large", file=sys.stderr)
+                    return 1
+            except OSError:
+                pass
             off = _copy_log(dirfd, off, sys.stdout.buffer)
             time.sleep(0.1)
         _copy_log(dirfd, off, sys.stdout.buffer)
@@ -237,32 +242,17 @@ def run_helper(argv: list[str], timeout: float, max_out: int) -> int:
     )
     try:
         wait = None if timeout <= 0 else timeout
-        out, err = proc.communicate(timeout=wait)
+        out, err, code = SAFE.stream_collect(proc, max_out, wait)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        time.sleep(0.2)
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
-            proc.communicate(timeout=0.5)
-        except Exception:
-            proc.kill()
-            proc.wait()
         print("timeout", file=sys.stderr)
         return 124
+    except OSError as e:
+        print(str(e), file=sys.stderr)
+        return 1
     if err:
         sys.stderr.buffer.write(err[:65536])
-    out = out or b""
-    if len(out) > max_out:
-        print("output too large", file=sys.stderr)
-        return 1
     sys.stdout.buffer.write(out)
-    return proc.returncode or 0
+    return code
 
 
 def main(argv: list[str]) -> int:

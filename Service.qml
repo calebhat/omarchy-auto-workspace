@@ -49,7 +49,7 @@ Item {
         id: gestureBootProc
         command: root.helperRun(["bash", root.script, "--apply-gestures"], 8, 8192)
         stdout: StdioCollector { waitForEnd: true }
-        stderr: SplitParser { onRead: function(d){ console.warn("[workscape] gestures] " + d) } }
+        stderr: SplitParser { onRead: function(d){ if (d.length > 4096) return; console.warn("[workscape] gestures] " + d) } }
         onExited: function(code) {
             root.log("apply-gestures exited " + code)
         }
@@ -93,8 +93,8 @@ Item {
 
     Process {
         id: launchProc
-        stdout: SplitParser { onRead: function(d){ console.log("[workscape] launch] " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[workscape] launch err] " + d) } }
+        stdout: SplitParser { onRead: function(d){ if (d.length > 4096) return; console.log("[workscape] launch] " + d) } }
+        stderr: SplitParser { onRead: function(d){ if (d.length > 4096) return; console.warn("[workscape] launch err] " + d) } }
         onExited: function(code) {
             root.lastStatus = code === 0 ? "launched" : "failed:" + code
             root.launchedThisSession = true
@@ -122,14 +122,14 @@ Item {
                     syncMatchProc.running = true
             }
         }
-        stderr: SplitParser { onRead: function(d){ console.warn("[workscape] extras] " + d) } }
+        stderr: SplitParser { onRead: function(d){ if (d.length > 4096) return; console.warn("[workscape] extras] " + d) } }
     }
 
     Process {
         id: syncMatchProc
         command: root.helperRun(["bash", root.script, "--sync-active-profile"], 8, 4096)
-        stdout: SplitParser { onRead: function(d){ root.log("sync " + d) } }
-        stderr: SplitParser { onRead: function(d){ console.warn("[workscape] sync] " + d) } }
+        stdout: SplitParser { onRead: function(d){ if (d.length > 4096) return; root.log("sync " + d) } }
+        stderr: SplitParser { onRead: function(d){ if (d.length > 4096) return; console.warn("[workscape] sync] " + d) } }
     }
 
     Timer {

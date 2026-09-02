@@ -1,0 +1,421 @@
+#!/usr/bin/env python3
+"""Backend caps matching Model.sanitizeConfig (item/string/range limits)."""
+from __future__ import annotations
+
+import re
+from typing import Any
+
+MAX_PROFILES = 12
+MAX_MONITORS = 16
+MAX_EXTRA_APPS = 20
+MAX_ASSIGNMENTS = 50
+MAX_PROFILE_MONITORS = 8
+GEOM_MIN = 0.12
+_CWD_OK = re.compile(r"^/[A-Za-z0-9._/+\- ]{0,399}$")
+_URL_OK = re.compile(r"^https://[A-Za-z0-9][A-Za-z0-9._~:/?#@&=+%,\-]*$")
+_COLOR_OK = re.compile(r"[^#0-9a-fA-F]")
+
+
+def _s(v: Any, n: int) -> str:
+    t = str(v or "")
+    if "\x00" in t or "\n" in t or "\r" in t:
+        t = t.replace("\x00", "").replace("\n", " ").replace("\r", " ")
+    return t[:n]
+
+
+def _b(v: Any, default: bool = False) -> bool:
+    if v is True or v == 1 or v == "1" or v == "true":
+        return True
+    if v is False or v == 0 or v == "0" or v == "false":
+        return False
+    return default
+
+
+def _i(v: Any, lo: int, hi: int, default: int) -> int:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return default
+    return min(hi, max(lo, n))
+
+
+def _f(v: Any, lo: float, hi: float, default: float) -> float:
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return default
+    return min(hi, max(lo, n))
+
+
+def safe_cwd(s: Any) -> str:
+    t = str(s or "").strip()
+    if not t.startswith("/") or len(t) > 400 or ".." in t:
+        return ""
+    if not _CWD_OK.fullmatch(t):
+        return ""
+    return t
+
+
+def safe_url(s: Any) -> str:
+    t = str(s or "").strip()[:300]
+    if not _URL_OK.fullmatch(t):
+        return ""
+    return t
+
+
+def canonical_exec(s: Any) -> str:
+    t = str(s or "").strip()[:500]
+    if "\x00" in t:
+        return ""
+    t = t.replace("\n", " ").replace("\r", " ")
+    return t[:500]
+
+
+def default_gestures() -> dict[str, Any]:
+    return {
+        "workspaceSwipe": True,
+        "fingers": 3,
+        "skipEmpty": True,
+        "invert": True,
+        "createNew": False,
+        "forever": False,
+        "touch": False,
+        "keyboard": False,
+        "scratchpadSwipe": False,
+        "scratchpadFingers": 4,
+    }
+
+
+def normalize_gestures(raw: Any) -> dict[str, Any]:
+    src = raw if isinstance(raw, dict) else {}
+    out = default_gestures()
+    out["workspaceSwipe"] = src.get("workspaceSwipe") is not False
+    out["fingers"] = 4 if _i(src.get("fingers"), 3, 4, 3) == 4 else 3
+    out["skipEmpty"] = src.get("skipEmpty") is not False
+    out["invert"] = src.get("invert") is not False
+    out["createNew"] = src.get("createNew") is True
+    out["forever"] = src.get("forever") is True
+    out["touch"] = src.get("touch") is True
+    out["keyboard"] = src.get("keyboard") is True
+    out["scratchpadSwipe"] = src.get("scratchpadSwipe") is True
+    out["scratchpadFingers"] = 3 if _i(src.get("scratchpadFingers"), 3, 4, 4) == 3 else 4
+    return out
+
+
+def normalize_network(raw: Any) -> dict[str, list[str]]:
+    src = raw if isinstance(raw, dict) else {}
+    def uniq(items: Any) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        if not isinstance(items, list):
+            return out
+        for it in items:
+            s = _s(it, 64).strip()
+            k = s.lower()
+            if not s or k in seen:
+                continue
+            seen.add(k)
+            out.append(s)
+            if len(out) >= 8:
+                break
+        return out
+    return {
+        "ssids": uniq(src.get("ssids")),
+        "subnets": uniq(src.get("subnets")),
+        "connections": uniq(src.get("connections")),
+    }
+
+
+def normalize_overflow(raw: Any) -> dict[str, Any]:
+    src = raw if isinstance(raw, dict) else {}
+    seen: set[int] = set()
+    workspaces: list[int] = []
+    arr = src.get("workspaces") if isinstance(src.get("workspaces"), list) else []
+    for it in arr:
+        n = _i(it, 1, 20, 0)
+        if n < 1 or n in seen:
+            continue
+        seen.add(n)
+        workspaces.append(n)
+        if len(workspaces) >= 20:
+            break
+    return {
+        "enabled": src.get("enabled") is True,
+        "workspaces": workspaces,
+        "maxWindows": _i(src.get("maxWindows"), 1, 20, 1),
+    }
+
+
+def normalize_geom(g: Any) -> dict[str, float] | None:
+    if not isinstance(g, dict):
+        return None
+    try:
+        x, y, w, h = float(g.get("x")), float(g.get("y")), float(g.get("w")), float(g.get("h"))
+    except (TypeError, ValueError):
+        return None
+    if any(v != v for v in (x, y, w, h)):
+        return None
+    w = min(1.0, max(GEOM_MIN, w))
+    h = min(1.0, max(GEOM_MIN, h))
+    x = min(1.0 - w, max(0.0, x))
+    y = min(1.0 - h, max(0.0, y))
+    out = {"x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
+    try:
+        z = int(g.get("z"))
+        out["z"] = z
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+def normalize_chrome(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    def opac(v: Any) -> float:
+        n = _f(v, 0.2, 1.0, 1.0)
+        return round(n, 2)
+    bs = _i(raw.get("borderSize"), -1, 12, -1)
+    out = {
+        "opacityActive": opac(raw.get("opacityActive", 1)),
+        "opacityInactive": opac(raw.get("opacityInactive", 1)),
+        "borderActive": raw.get("borderActive") is not False,
+        "borderInactive": raw.get("borderInactive") is not False,
+        "borderColorActive": _COLOR_OK.sub("", _s(raw.get("borderColorActive"), 9)),
+        "borderColorInactive": _COLOR_OK.sub("", _s(raw.get("borderColorInactive"), 9)),
+        "borderSize": bs if 0 <= bs <= 12 else -1,
+    }
+    if (
+        out["opacityActive"] == 1
+        and out["opacityInactive"] == 1
+        and out["borderActive"]
+        and out["borderInactive"]
+        and out["borderColorActive"] == ""
+        and out["borderColorInactive"] == ""
+        and out["borderSize"] == -1
+    ):
+        return None
+    return out
+
+
+def normalize_assignment(a: Any) -> dict[str, Any] | None:
+    if not isinstance(a, dict):
+        return None
+    ws = _i(a.get("workspace"), 1, 10, 1)
+    typ = a.get("type") if a.get("type") in {"webapp", "app", "custom"} else "app"
+    exec_s = canonical_exec(a.get("exec") or a.get("command"))
+    if not exec_s:
+        return None
+    out: dict[str, Any] = {
+        "id": _s(a.get("id") or "aw", 40),
+        "workspace": ws,
+        "name": _s(a.get("name") or a.get("command") or "App", 80),
+        "command": canonical_exec(a.get("command") or exec_s),
+        "exec": exec_s,
+        "type": typ,
+        "enabled": a.get("enabled") is not False,
+        "onlyOnBoot": _b(a.get("onlyOnBoot"), typ != "app"),
+        "lockPlace": a.get("lockPlace") is True,
+        "place": "float" if a.get("place") == "float" else "tile",
+    }
+    cwd = safe_cwd(a.get("cwd"))
+    if cwd:
+        out["cwd"] = cwd
+    url = safe_url(a.get("url"))
+    if url:
+        out["url"] = url
+    title = _s(a.get("title"), 120).strip()
+    if title:
+        out["title"] = title
+    cls = _s(a.get("class") or a.get("windowClass"), 80).strip()
+    if cls:
+        out["class"] = cls
+    geom = normalize_geom(a.get("geom"))
+    if geom:
+        out["geom"] = geom
+    chrome = normalize_chrome(a.get("chrome"))
+    if chrome:
+        out["chrome"] = chrome
+    return out
+
+
+def normalize_monitor(m: Any) -> dict[str, str] | None:
+    if not isinstance(m, dict):
+        return None
+    serial = _s(m.get("serial"), 80).strip()
+    description = _s(m.get("description"), 160).strip()
+    name = _s(m.get("name"), 40).strip()
+    if not serial and not description and not name:
+        return None
+    mid = _s(m.get("id"), 40).strip() or (serial or description or name)[:32]
+    return {
+        "id": mid[:40],
+        "label": _s(m.get("label") or description or name, 48),
+        "serial": serial,
+        "description": description,
+        "name": name,
+    }
+
+
+def normalize_extra(a: Any) -> dict[str, str] | None:
+    if not isinstance(a, dict):
+        return None
+    exec_s = canonical_exec(a.get("exec") or a.get("command"))
+    if not exec_s:
+        return None
+    return {
+        "name": _s(a.get("name") or "App", 80),
+        "exec": exec_s,
+        "command": canonical_exec(a.get("command") or exec_s),
+        "icon": _s(a.get("icon"), 80),
+        "type": a.get("type") if a.get("type") in {"webapp", "custom"} else "custom",
+    }
+
+
+def normalize_workspace_pref(p: Any) -> dict[str, Any]:
+    if not isinstance(p, dict):
+        return {"layout": "dwindle", "visibleCount": 2, "lockSizes": False, "extras": "around"}
+    layout = p.get("layout")
+    if layout in {"stage", "set-width"}:
+        layout = "scrolling"
+    if layout not in {"scrolling", "master"}:
+        layout = "dwindle"
+    return {
+        "layout": layout,
+        "visibleCount": _i(p.get("visibleCount"), 1, 20, 2),
+        "lockSizes": p.get("lockSizes") is True,
+        "extras": "block" if p.get("extras") == "block" else "around",
+    }
+
+
+def normalize_profile(p: Any, known_ids: list[str]) -> dict[str, Any]:
+    src = p if isinstance(p, dict) else {}
+    mons: list[str] = []
+    seen: set[str] = set()
+    for raw in src.get("monitors") if isinstance(src.get("monitors"), list) else []:
+        mid = _s(raw, 40).strip()
+        if not mid or mid in seen:
+            continue
+        if known_ids and mid not in known_ids:
+            continue
+        seen.add(mid)
+        mons.append(mid)
+        if len(mons) >= MAX_PROFILE_MONITORS:
+            break
+    assignments: list[dict[str, Any]] = []
+    for raw in (src.get("assignments") if isinstance(src.get("assignments"), list) else [])[:MAX_ASSIGNMENTS]:
+        item = normalize_assignment(raw)
+        if item:
+            assignments.append(item)
+    wm: dict[str, str] = {}
+    raw_wm = src.get("workspaceMonitors") if isinstance(src.get("workspaceMonitors"), dict) else {}
+    for k, v in raw_wm.items():
+        ws = _i(k, 1, 10, 0)
+        if ws < 1:
+            continue
+        mid = _s(v, 40).strip()
+        if mid and (not known_ids or mid in known_ids):
+            wm[str(ws)] = mid
+    names: dict[str, str] = {}
+    raw_names = src.get("workspaceNames") if isinstance(src.get("workspaceNames"), dict) else {}
+    for k, v in raw_names.items():
+        ws = _i(k, 1, 10, 0)
+        name = _s(v, 24).strip()
+        if ws >= 1 and name:
+            names[str(ws)] = name
+    prefs: dict[str, Any] = {}
+    raw_prefs = src.get("workspacePrefs") if isinstance(src.get("workspacePrefs"), dict) else {}
+    for k, v in raw_prefs.items():
+        ws = _i(k, 1, 10, 0)
+        if ws >= 1:
+            prefs[str(ws)] = normalize_workspace_pref(v)
+    layout: dict[str, Any] = {}
+    raw_layout = src.get("monitorLayout") if isinstance(src.get("monitorLayout"), dict) else {}
+    for k, v in list(raw_layout.items())[:8]:
+        if not isinstance(v, dict):
+            continue
+        layout[_s(k, 40)] = {"x": _i(v.get("x"), -20000, 20000, 0), "y": _i(v.get("y"), -20000, 20000, 0)}
+    off: list[str] = []
+    for raw in src.get("disabledMonitors") if isinstance(src.get("disabledMonitors"), list) else []:
+        mid = _s(raw, 40).strip()
+        if mid and mid in mons and mid not in off:
+            off.append(mid)
+    if len(mons) >= 1 and len(off) >= len(mons):
+        off = off[: len(mons) - 1]
+    return {
+        "id": _s(src.get("id") or "pr", 40),
+        "name": _s(src.get("name") or "Profile", 48),
+        "matchMode": "all-present" if src.get("matchMode") == "all-present" else "exact",
+        "monitors": mons,
+        "workspaceMonitors": wm,
+        "disabledMonitors": off,
+        "monitorLayout": layout,
+        "workspacePrefs": prefs,
+        "assignments": assignments,
+        "gestures": normalize_gestures(src.get("gestures")),
+        "workspaceNames": names,
+        "defaultWorkspace": _i(src.get("defaultWorkspace"), 0, 10, 0),
+        "persistentWorkspaces": src.get("persistentWorkspaces") is True,
+        "overflow": normalize_overflow(src.get("overflow")),
+        "network": normalize_network(src.get("network")),
+        "claimedAt": _i(src.get("claimedAt"), 0, 2**31, 0),
+    }
+
+
+def sanitize_config(cfg: Any) -> dict[str, Any]:
+    src = cfg if isinstance(cfg, dict) else {}
+    settings_in = src.get("settings") if isinstance(src.get("settings"), dict) else {}
+    settings = {
+        "enabled": settings_in.get("enabled") is not False,
+        "applyOnBoot": settings_in.get("applyOnBoot") is True,
+        "launchDelayMs": _i(settings_in.get("launchDelayMs"), 0, 10000, 800),
+        "staggerMs": _i(settings_in.get("staggerMs"), 0, 2000, 80),
+        "silent": settings_in.get("silent") is not False,
+        "onlyOnBoot": settings_in.get("onlyOnBoot") is not False,
+        "lastFormWorkspace": _i(settings_in.get("lastFormWorkspace"), 1, 10, 1),
+        "lastMainView": settings_in.get("lastMainView")
+        if settings_in.get("lastMainView") in {"profiles", "workspaces", "displays", "gestures"}
+        else "profiles",
+        "activeProfileId": _s(settings_in.get("activeProfileId") or "default", 40),
+        "gestureSource": "profile" if settings_in.get("gestureSource") == "profile" else "global",
+        "persistHyprGestures": settings_in.get("persistHyprGestures") is True,
+        "gestures": normalize_gestures(settings_in.get("gestures")),
+    }
+    monitors: list[dict[str, str]] = []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for raw in src.get("monitors") if isinstance(src.get("monitors"), list) else []:
+        mon = normalize_monitor(raw)
+        if not mon or mon["id"] in seen:
+            continue
+        seen.add(mon["id"])
+        monitors.append(mon)
+        ids.append(mon["id"])
+        if len(monitors) >= MAX_MONITORS:
+            break
+    extras: list[dict[str, str]] = []
+    for raw in (src.get("extraApps") if isinstance(src.get("extraApps"), list) else [])[:MAX_EXTRA_APPS]:
+        extra = normalize_extra(raw)
+        if extra:
+            extras.append(extra)
+    profiles: list[dict[str, Any]] = []
+    pseen: set[str] = set()
+    raw_profiles = src.get("profiles") if isinstance(src.get("profiles"), list) else []
+    if not raw_profiles and isinstance(src.get("assignments"), list):
+        raw_profiles = [{"id": "default", "name": "Default", "assignments": src.get("assignments")}]
+    for raw in raw_profiles[:MAX_PROFILES]:
+        prof = normalize_profile(raw, ids)
+        if prof["id"] in pseen:
+            continue
+        pseen.add(prof["id"])
+        profiles.append(prof)
+    if not profiles:
+        profiles = [normalize_profile({"id": "default", "name": "Default"}, ids)]
+    if not any(p["id"] == settings["activeProfileId"] for p in profiles):
+        settings["activeProfileId"] = profiles[0]["id"]
+    return {
+        "version": 2,
+        "settings": settings,
+        "monitors": monitors,
+        "extraApps": extras,
+        "profiles": profiles,
+    }

@@ -1123,6 +1123,7 @@ case "${1:-}" in
   --watch-extras) exec python3 "$PLUGIN_DIR/scripts/watch" ;;
   --capture-workspace) python3 "$PLUGIN_DIR/scripts/capture" --workspace "${2:-1}" ;;
   --apply-gestures) python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "${2:-}" --apply ;;
+  --restore-hypr) python3 "$GESTURES" --restore-hypr ;;
   --default-config) default_config ;;
   --help|-h|"") cat <<'HELP'
 workscape.sh — helper for io.github.calebhat.workscape
@@ -1144,6 +1145,7 @@ workscape.sh — helper for io.github.calebhat.workscape
   --reset-empty-workspaces [id] restore Omarchy dwindle on workspaces with no assigned apps (keeps Fill-next Stage chain)
   --watch-extras               keep locked panes pinned; send extras away when extras=block
   --apply-gestures             write trackpad / swipe prefs and hyprctl eval them
+  --restore-hypr               remove generated Hyprland persist files and the hyprland.lua require
   --default-config             print default config
 HELP
   ;;

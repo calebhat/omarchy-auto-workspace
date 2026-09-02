@@ -79,7 +79,13 @@ rm -rf ~/.local/state/omarchy/workscape ~/.local/state/omarchy/workbook
 rm -f ~/.config/hypr/workscape-gestures.lua ~/.config/hypr/workbook-gestures.lua
 ```
 
-If you added `pcall(require, "hypr.workscape-gestures")` or `pcall(require, "hypr.workscape-binds")` to `hyprland.lua`, delete those lines too. Apply copies `workscape-binds.lua` into `~/.config/hypr/` when it changes; remove that file on uninstall. Old `workscape-layout.lua` (custom tape) is unused — delete it if present.
+Then restore Hyprland files this plugin may have written **only if you opted into persist**:
+
+```sh
+~/.config/omarchy/plugins/io.github.calebhat.workscape/workscape.sh --restore-hypr
+```
+
+That strips the generated `pcall(require, "hypr.workscape-gestures")` block from `hyprland.lua` and deletes `workscape-gestures.lua` / `workscape-binds.lua`. Old `workscape-layout.lua` (custom tape) is unused — delete it if present.
 
 ---
 
@@ -190,8 +196,8 @@ Edits save and apply on change (no Apply button).
 - **Global** is the default store and the default view. Every profile uses it until you opt into **This profile**.
 - Profile gestures are a separate store; editing one does not overwrite the other.
 - **Swipe method** (Natural vs Swap left/right) is one row.
-- Workspace swipe is registered when the shell starts (`hyprctl eval`) and written to `~/.config/hypr/workscape-gestures.lua` so a compositor reload keeps it. WorkScape adds `pcall(require, "hypr.workscape-gestures")` to `hyprland.lua` if that line is missing.
-- **Keep swipes after Hyprland reload** is **on** by default for new configs. Off still evals for this session; the generated file is still written while workspace swipe is enabled.
+- Workspace swipe is registered for this session when the shell starts (`hyprctl eval`). It does **not** edit `hyprland.lua` unless you opt in.
+- **Keep swipes after Hyprland reload** is **off** by default. Turning it on writes `~/.config/hypr/workscape-gestures.lua` and inserts `pcall(require, "hypr.workscape-gestures")` into `hyprland.lua` (backed up first). `workscape.sh --restore-hypr` undoes that.
 - **SUPER+, / .** previous and next workspace (follows Skip empty).
 - **SUPER+J** toggles dwindle split only; ignored on scrolling so the compositor does not show a Lua error.
 
@@ -246,7 +252,7 @@ pcall(require, "hypr.workscape-binds")
 
 ## Security notes
 
-Plugins run unsandboxed. WorkScape only interpolates allowlisted values into `hyprctl eval` (workspace 1–20, `0x` addresses, connector names). User-authored launch commands in the profile are executed as that user. Config is `0600` under `~/.local/state`. Gesture persist and `hyprland.lua` edits are opt-in. Network matching is convenience, not a trust boundary (SSIDs can be spoofed). Apply/Fresh of a profile that does not match live displays is refused.
+Plugins run unsandboxed. WorkScape only interpolates allowlisted values into `hyprctl eval` (workspace 1–20, `0x` addresses, connector names). User-authored launch commands in the profile are executed as that user. Config is `0600` under `~/.local/state`. Gesture persist and `hyprland.lua` edits are **off until you enable Keep swipes after Hyprland reload**. `workscape.sh --restore-hypr` removes those files. Network matching is convenience, not a trust boundary (SSIDs can be spoofed). Apply/Fresh of a profile that does not match live displays is refused.
 
 ## License
 
